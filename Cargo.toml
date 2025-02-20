@@ -2,7 +2,11 @@
 name = "sunray"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "AGPL-3.0-only"
+description = "feature-rich hardware ray-tracing library"
+repository = "https://github.com/Kalsifer-742/sunray.git"
+readme = "README.md"
+keywords = ["gamedev", "graphics"]
+categories = ["graphics", "hardware-support", "game-development"]
 
 [dependencies]
