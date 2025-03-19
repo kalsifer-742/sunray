@@ -7,7 +7,7 @@ use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 use winit::window::WindowBuilder;
 
 pub trait Demo {
-    fn render(&mut self);
+    fn render(&mut self) -> Result<(), Box<dyn Error>>;
 
     fn on_suspend(&mut self) {}
     fn on_resume(&mut self) {}
@@ -37,7 +37,7 @@ impl DemoRunner {
                 } => {
                     elwp.exit();
                 }
-                Event::AboutToWait => demo.render(),
+                Event::AboutToWait => demo.render().unwrap(),
                 Event::LoopExiting => demo.on_exit(),
                 Event::Resumed => demo.on_resume(),
                 Event::Suspended => demo.on_suspend(),

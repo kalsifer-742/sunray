@@ -1,11 +1,12 @@
 use std::error::Error;
 use ash::vk;
+use crate::vkal;
 
 #[derive(Clone, Copy)]
 pub struct PhysicalDeviceInfo {
     pub physical_dev_idx: usize,
 
-    pub best_queue_family_for_graphics: usize,
+    pub best_queue_family_for_graphics: u32,
     pub number_of_queues: u32,
     pub format: vk::SurfaceFormatKHR,
     pub surface_capabilities: vk::SurfaceCapabilitiesKHR,
@@ -13,7 +14,8 @@ pub struct PhysicalDeviceInfo {
 }
 
 impl PhysicalDeviceInfo {
-    pub fn new(instance: &ash::Instance, surface_instance: &ash::khr::surface::Instance, surface: vk::SurfaceKHR) -> Result<Self, Box<dyn Error>> {
+    pub fn new(instance: &vkal::Instance, surface: &vkal::Surface) -> Result<Self, Box<dyn Error>> {
+        let surface_instance = instance.surface_instance();
         let mut selected_physdev_idx = None;
         let mut selected_physdev_memsize = 0;
         let mut selected_physdev_qf = 0;
@@ -25,7 +27,7 @@ impl PhysicalDeviceInfo {
             let mut biggest_qf_with_surface_and_gfx = None;
             let mut biggest_qf_with_surface_and_gfx_size = 0;
             for (qf_idx, qf_props) in qf_props.iter().enumerate() {
-                let supports_surface = unsafe { surface_instance.get_physical_device_surface_support(physdev, qf_idx as u32, surface) }?;
+                let supports_surface = unsafe { surface_instance.get_physical_device_surface_support(physdev, qf_idx as u32, surface.inner()) }?;
                 if supports_surface && qf_props.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                     if biggest_qf_with_surface_and_gfx_size < qf_props.queue_count {
                         biggest_qf_with_surface_and_gfx_size = qf_props.queue_count;
@@ -61,7 +63,7 @@ impl PhysicalDeviceInfo {
 
         let selected_physdev = Self::get_physical_device_from_index(selected_physdev_idx, instance)?;
 
-        let surface_formats = unsafe { surface_instance.get_physical_device_surface_formats(selected_physdev, surface) }?;
+        let surface_formats = unsafe { surface_instance.get_physical_device_surface_formats(selected_physdev, surface.inner()) }?;
         let mut surface_format = &surface_formats[0];
         for sf in surface_formats.iter() {
             if sf.format == vk::Format::B8G8R8A8_SRGB && sf.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR {
@@ -69,9 +71,9 @@ impl PhysicalDeviceInfo {
             }
         }
 
-        let surface_capabilities = unsafe { surface_instance.get_physical_device_surface_capabilities(selected_physdev, surface) }?;
+        let surface_capabilities = unsafe { surface_instance.get_physical_device_surface_capabilities(selected_physdev, surface.inner()) }?;
 
-        let present_modes = unsafe { surface_instance.get_physical_device_surface_present_modes(selected_physdev, surface) }?;
+        let present_modes = unsafe { surface_instance.get_physical_device_surface_present_modes(selected_physdev, surface.inner()) }?;
         let presentation_mode = if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
             vk::PresentModeKHR::MAILBOX
         } else if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
@@ -81,7 +83,7 @@ impl PhysicalDeviceInfo {
         };
 
         Ok(Self {
-            physical_dev_idx: selected_physdev_idx, best_queue_family_for_graphics: selected_physdev_qf,
+            physical_dev_idx: selected_physdev_idx, best_queue_family_for_graphics: selected_physdev_qf as u32,
             number_of_queues: selected_physdev_qf_size, format: surface_format.clone(), surface_capabilities, presentation_mode,
         })
     }

@@ -6,16 +6,16 @@ use winit::raw_window_handle::{RawDisplayHandle};
 use crate::vkal;
 
 //VulKan Abstraction Layer
-pub mod debug_utils;
+mod debug_utils;
 pub use debug_utils::*;
 
-pub struct OwnedInstanceParams<'a> {
+pub struct InstanceParams<'a> {
     pub app_name: &'a str, // if set to "" (default) uses the crate name
     pub vk_api_version: u32, // see ash::vk::definitions::make_api_version; 1.0.0 by default
     pub enable_debug_utils: bool, // enables validation layer and debug utilities
 }
 
-impl<'a> Default for OwnedInstanceParams<'a> {
+impl<'a> Default for InstanceParams<'a> {
     fn default() -> Self {
         Self {
             app_name: "",
@@ -27,13 +27,15 @@ impl<'a> Default for OwnedInstanceParams<'a> {
 
 
 
-// RAII type to handle init and deinit for ash::vk::Instance (and vkal::DebugUtils)
-pub struct OwnedInstance {
+// RAII type to handle init and deinit for ash::vk::Instance, other Instance types and vkal::DebugUtils
+pub struct Instance {
     instance: ash::Instance,
+    surface_instance: ash::khr::surface::Instance,
+
     debug_utils: Option<vkal::DebugUtils>,
 }
-impl OwnedInstance {
-    pub fn new(params: OwnedInstanceParams, entry: &ash::Entry, display_handle: RawDisplayHandle) -> Result<OwnedInstance, Box<dyn Error>> {
+impl Instance {
+    pub fn new(params: InstanceParams, entry: &ash::Entry, display_handle: RawDisplayHandle) -> Result<Instance, Box<dyn Error>> {
         let app_name =
             if params.app_name.is_empty() { env!("CARGO_PKG_NAME") }
             else { &params.app_name };
@@ -74,29 +76,29 @@ impl OwnedInstance {
             .enabled_layer_names(&layers_names_raw)
             .enabled_extension_names(&extension_names);
 
-        let allocator = None; // currently no support for custom allocator
+        let instance = unsafe { entry.create_instance(&instance_create_info, vkal::NO_ALLOCATOR) }?;
 
-        let instance = unsafe { entry.create_instance(&instance_create_info, allocator) }?;
+        let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
 
         let debug_utils =
             if params.enable_debug_utils { Some(vkal::DebugUtils::new(entry, &instance)?) }
             else { None };
 
-        Ok(OwnedInstance{ instance, debug_utils })
+        Ok(Instance { instance, surface_instance, debug_utils })
     }
-}
-impl Drop for OwnedInstance {
-    fn drop(&mut self) {
-        let allocator = None; // currently no support for custom allocator
 
+    pub fn surface_instance(&self) -> &ash::khr::surface::Instance { &self.surface_instance }
+}
+impl Drop for Instance {
+    fn drop(&mut self) {
         // debug utils must be dropped manually BEFORE dropping instance;
         // to preserve the debug functionality it should be dropped as late as possible
         drop(self.debug_utils.take());
 
-        unsafe { self.instance.destroy_instance(allocator) }
+        unsafe { self.instance.destroy_instance(vkal::NO_ALLOCATOR) }
     }
 }
-impl Deref for OwnedInstance {
+impl Deref for Instance {
     type Target = ash::Instance;
 
     fn deref(&self) -> &Self::Target { &self.instance }

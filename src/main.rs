@@ -13,3 +13,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     runner.run_demo(&mut demo)?;
     Ok(())
 }
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct SetsTrueOnDrop { v: Rc<RefCell<bool>> }
+    impl Drop for SetsTrueOnDrop {
+        fn drop(&mut self) { *self.v.borrow_mut() = true; }
+    }
+
+    #[test]
+    fn test() {
+        let mut drop_ran = Rc::new(RefCell::new(false));
+
+        let s = SetsTrueOnDrop { v: drop_ran.clone() };
+
+        assert!(!*drop_ran.borrow());
+
+        drop(s);
+
+        assert!(*drop_ran.borrow());
+    }
+}

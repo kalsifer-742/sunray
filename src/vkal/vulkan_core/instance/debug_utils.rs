@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::error::Error;
 use std::ffi::{c_char, CStr};
 use ash::vk;
-
+use crate::vkal;
 //DebugUtils is just a RAII type to init and deinit debug functionality
 
 pub struct DebugUtils {
@@ -34,14 +34,12 @@ impl DebugUtils {
                 .message_type(msg_type)
                 .pfn_user_callback(Some(vulkan_debug_callback));
 
-        let allocator = None; // currently no support for custom allocator
-        Ok(unsafe { i.create_debug_utils_messenger(&dbg_messenger_create_info, allocator)? })
+        Ok(unsafe { i.create_debug_utils_messenger(&dbg_messenger_create_info, vkal::NO_ALLOCATOR)? })
     }
 }
 impl Drop for DebugUtils {
     fn drop(&mut self) {
-        let allocator = None; // currently no support for custom allocator
-        unsafe { self.debug_utils_instance.destroy_debug_utils_messenger(self.debug_messenger, allocator); }
+        unsafe { self.debug_utils_instance.destroy_debug_utils_messenger(self.debug_messenger, vkal::NO_ALLOCATOR); }
     }
 }
 
