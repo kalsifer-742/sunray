@@ -9,9 +9,11 @@ use winit::window::WindowBuilder;
 pub trait Demo {
     fn render(&mut self) -> Result<(), Box<dyn Error>>;
 
-    fn on_suspend(&mut self) {}
-    fn on_resume(&mut self) {}
-    fn on_exit(&mut self) {}
+    fn on_suspend(&mut self) -> Result<(), Box<dyn Error>> { Ok(()) }
+    fn on_resume(&mut self) -> Result<(), Box<dyn Error>> { Ok(()) }
+    fn on_exit(&mut self) -> Result<(), Box<dyn Error>> { Ok(()) }
+
+    fn on_resize(&mut self) -> Result<(), Box<dyn Error>> { Ok(()) }
 }
 
 
@@ -38,9 +40,9 @@ impl DemoRunner {
                     elwp.exit();
                 }
                 Event::AboutToWait => demo.render().unwrap(),
-                Event::LoopExiting => demo.on_exit(),
-                Event::Resumed => demo.on_resume(),
-                Event::Suspended => demo.on_suspend(),
+                Event::LoopExiting => demo.on_exit().unwrap(),
+                Event::Resumed     => demo.on_resume().unwrap(),
+                Event::Suspended   => demo.on_suspend().unwrap(),
                 _ => {}
             }
         })

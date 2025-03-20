@@ -1,3 +1,6 @@
+#[macro_use] extern crate glsl_to_spirv_macros;
+#[macro_use] extern crate glsl_to_spirv_macros_impl;
+
 mod demo_runner;
 mod triangle_demo;
 mod vkal;

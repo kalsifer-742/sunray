@@ -7,6 +7,7 @@ pub struct Queue {
     queue: vk::Queue,
     render_complete_sem: vk::Semaphore,
     present_complete_sem: vk::Semaphore,
+    submit_complete_fence: vk::Fence,
     device: Rc<vkal::Device>,
     swapchain: vk::SwapchainKHR,
 }
@@ -18,7 +19,12 @@ impl Queue {
         let render_complete_sem = semaphore()?;
         let present_complete_sem = semaphore()?;
 
-        Ok(Self { queue, render_complete_sem, present_complete_sem, device, swapchain })
+        let fence_flags = vk::FenceCreateFlags::SIGNALED; // SIGNALED flag to start with a flag that's already signaled
+        let fence_info = vk::FenceCreateInfo::default()
+            .flags(fence_flags);
+        let submit_complete_fence = unsafe { device.create_fence(&fence_info, vkal::NO_ALLOCATOR) }?;
+
+        Ok(Self { queue, render_complete_sem, present_complete_sem, device, swapchain, submit_complete_fence })
     }
 
     #[allow(dead_code)]
@@ -28,6 +34,11 @@ impl Queue {
     }
 
     pub fn acquire_next_image(&self) -> Result<u32, Box<dyn Error>> {
+        unsafe {
+            self.device.wait_for_fences(&[ self.submit_complete_fence ], true, u64::MAX)?;
+            self.device.reset_fences(&[ self.submit_complete_fence ])?;
+        }
+
         let dev = self.device.get_swapchain_device();
         let (index, _suboptimal_surface) = unsafe {
             dev.acquire_next_image(self.swapchain, u64::MAX, self.present_complete_sem, vk::Fence::null())
@@ -46,7 +57,8 @@ impl Queue {
             .command_buffers(&command_buffers)
             .signal_semaphores(&signal_semaphores);
 
-        unsafe { self.device.queue_submit(self.queue, &[submit_info], vk::Fence::null()) }?;
+        unsafe { self.device.queue_submit(self.queue, &[submit_info], self.submit_complete_fence) }?;
+
         Ok(())
     }
 
@@ -59,7 +71,7 @@ impl Queue {
             .command_buffers(&command_buffers)
             .signal_semaphores(&[]);
 
-        unsafe { self.device.queue_submit(self.queue, &[submit_info], vk::Fence::null()) }?;
+        unsafe { self.device.queue_submit(self.queue, &[submit_info], self.submit_complete_fence) }?;
         Ok(())
     }
 
@@ -84,6 +96,7 @@ impl Drop for Queue {
         unsafe {
             self.device.destroy_semaphore(self.render_complete_sem, vkal::NO_ALLOCATOR);
             self.device.destroy_semaphore(self.present_complete_sem, vkal::NO_ALLOCATOR);
+            self.device.destroy_fence(self.submit_complete_fence, vkal::NO_ALLOCATOR);
         }
     }
 }

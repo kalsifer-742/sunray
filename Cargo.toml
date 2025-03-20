@@ -15,5 +15,5 @@ ash-window = "0.13"
 winit = { version = "0.29", features = ["rwh_06"] }
 
 # for compile-time shader compilation to spirv
-#glsl-to-spirv-macros = "0.1.1"
-#glsl-to-spirv-macros-impl = "0.1.0"
+glsl-to-spirv-macros = "0.1.1"
+glsl-to-spirv-macros-impl = "0.1.0"

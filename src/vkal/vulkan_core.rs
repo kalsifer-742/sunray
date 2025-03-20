@@ -1,12 +1,18 @@
 mod cmd_pool;
 mod instance;
 mod logical_device;
+mod pipeline;
+mod render_pass;
+mod shader;
 mod surface;
 mod swapchain;
 
 pub use cmd_pool::*;
 pub use instance::*;
 pub use logical_device::*;
+pub use pipeline::*;
+pub use render_pass::*;
+pub use shader::*;
 pub use surface::*;
 pub use swapchain::*;
 
@@ -91,8 +97,10 @@ impl VulkanCore {
     }
 
     pub fn get_cmd_pool_mut(&mut self) -> &mut vkal::CmdPool { &mut self.cmd_pool }
+
     pub fn get_cmd_pool(&self) -> &vkal::CmdPool { &self.cmd_pool }
-    pub fn get_device(&self) -> &vkal::Device { &self.device }
+
+    pub fn get_device(&self) -> &Rc<vkal::Device> { &self.device }
 
     pub fn get_swapchain(&self) -> &vkal::Swapchain { &self.swapchain }
 
