@@ -23,6 +23,16 @@ impl PhysicalDeviceInfo {
 
         let physdevs = unsafe { instance.enumerate_physical_devices() }?;
         for (pd_idx, physdev) in physdevs.into_iter().enumerate() {
+            let props = unsafe { instance.get_physical_device_properties(physdev) };
+            //discard CPU and OTHER devices
+            if ![
+                    vk::PhysicalDeviceType::DISCRETE_GPU,
+                    vk::PhysicalDeviceType::INTEGRATED_GPU,
+                    vk::PhysicalDeviceType::VIRTUAL_GPU,
+            ].contains(&props.device_type) {
+                continue;
+            }
+
             let qf_props = unsafe { instance.get_physical_device_queue_family_properties(physdev) };
             let mut biggest_qf_with_surface_and_gfx = None;
             let mut biggest_qf_with_surface_and_gfx_size = 0;
@@ -57,7 +67,7 @@ impl PhysicalDeviceInfo {
 
         let selected_physdev_idx = selected_physdev_idx.ok_or("No suitable physical device detected!")?;
 
-        // print_physical_devices_info(instance, surface_instance, surface)?;
+        // print_physical_devices_info(instance, surface_instance, **surface)?;
 
         println!("selected physical device {}, queue family {}", selected_physdev_idx, selected_physdev_qf);
 
@@ -111,6 +121,7 @@ fn print_physical_devices_info(instance: &ash::Instance, surface_instance: &ash:
 
         println!("device {pd_idx}, name: {:?}", props.device_name_as_c_str()?);
         println!("    device id: {}", props.device_id);
+        println!("    device type: {:?}", props.device_type);
         println!("    api version: {}.{}.{}", vk::api_version_major(props.api_version), vk::api_version_minor(props.api_version), vk::api_version_patch(props.api_version));
 
         let q_families_props = unsafe { instance.get_physical_device_queue_family_properties(physdev) };

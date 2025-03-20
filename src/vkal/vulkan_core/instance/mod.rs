@@ -53,6 +53,7 @@ impl Instance {
         let layer_names_no_validation : &[&CStr] = &[];
         let validation_layer_name = c"VK_LAYER_KHRONOS_validation";
 
+
         let mut layers_names_raw: Vec<*const c_char> = layer_names_no_validation
             .iter()
             .map(|name| name.as_ptr())
@@ -70,6 +71,8 @@ impl Instance {
         if params.enable_debug_utils {
             extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
         }
+        extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
+        // extension_names.push(ash::khr::timeline_semaphore::NAME.as_ptr());
 
         let instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&application_info)

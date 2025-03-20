@@ -29,7 +29,8 @@ impl Swapchain {
             .min_image_count(number_of_images)
             .present_mode(physdev_info.presentation_mode)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT) //enable TRANSFER_DST for post-processing
+            // TRANSFER_DST is necessary for clearing, COLOR_ATTACHMENT (or one a few others) is necessary for creating image views
+            .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE) // only 1 qf can work on an image of the swapchain
             .queue_family_indices(&qf_indices)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE) // ignore the alpha channel for now
@@ -50,9 +51,9 @@ impl Swapchain {
                 .subresource_range(vk::ImageSubresourceRange{
                     aspect_mask: vk::ImageAspectFlags::COLOR, // which aspects are included in the view
                     base_mip_level: 0,
-                    level_count: 1, // for now no mipmapping, so only 1 level
+                    level_count: 1, // no mipmapping (for now), so only 1 level
                     base_array_layer: 0,
-                    layer_count: 1, // for now no layering, so only 1 layer
+                    layer_count: 1, // no layering (for now), so only 1 layer
                 })
             ;
 

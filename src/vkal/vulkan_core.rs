@@ -26,13 +26,13 @@ pub struct VulkanCore {
         dependencies (listed in the comments to the right), without
         having to use ManuallyDrop<T> & implement Drop.
     */
+    queue: vkal::Queue,                      // -> LogicalDevice, CmdPool (soft), Swapchain (soft)
     cmd_pool: vkal::CmdPool,                 // -> LogicalDevice
     swapchain: vkal::Swapchain,              // -> Instance, Surface, LogicalDevice
-    device: Rc<vkal::Device>,     // -> Instance, Surface(through PhysicalDevice)
+    device: Rc<vkal::Device>,                // -> Instance, Surface (through PhysicalDevice)
     surface: vkal::Surface,                  // -> Instance
-    instance: Rc<vkal::Instance>,                // -> Entry
+    instance: Rc<vkal::Instance>,            // -> Entry
     entry: ash::Entry,
-    queue: vkal::Queue,
 }
 
 impl VulkanCore {
@@ -58,11 +58,12 @@ impl VulkanCore {
 
         let queue = vkal::Queue::new(Rc::clone(&device), ll_swapchain, gfx_qf, q_idx)?;
 
-        Self::print_sizes();
+        // Self::print_sizes();
 
         Ok(VulkanCore { entry, instance, surface, device, swapchain, cmd_pool, queue })
     }
 
+    #[allow(dead_code)]
     pub fn print_sizes() {
         println!("sizeof ash:: Instance:               {}", size_of::<ash ::Instance>());
         println!("sizeof vkal::Instance:               {}", size_of::<vkal::Instance>());

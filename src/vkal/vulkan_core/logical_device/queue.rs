@@ -79,6 +79,8 @@ impl Queue {
 }
 impl Drop for Queue {
     fn drop(&mut self) {
+        self.wait_idle().unwrap();
+
         unsafe {
             self.device.destroy_semaphore(self.render_complete_sem, vkal::NO_ALLOCATOR);
             self.device.destroy_semaphore(self.present_complete_sem, vkal::NO_ALLOCATOR);

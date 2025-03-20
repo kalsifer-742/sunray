@@ -4,4 +4,4 @@
 
 - Vulkan drivers
 
-- vulkan validation layers (`extra/vulkan-validation-layers` in the arch repos)
+- vulkan validation layers (`extra/vulkan-validation-layers` in the arch repos, `vulkan-validationlayers` in apt)
