@@ -10,3 +10,8 @@ keywords = ["gamedev", "graphics"]
 categories = ["graphics", "hardware-support", "game-development"]
 
 [dependencies]
+vulkano = "0.35.1"
+vulkano-shaders = "0.35.0"
+
+[profile.dev]
+opt-level = 1 
