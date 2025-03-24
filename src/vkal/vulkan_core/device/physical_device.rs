@@ -11,14 +11,16 @@ pub struct PhysicalDeviceInfo {
     pub format: vk::SurfaceFormatKHR,
     pub surface_capabilities: vk::SurfaceCapabilitiesKHR,
     pub presentation_mode: vk::PresentModeKHR,
+    pub memory_props: vk::PhysicalDeviceMemoryProperties,
 }
 
 impl PhysicalDeviceInfo {
     pub fn new(instance: &vkal::Instance, surface: &vkal::Surface) -> Result<Self, Box<dyn Error>> {
         let surface_instance = instance.surface_instance();
         let mut selected_physdev_idx = None;
+        let mut selected_physdev_mem_props = None;
         let mut selected_physdev_memsize = 0;
-        let mut selected_physdev_qf = 0;
+        let mut selected_physdev_qf = 0u32;
         let mut selected_physdev_qf_size = 0;
 
         let physdevs = unsafe { instance.enumerate_physical_devices() }?;
@@ -41,18 +43,20 @@ impl PhysicalDeviceInfo {
                 if supports_surface && qf_props.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                     if biggest_qf_with_surface_and_gfx_size < qf_props.queue_count {
                         biggest_qf_with_surface_and_gfx_size = qf_props.queue_count;
-                        biggest_qf_with_surface_and_gfx = Some(qf_idx);
+                        biggest_qf_with_surface_and_gfx = Some(qf_idx as u32);
                     }
                 }
             }
             let selected_qf =
-                if let Some(qf) = biggest_qf_with_surface_and_gfx { qf } else { continue; }; // unsuitable device
+                if let Some(qf) = biggest_qf_with_surface_and_gfx {
+                    qf
+                } else { continue; }; // unsuitable device
             let selected_qf_size = biggest_qf_with_surface_and_gfx_size;
 
-            let memory_props = unsafe { instance.get_physical_device_memory_properties(physdev) };
+            let mem_props = unsafe { instance.get_physical_device_memory_properties(physdev) };
 
             let max_device_local_heap_size =
-                memory_props.memory_heaps_as_slice().iter()
+                mem_props.memory_heaps_as_slice().iter()
                     .filter(|h| h.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
                     .map(|h| h.size)
                     .max().unwrap_or(0);
@@ -60,18 +64,20 @@ impl PhysicalDeviceInfo {
             if selected_physdev_memsize < max_device_local_heap_size {
                 selected_physdev_memsize = max_device_local_heap_size;
                 selected_physdev_idx = Some(pd_idx);
+                selected_physdev_mem_props = Some(mem_props);
                 selected_physdev_qf = selected_qf;
                 selected_physdev_qf_size = selected_qf_size;
             }
         }
 
-        let selected_physdev_idx = selected_physdev_idx.ok_or("No suitable physical device detected!")?;
+        let physical_dev_idx = selected_physdev_idx.ok_or("No suitable physical device detected!")?;
+        let memory_props = selected_physdev_mem_props.unwrap();
 
         // print_physical_devices_info(instance, surface_instance, **surface)?;
 
-        println!("selected physical device {}, queue family {}", selected_physdev_idx, selected_physdev_qf);
+        println!("selected physical device {}, queue family {}", physical_dev_idx, selected_physdev_qf);
 
-        let selected_physdev = Self::get_physical_device_from_index(selected_physdev_idx, instance)?;
+        let selected_physdev = Self::get_physical_device_from_index(physical_dev_idx, instance)?;
 
         let surface_formats = unsafe { surface_instance.get_physical_device_surface_formats(selected_physdev, surface.inner()) }?;
         let mut surface_format = &surface_formats[0];
@@ -93,8 +99,9 @@ impl PhysicalDeviceInfo {
         };
 
         Ok(Self {
-            physical_dev_idx: selected_physdev_idx, best_queue_family_for_graphics: selected_physdev_qf as u32,
-            number_of_queues: selected_physdev_qf_size, format: surface_format.clone(), surface_capabilities, presentation_mode,
+            physical_dev_idx, best_queue_family_for_graphics: selected_physdev_qf as u32,
+            number_of_queues: selected_physdev_qf_size, format: surface_format.clone(),
+            surface_capabilities, presentation_mode, memory_props
         })
     }
 

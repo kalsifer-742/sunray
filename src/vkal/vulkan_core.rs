@@ -1,15 +1,17 @@
+mod buffer;
 mod cmd_pool;
 mod instance;
-mod logical_device;
+mod device;
 mod pipeline;
 mod render_pass;
 mod shader;
 mod surface;
 mod swapchain;
 
+pub use buffer::*;
 pub use cmd_pool::*;
 pub use instance::*;
-pub use logical_device::*;
+pub use device::*;
 pub use pipeline::*;
 pub use render_pass::*;
 pub use shader::*;

@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::rc::Rc;
 use ash::vk;
+use ash::vk::Fence;
 use crate::vkal;
 
 pub struct Queue {
@@ -71,7 +72,7 @@ impl Queue {
             .command_buffers(&command_buffers)
             .signal_semaphores(&[]);
 
-        unsafe { self.device.queue_submit(self.queue, &[submit_info], self.submit_complete_fence) }?;
+        unsafe { self.device.queue_submit(self.queue, &[submit_info], Fence::null()) }?;
         Ok(())
     }
 
