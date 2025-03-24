@@ -1,5 +1,8 @@
 use vulkano::{
-    device::{physical::PhysicalDeviceType, DeviceExtensions, QueueFlags},
+    device::{
+        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo,
+        QueueFlags,
+    },
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     swapchain::Surface,
     VulkanLibrary,
@@ -26,6 +29,9 @@ fn main() {
         khr_swapchain: true,
         ..DeviceExtensions::empty()
     };
+
+    //i don't like this, iterators are cool but at this point it's too much for me
+    //When the demo is finished i will probably refactor
     let (physical_device, queue_family_index) = instance
         .enumerate_physical_devices()
         .unwrap()
@@ -50,4 +56,20 @@ fn main() {
             _ => 4,
         })
         .unwrap();
+
+    //logical/software device, queues associated to the device
+    let (device, mut queues) = Device::new(
+        physical_device,
+        DeviceCreateInfo {
+            enabled_extensions: device_extensions,
+            queue_create_infos: vec![QueueCreateInfo {
+                queue_family_index,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let queue = queues.next().unwrap();
 }
