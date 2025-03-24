@@ -12,7 +12,7 @@ categories = ["graphics", "hardware-support", "game-development"]
 [dependencies]
 vulkano = "0.35.1"
 vulkano-shaders = "0.35.0"
-image = "0.25.5"
+winit = "0.30.9"
 
 [profile.dev]
 opt-level = 1 
