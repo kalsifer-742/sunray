@@ -1,4 +1,4 @@
-pub mod mapped_memory;
+mod mapped_memory;
 
 use mapped_memory::*;
 
@@ -30,6 +30,12 @@ impl Buffer {
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER;
 
         Self::new::<V>(device, size, mem_flags, usage_flags)
+    }
+    pub fn new_uniform<V>(device: Rc<vkal::Device>) -> vkal::Result<Self> {
+        let mem_flags = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let usage_flags = vk::BufferUsageFlags::UNIFORM_BUFFER;
+
+        Self::new::<V>(device, 1, mem_flags, usage_flags)
     }
 
     pub fn new_staging_from_data<V: Copy>(device: Rc<vkal::Device>, data: &[V]) -> vkal::Result<Self> {

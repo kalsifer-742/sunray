@@ -1,9 +1,9 @@
-#[macro_use] extern crate glsl_to_spirv_macros;
-#[macro_use] extern crate glsl_to_spirv_macros_impl;
+#[macro_use] extern crate inline_spirv;
 
 mod demo_runner;
 mod triangle_demo;
 mod vkal;
+mod vec3;
 
 use std::error::Error;
 use crate::demo_runner::DemoRunner;

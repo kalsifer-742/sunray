@@ -1,33 +1,45 @@
 use std::error::Error;
+use std::ops::Range;
 use std::rc::Rc;
+use std::time::SystemTime;
 use ash::vk;
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use crate::demo_runner::Demo;
 use crate::vkal;
+use crate::vec3::Vec3;
+use nalgebra as na;
+
+const VERTEX_SHADER : &[u32] = include_spirv!{"shaders/vert.glsl", vert, glsl};
+const FRAGMENT_SHADER : &[u32] = include_spirv!{"shaders/frag.glsl", frag, glsl};
+
 
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
+#[repr(C, align(16))]
 struct Vertex {
-    pub pos: [f32; 3],
+    pub pos: Vec3,
+    pub color: Vec3,
 }
 
-const VERTICES: [Vertex;3] = [
-    Vertex { pos: [ 0.0,  0.7, 1.0 ] },
-    Vertex { pos: [ 0.7, -0.7, 1.0 ] },
-    Vertex { pos: [-0.7, -0.7, 1.0 ] },
-];
-
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Uniforms {
+    transform: na::Matrix4<f32>
+}
 
 
 #[allow(dead_code)]
 pub struct TriangleDemo {
     bufcpy_cmd_buf: vk::CommandBuffer,
     vertex_buffer: vkal::Buffer,
+    uniform_buffers: Vec<vkal::Buffer>,
     render_pass: vkal::RenderPass,
     pipeline: vkal::Pipeline,
     shader: vkal::Shader,
     vk_core: vkal::VulkanCore,
+
+    start_time: SystemTime,
+    frame_count: usize,
 }
 
 impl TriangleDemo {
@@ -47,37 +59,90 @@ impl TriangleDemo {
 
         let render_pass = vkal::RenderPass::new(Rc::clone(vk_core.get_device()), vk_core.get_swapchain(), num_imgs)?;
 
-        let shader = vkal::Shader::new(Rc::clone(vk_core.get_device()),
-            glsl_vs!{r#"
-                #version 460
-                vec2 positions[3] = vec2[3](vec2(-0.7, 0.7), vec2(0.7, 0.7), vec2(0.0, -0.7));
-                vec3 colors[3] = vec3[3](vec3(1,0,0), vec3(0,1,0), vec3(0,0,1));
-                layout(location = 0) out vec3 color;
-                void main() {
-                    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-                    color = colors[gl_VertexIndex];
-                }
-            "#}.to_u32_slice().unwrap(),
-            glsl_fs!{r#"
-                #version 460
-                layout(location = 0) in vec3 incolor;
-                layout(location=0) out vec4 outcolor;
-                void main() {
-                    outcolor = vec4(incolor, 1.0);
-                }
-            "#}.to_u32_slice().unwrap())?;
-        let pipeline = vkal::Pipeline::new(Rc::clone(vk_core.get_device()), &render_pass, &shader)?;
+        let shader = vkal::Shader::new(Rc::clone(vk_core.get_device()), &VERTEX_SHADER, &FRAGMENT_SHADER)?;
 
-        Self::record_command_buffers(&vk_core, &render_pass, &pipeline)?;
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+        ];
+        let layout = vk::DescriptorSetLayoutCreateInfo::default()
+            .flags(vk::DescriptorSetLayoutCreateFlags::default())
+            .bindings(&bindings);
+        let layouts = vec![layout; num_imgs];
+
+        let pipeline = vkal::Pipeline::new(Rc::clone(vk_core.get_device()), &render_pass, &shader, &layouts)?;
 
         let bufcpy_cmd_buf = vkal::cmd_buffer::new(cmd_pool, vk_core.get_device())?;
         vk_core.get_cmd_pool_mut().get_buffers_mut().push(bufcpy_cmd_buf);
 
-        let staging_buffer = vkal::Buffer::new_staging_from_data::<Vertex>(Rc::clone(vk_core.get_device()), &VERTICES)?;
-        let vertex_buffer = vkal::Buffer::new_vertex::<Vertex>(Rc::clone(vk_core.get_device()), VERTICES.len())?;
+        let vertices : [Vertex;3] = [
+            Vertex { pos: Vec3::new( 0.0,  0.7, 0.0), color: Vec3::new(1.0, 0.0, 0.0), }, // top center
+            Vertex { pos: Vec3::new( 0.7, -0.7, 0.0), color: Vec3::new(0.0, 1.0, 0.0), }, // bottom right
+            Vertex { pos: Vec3::new(-0.7, -0.7, 0.0), color: Vec3::new(0.0, 0.0, 1.0), }, // bottom left
+        ];
+        let staging_buffer = vkal::Buffer::new_staging_from_data::<Vertex>(Rc::clone(vk_core.get_device()), &vertices)?;
+        let vertex_buffer = vkal::Buffer::new_vertex::<Vertex>(Rc::clone(vk_core.get_device()), vertices.len())?;
         Self::copy_buffer(&vk_core, bufcpy_cmd_buf, &staging_buffer, &vertex_buffer)?;
+        drop(staging_buffer);
 
-        Ok(Self { bufcpy_cmd_buf, vk_core, render_pass, pipeline, shader, vertex_buffer })
+        let uniform_buffers = (0..num_imgs).map(|_|
+            vkal::Buffer::new_uniform::<Uniforms>(Rc::clone(vk_core.get_device()))
+        ).collect::<Result<Vec<_>, _>>()?;
+
+        //update the descriptor sets with the vertex buffer
+        let buffer_info_vb = vk::DescriptorBufferInfo::default()
+            .buffer(*vertex_buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+        let buffer_infos_vb = [buffer_info_vb];
+
+        let buffer_infos_ub = (0..num_imgs).map(|i| {
+            vk::DescriptorBufferInfo::default()
+                .buffer(*uniform_buffers[i])
+                .offset(0)
+                .range(vk::WHOLE_SIZE)
+        }).collect::<Vec<_>>();
+
+        let write_desc_sets = pipeline.get_descriptor_sets().iter().map(|desc_set| {
+            vk::WriteDescriptorSet::default()
+                .dst_set(*desc_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&buffer_infos_vb)
+        }).chain(
+            pipeline.get_descriptor_sets().iter().enumerate().map(|(idx, desc_set)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*desc_set)
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_count(1)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(&buffer_infos_ub[idx..=idx])
+            })
+        ).collect::<Vec<_>>();
+
+        // do this before recording the command buffers
+        unsafe { vk_core.get_device().update_descriptor_sets(&write_desc_sets, &[]) };
+
+        Self::record_command_buffers(&vk_core, &render_pass, &pipeline, 0..num_imgs)?;
+
+        let start_time = SystemTime::now();
+
+        Ok(Self {
+            start_time, frame_count: 0,
+            bufcpy_cmd_buf, vk_core, render_pass, pipeline, shader,
+            vertex_buffer, uniform_buffers
+        })
     }
 
     fn copy_buffer(vk_core: &vkal::VulkanCore, bufcpy_cmd_buf: vk::CommandBuffer, src: &vkal::Buffer, dst: &vkal::Buffer) -> vkal::Result<()>{
@@ -88,7 +153,7 @@ impl TriangleDemo {
         unsafe { device.begin_command_buffer(bufcpy_cmd_buf, &begin_info) }?;
 
         let regions = [
-            vk::BufferCopy::default()
+            k::BufferCopy::default()
                 .size(src.byte_size())
                 .src_offset(0)
                 .dst_offset(0)
@@ -103,20 +168,21 @@ impl TriangleDemo {
 
         Ok(())
     }
-    fn record_command_buffers(vk_core: &vkal::VulkanCore, render_pass: &vkal::RenderPass, pipeline: &vkal::Pipeline) -> Result<(), Box<dyn Error>> {
+    fn record_command_buffers(vk_core: &vkal::VulkanCore, render_pass: &vkal::RenderPass, pipeline: &vkal::Pipeline, buf_indices: Range<usize>) -> Result<(), Box<dyn Error>> {
         let device = vk_core.get_device();
 
         let cmd_buf_usage_flags = vk::CommandBufferUsageFlags::SIMULTANEOUS_USE;
         let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(cmd_buf_usage_flags);
 
-        let cmd_bufs = vk_core.get_cmd_pool().get_buffers();
+        let cmd_bufs = &vk_core.get_cmd_pool().get_buffers()[buf_indices];
 
         let clear_values = {
             let mut clear_value = vk::ClearValue::default();
             let mut clear_color = vk::ClearColorValue::default();
+            //set the clear color to black
             for i in 0..3 {
-                unsafe { clear_color.float32[i] = 0.04; }
+                unsafe { clear_color.float32[i] = 0.; }
             }
             clear_value.color = clear_color;
             [clear_value]
@@ -141,7 +207,7 @@ impl TriangleDemo {
 
                 device.cmd_begin_render_pass(cmd_buf, &render_pass_begin_info, vk::SubpassContents::INLINE);
 
-                device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::GRAPHICS, **pipeline);
+                pipeline.cmd_bind(cmd_buf, vk::PipelineBindPoint::GRAPHICS, i);
 
                 device.cmd_draw(cmd_buf, 3, 1, 0,0);
 
@@ -153,32 +219,52 @@ impl TriangleDemo {
         Ok(())
     }
 
+    fn update_uniform_buffer(&mut self, img_idx: u32, uniforms: &Uniforms) -> vkal::Result<()>{
+        let buf = &mut self.uniform_buffers[img_idx as usize];
+
+        let mapped_memory = buf.map::<Uniforms>()?;
+        mapped_memory[0] = uniforms.clone();
+        buf.unmap::<Uniforms>();
+        Ok(())
+    }
+
 }
 impl Demo for TriangleDemo {
     fn render(&mut self) -> Result<(), Box<dyn Error>> {
         let image_index = self.vk_core.get_queue().acquire_next_image()?;
+        let time = SystemTime::now().duration_since(self.start_time).unwrap().as_millis() as f32 / 1000.0;
+
+        let uniforms = {
+            let up = na::Vector3::new(0.0, 1.0, 0.0);
+            let up = na::Unit::<na::Vector3<f32>>::new_unchecked(up);
+            let model = na::Matrix4::<f32>::from_axis_angle(&up, time); // rotate
+            let model = na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, -4.0)) * model; // translate
+
+            let surface_size = self.vk_core.get_device().get_physical_device_info().surface_capabilities.min_image_extent;
+
+            let projection = na::Matrix4::new_perspective(surface_size.width as f32 / surface_size.height as f32, 100.0, 0.01, 100.0);
+
+            let transform = projection * model;
+
+            Uniforms { transform }
+        };
+
+        self.update_uniform_buffer(image_index, &uniforms)?;
         self.vk_core.get_queue().submit_async(self.vk_core.get_cmd_pool().get_buffers()[image_index as usize])?;
         self.vk_core.get_queue().present(image_index)?;
+
+        self.frame_count += 1;
         Ok(())
     }
     fn on_exit(&mut self) -> Result<(), Box<dyn Error>> {
+        let end_time = SystemTime::now();
+        let frame_count = self.frame_count;
+        let runtime = end_time.duration_since(self.start_time).unwrap().as_millis() as f64 / 1000.0;
+        let avg_framerate = self.frame_count as f64 / runtime;
+
+        println!("{frame_count} frames / {runtime} seconds = {avg_framerate} fps");
+
         self.vk_core.get_queue().wait_idle()?;
         Ok(())
-    }
-}
-
-trait ToU32Slice {
-    fn to_u32_slice(&self) -> Option<&[u32]>;
-}
-impl ToU32Slice for [u8] {
-    fn to_u32_slice(&self) -> Option<&[u32]> {
-        let (pre, ret, post) = unsafe { self.align_to::<u32>() };
-        if !pre.is_empty() {
-            None
-        } else if !post.is_empty() {
-            None
-        } else {
-            Some(ret)
-        }
     }
 }
