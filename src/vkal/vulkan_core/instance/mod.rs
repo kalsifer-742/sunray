@@ -20,7 +20,7 @@ impl<'a> Default for InstanceParams<'a> {
         Self {
             app_name: "",
             vk_api_version: vk::make_api_version(0,1,0,0),
-            enable_debug_utils: true,
+            enable_debug_utils: cfg!(debug_assertions),
         }
     }
 }
@@ -71,8 +71,6 @@ impl Instance {
         if params.enable_debug_utils {
             extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
         }
-        extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
-        // extension_names.push(ash::khr::timeline_semaphore::NAME.as_ptr());
 
         let instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&application_info)

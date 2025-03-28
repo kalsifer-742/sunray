@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -11,8 +10,6 @@ use nalgebra as na;
 
 const VERTEX_SHADER : &[u32] = include_spirv!{"shaders/vert.glsl", vert, glsl};
 const FRAGMENT_SHADER : &[u32] = include_spirv!{"shaders/frag.glsl", frag, glsl};
-
-
 
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
@@ -40,15 +37,20 @@ pub struct TriangleDemo {
 
     start_time: SystemTime,
     frame_count: usize,
+    last_lap_time: SystemTime,
+    translation: na::Matrix4<f32>,
+    projection: na::Matrix4<f32>,
 }
 
 impl TriangleDemo {
-    pub fn new(app_name: &str, w: &winit::window::Window) -> Result<Self, Box<dyn Error>> {
+    pub fn new(app_name: &str, w: &winit::window::Window) -> vkal::Result<Self> {
         let params = vkal::InstanceParams {
             app_name,
             ..Default::default()
         };
-        let mut vk_core = vkal::VulkanCore::new(params, w.display_handle()?.as_raw(), w.window_handle()?.as_raw())?;
+        let mut vk_core = vkal::VulkanCore::new(params,
+            w.display_handle().unwrap().as_raw(),
+            w.window_handle().unwrap().as_raw())?;
 
         let cmd_pool = vk_core.get_cmd_pool().as_raw();
 
@@ -135,11 +137,20 @@ impl TriangleDemo {
         unsafe { vk_core.get_device().update_descriptor_sets(&write_desc_sets, &[]) };
 
         Self::record_command_buffers(&vk_core, &render_pass, &pipeline, 0..num_imgs)?;
+        let translation = na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, -4.0));
+        let aspect = {
+            let extent = vk_core.get_device().get_physical_device_info().surface_capabilities.min_image_extent;
+            extent.width as f32 / extent.height as f32
+        };
+        let projection = na::Matrix4::new_perspective(aspect, 100.0, 0.01, 100.0);
 
         let start_time = SystemTime::now();
+        let last_lap_time = start_time;
+
 
         Ok(Self {
-            start_time, frame_count: 0,
+            start_time, last_lap_time, frame_count: 0,
+            translation, projection,
             bufcpy_cmd_buf, vk_core, render_pass, pipeline, shader,
             vertex_buffer, uniform_buffers
         })
@@ -150,10 +161,12 @@ impl TriangleDemo {
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-        unsafe { device.begin_command_buffer(bufcpy_cmd_buf, &begin_info) }?;
+        unsafe { device.begin_command_buffer(bufcpy_cmd_buf, &begin_info) }.unwrap();
+
+        debug_assert!(src.byte_size() <= dst.byte_size());
 
         let regions = [
-            k::BufferCopy::default()
+            vk::BufferCopy::default()
                 .size(src.byte_size())
                 .src_offset(0)
                 .dst_offset(0)
@@ -161,14 +174,14 @@ impl TriangleDemo {
 
         unsafe { device.cmd_copy_buffer(bufcpy_cmd_buf, **src, **dst, &regions) };
 
-        unsafe { device.end_command_buffer(bufcpy_cmd_buf) }?;
+        unsafe { device.end_command_buffer(bufcpy_cmd_buf) }.unwrap();
 
         vk_core.get_queue().submit_sync(bufcpy_cmd_buf)?;
-        vk_core.get_queue().wait_idle()?;
+        // vk_core.get_queue().wait_idle()?;
 
         Ok(())
     }
-    fn record_command_buffers(vk_core: &vkal::VulkanCore, render_pass: &vkal::RenderPass, pipeline: &vkal::Pipeline, buf_indices: Range<usize>) -> Result<(), Box<dyn Error>> {
+    fn record_command_buffers(vk_core: &vkal::VulkanCore, render_pass: &vkal::RenderPass, pipeline: &vkal::Pipeline, buf_indices: Range<usize>) -> vkal::Result<()> {
         let device = vk_core.get_device();
 
         let cmd_buf_usage_flags = vk::CommandBufferUsageFlags::SIMULTANEOUS_USE;
@@ -203,7 +216,7 @@ impl TriangleDemo {
             render_pass_begin_info.framebuffer = *render_pass.get_framebuffer(i);
 
             unsafe {
-                device.begin_command_buffer(cmd_buf, &cmd_buf_begin_info)?;
+                device.begin_command_buffer(cmd_buf, &cmd_buf_begin_info).unwrap();
 
                 device.cmd_begin_render_pass(cmd_buf, &render_pass_begin_info, vk::SubpassContents::INLINE);
 
@@ -213,7 +226,7 @@ impl TriangleDemo {
 
                 device.cmd_end_render_pass(cmd_buf);
 
-                device.end_command_buffer(cmd_buf)?;
+                device.end_command_buffer(cmd_buf).unwrap();
             }
         }
         Ok(())
@@ -230,37 +243,59 @@ impl TriangleDemo {
 
 }
 impl Demo for TriangleDemo {
-    fn render(&mut self) -> Result<(), Box<dyn Error>> {
-        let image_index = self.vk_core.get_queue().acquire_next_image()?;
+    fn render(&mut self) -> vkal::Result<()> {
+        let img_idx = self.vk_core.get_queue().acquire_next_image().unwrap();
         let time = SystemTime::now().duration_since(self.start_time).unwrap().as_millis() as f32 / 1000.0;
 
+        // at every lap (a few frames) print avg framerate over the last lap
+        const LAP_FRAMES: usize = 5_000; // the number of frames in a lap
+        if (self.frame_count+1) % LAP_FRAMES == 0 {
+            let now = SystemTime::now();
+            let elapsed = now.duration_since(self.last_lap_time).unwrap().as_millis() as f32 / 1000.0;
+            let framerate = LAP_FRAMES as f32 / elapsed;
+            println!("current framerate: {framerate} fps");
+
+            self.last_lap_time = now;
+        }
+
         let uniforms = {
-            let up = na::Vector3::new(0.0, 1.0, 0.0);
-            let up = na::Unit::<na::Vector3<f32>>::new_unchecked(up);
-            let model = na::Matrix4::<f32>::from_axis_angle(&up, time); // rotate
-            let model = na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, -4.0)) * model; // translate
+            let angle = time * 3.1415926 / 4.0;
+            // let up = na::Vector3::y_axis();
+            // let rotation = na::Matrix4::<f32>::from_axis_angle(&up, time); // rotate
 
-            let surface_size = self.vk_core.get_device().get_physical_device_info().surface_capabilities.min_image_extent;
+            let sin = angle.sin();
+            let cos = angle.cos();
+            let rotation = na::Matrix4::<f32>::new(
+                cos,    0.0,    sin,    0.0,
+                0.0,    1.0,    0.0,    0.0,
+                sin,    0.0,    cos,    0.0,
+                0.0,    0.0,    0.0,    1.0,
+            );
+            let model = self.translation * rotation;
 
-            let projection = na::Matrix4::new_perspective(surface_size.width as f32 / surface_size.height as f32, 100.0, 0.01, 100.0);
-
-            let transform = projection * model;
+            let transform = self.projection * model;
 
             Uniforms { transform }
         };
 
-        self.update_uniform_buffer(image_index, &uniforms)?;
-        self.vk_core.get_queue().submit_async(self.vk_core.get_cmd_pool().get_buffers()[image_index as usize])?;
-        self.vk_core.get_queue().present(image_index)?;
+
+        self.update_uniform_buffer(img_idx, &uniforms)?;
+        let cmd_buf = self.vk_core.get_cmd_pool().get_buffers()[img_idx as usize];
+        self.vk_core.get_queue().submit_async(cmd_buf)?;
+
+        self.vk_core.get_queue().present(img_idx)?;
 
         self.frame_count += 1;
+
         Ok(())
+
     }
-    fn on_exit(&mut self) -> Result<(), Box<dyn Error>> {
+    fn on_exit(&mut self) -> vkal::Result<()> {
         let end_time = SystemTime::now();
         let frame_count = self.frame_count;
         let runtime = end_time.duration_since(self.start_time).unwrap().as_millis() as f64 / 1000.0;
         let avg_framerate = self.frame_count as f64 / runtime;
+
 
         println!("{frame_count} frames / {runtime} seconds = {avg_framerate} fps");
 

@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::rc::Rc;
 use crate::vkal;
 use ash::vk;
@@ -9,7 +8,7 @@ pub struct Shader {
 }
 
 impl Shader {
-    pub fn new(device: Rc<vkal::Device>, vert_code: &[u32], frag_code: &[u32]) -> Result<Self, Box<dyn Error>> {
+    pub fn new(device: Rc<vkal::Device>, vert_code: &[u32], frag_code: &[u32]) -> vkal::Result<Self> {
         let frag_info  = vk::ShaderModuleCreateInfo::default()
             .code(&frag_code)
             .flags(vk::ShaderModuleCreateFlags::empty());

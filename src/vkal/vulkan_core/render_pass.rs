@@ -10,7 +10,7 @@ pub struct RenderPass {
     framebuffers: Vec<vk::Framebuffer>,
 }
 impl RenderPass {
-    pub fn new(device: Rc<vkal::Device>, swapchain: &vkal::Swapchain, num_imgs: usize) -> Result<Self, Box<dyn Error>> {
+    pub fn new(device: Rc<vkal::Device>, swapchain: &vkal::Swapchain, num_imgs: usize) -> vkal::Result<Self> {
         let attachment_descriptions = [
             vk::AttachmentDescription::default()
             .format(device.get_physical_device_info().format.format)

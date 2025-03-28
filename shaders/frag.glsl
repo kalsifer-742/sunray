@@ -1,5 +1,5 @@
 #version 460
-layout(location = 1) in vec3 incolor;
+layout(location=0) in vec3 incolor;
 layout(location=0) out vec4 outcolor;
 void main() {
     float levels = 10.0; // quantization levels

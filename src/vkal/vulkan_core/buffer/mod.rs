@@ -2,7 +2,6 @@ mod mapped_memory;
 
 use mapped_memory::*;
 
-use std::error::Error;
 use std::ops::Deref;
 use std::rc::Rc;
 use ash::vk;
@@ -57,7 +56,7 @@ impl Buffer {
                 .usage(usage_flags)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-            unsafe { device.create_buffer(&buf_info, vkal::NO_ALLOCATOR) }?
+            unsafe { device.create_buffer(&buf_info, vkal::NO_ALLOCATOR) }.unwrap()
         };
 
         let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
@@ -79,7 +78,8 @@ impl Buffer {
                 }
             }
             if idx < 0 {
-                return Err(Box::<dyn Error>::from("Vertex Buffer Memory Type not supported!"));
+                panic!("Vertex Buffer Memory Type not supported!");
+                // return Err(Box::<dyn Error>::from("Vertex Buffer Memory Type not supported!"));
             }
 
             idx as u32

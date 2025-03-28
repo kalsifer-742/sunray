@@ -19,8 +19,6 @@ pub use surface::*;
 pub use swapchain::*;
 
 use crate::vkal;
-use std::error::Error;
-use std::ops::Deref;
 use std::rc::Rc;
 use ash::{ext, khr, vk};
 use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -37,14 +35,14 @@ pub struct VulkanCore {
     queue: vkal::Queue,                      // -> LogicalDevice, CmdPool (soft), Swapchain (soft)
     cmd_pool: vkal::CmdPool,                 // -> LogicalDevice
     swapchain: vkal::Swapchain,              // -> Instance, Surface, LogicalDevice
-    device: Rc<vkal::Device>,                // -> Instance, Surface (through PhysicalDevice)
+    device: Rc<vkal::Device>,               // -> Instance, Surface (through PhysicalDevice)
     surface: vkal::Surface,                  // -> Instance
-    instance: Rc<vkal::Instance>,            // -> Entry
+    instance: Rc<vkal::Instance>,           // -> Entry
     entry: ash::Entry,
 }
 
 impl VulkanCore {
-    pub fn new(instance_params: vkal::InstanceParams, display_handle: RawDisplayHandle, window_handle: RawWindowHandle) -> Result<Self, Box<dyn Error>> {
+    pub fn new(instance_params: vkal::InstanceParams, display_handle: RawDisplayHandle, window_handle: RawWindowHandle) -> vkal::Result<Self> {
         let entry = ash::Entry::linked();
 
         let instance = vkal::Instance::new(instance_params, &entry, display_handle)?;
@@ -60,11 +58,10 @@ impl VulkanCore {
         let cmd_pool = vkal::CmdPool::new(Rc::clone(&device), vk::CommandPoolCreateFlags::empty())?;
 
 
-        let ll_swapchain = swapchain.deref().clone();
         let gfx_qf = device.get_physical_device_info().best_queue_family_for_graphics;
         let q_idx = 0;
 
-        let queue = vkal::Queue::new(Rc::clone(&device), ll_swapchain, gfx_qf, q_idx)?;
+        let queue = vkal::Queue::new(Rc::clone(&device), &swapchain, gfx_qf, q_idx)?;
 
         // Self::print_sizes();
 
