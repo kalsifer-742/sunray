@@ -33,6 +33,8 @@ mod render_context;
 struct MyVertex {
     #[format(R32G32B32_SFLOAT)]
     position: [f32; 3],
+    #[format(R32G32B32_SFLOAT)] //correct?
+    color: [f32; 3],
 }
 
 mod vs {
@@ -106,12 +108,15 @@ impl App {
         let vertices = [
             MyVertex {
                 position: [-0.5, 0.5, 0.0],
+                color: [1.0, 0.0, 0.0],
             },
             MyVertex {
                 position: [0.5, 0.5, 0.0],
+                color: [0.0, 1.0, 0.0],
             },
             MyVertex {
                 position: [0.0, -0.5, 0.0],
+                color: [0.0, 0.0, 1.0],
             },
         ];
 
