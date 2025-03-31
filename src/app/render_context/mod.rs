@@ -1,11 +1,25 @@
 use std::sync::Arc;
 
 use vulkano::{
+    buffer::BufferContents,
     device::Device,
     image::{view::ImageView, Image},
     instance::Instance,
-    pipeline::graphics::viewport::Viewport,
-    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
+    pipeline::{
+        graphics::{
+            color_blend::{ColorBlendAttachmentState, ColorBlendState},
+            input_assembly::InputAssemblyState,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            vertex_input::{self, Vertex, VertexDefinition},
+            viewport::{self, Viewport, ViewportState},
+            GraphicsPipelineCreateInfo,
+        },
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
+    },
+    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
+    shader::ShaderModule,
     single_pass_renderpass,
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
     sync::{self, GpuFuture},
@@ -17,6 +31,7 @@ pub struct RenderContext {
     pub swapchain: Arc<Swapchain>,
     pub render_pass: Arc<RenderPass>,
     pub framebuffers: Vec<Arc<Framebuffer>>,
+    pub pipeline: Arc<GraphicsPipeline>,
     pub recreate_swapchain: bool,
     pub previous_future: Option<Box<dyn GpuFuture>>,
 }
@@ -26,14 +41,17 @@ impl RenderContext {
         let surface = Surface::from_window(instance.clone(), window.clone()).unwrap();
         let (swapchain, images) = Self::get_swapchain(device.clone(), surface, window.clone());
         let render_pass = Self::get_render_pass(device.clone(), swapchain.clone());
-
-        //subpass and graphics pipeline
-
-        let _viewport = Viewport {
+        let viewport = Viewport {
             offset: [0.0, 0.0],
             extent: window.inner_size().into(),
             depth_range: 0.0..=1.0,
         };
+
+        let vs = super::vs::load(device.clone()).unwrap();
+        let fs = super::fs::load(device.clone()).unwrap();
+
+        let pipeline = Self::get_pipeline(device.clone(), render_pass.clone(), viewport, vs, fs);
+
         let framebuffers = Self::get_framebuffers(&images, render_pass.clone());
         let previous_future = Some(Box::new(sync::now(device.clone())) as Box<dyn GpuFuture>);
 
@@ -42,6 +60,7 @@ impl RenderContext {
             swapchain,
             render_pass,
             framebuffers,
+            pipeline,
             recreate_swapchain: false,
             previous_future,
         }
@@ -93,6 +112,59 @@ impl RenderContext {
             pass: {
                 color: [color],
                 depth_stencil: {},
+            },
+        )
+        .unwrap()
+    }
+
+    fn get_pipeline(
+        device: Arc<Device>,
+        render_pass: Arc<RenderPass>,
+        viewport: Viewport,
+        vs: Arc<ShaderModule>,
+        fs: Arc<ShaderModule>,
+    ) -> Arc<GraphicsPipeline> {
+        let vs = vs.entry_point("main").unwrap();
+        let fs = fs.entry_point("main").unwrap();
+
+        let vertex_input_state = super::MyVertex::per_vertex().definition(&vs).unwrap();
+
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
+
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                .into_pipeline_layout_create_info(device.clone())
+                .unwrap(),
+        )
+        .unwrap();
+
+        let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
+
+        GraphicsPipeline::new(
+            device.clone(),
+            None,
+            GraphicsPipelineCreateInfo {
+                stages: stages.into_iter().collect(),
+                vertex_input_state: Some(vertex_input_state),
+                //tell vulkan ho input should be assembled into privates...
+                //The dafault is a triangle list which is what we are passing
+                input_assembly_state: Some(InputAssemblyState::default()),
+                viewport_state: Some(ViewportState {
+                    viewports: [viewport].into_iter().collect(),
+                    ..Default::default()
+                }),
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+                color_blend_state: Some(ColorBlendState::with_attachment_states(
+                    subpass.num_color_attachments(),
+                    ColorBlendAttachmentState::default(),
+                )),
+                subpass: Some(subpass.into()),
+                ..GraphicsPipelineCreateInfo::layout(layout)
             },
         )
         .unwrap()

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use render_context::RenderContext;
 use vulkano::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage,
         RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
@@ -10,7 +11,10 @@ use vulkano::{
         physical::{PhysicalDevice, PhysicalDeviceType},
         Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
     },
+    impl_vertex_member,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    pipeline::graphics::vertex_input::Vertex,
     swapchain::{self, Surface, SwapchainPresentInfo},
     sync::{self, GpuFuture},
     Validated, VulkanError, VulkanLibrary,
@@ -24,10 +28,32 @@ use winit::{
 
 mod render_context;
 
+#[derive(Vertex, BufferContents)]
+#[repr(C)] //memory stuff? what is this?
+struct MyVertex {
+    #[format(R32G32B32_SFLOAT)]
+    position: [f32; 3],
+}
+
+mod vs {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        path: "assets/shader.vert"
+    }
+}
+
+mod fs {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        path: "assets/shader.frag"
+    }
+}
+
 pub struct App {
     instance: Arc<Instance>,
     device: Arc<Device>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    vertex_buffer: Subbuffer<[MyVertex]>,
     queue: Arc<Queue>,
     render_context: Option<RenderContext>,
 }
@@ -75,12 +101,42 @@ impl App {
             device.clone(),
             Default::default(),
         ));
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+
+        let vertices = [
+            MyVertex {
+                position: [-0.5, 0.5, 0.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, 0.0],
+            },
+            MyVertex {
+                position: [0.0, -0.5, 0.0],
+            },
+        ];
+
+        let vertex_buffer = Buffer::from_iter(
+            memory_allocator,
+            BufferCreateInfo {
+                usage: BufferUsage::VERTEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            vertices,
+        )
+        .unwrap();
+
         let queue = queues.next().unwrap(); //selecting a random queue
 
         Self {
             instance,
             device,
             command_buffer_allocator,
+            vertex_buffer,
             queue,
             render_context: None,
         }
@@ -198,6 +254,15 @@ impl ApplicationHandler for App {
                         },
                     )
                     .unwrap()
+                    .bind_pipeline_graphics(render_context.pipeline.clone())
+                    .unwrap()
+                    .bind_vertex_buffers(0, self.vertex_buffer.clone())
+                    .unwrap();
+
+                unsafe { command_buffer_builder.draw(self.vertex_buffer.len() as u32, 1, 0, 0) }
+                    .unwrap();
+
+                command_buffer_builder
                     .end_render_pass(Default::default())
                     .unwrap();
 
