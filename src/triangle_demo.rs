@@ -27,7 +27,6 @@ struct Uniforms {
 
 #[allow(dead_code)]
 pub struct TriangleDemo {
-    bufcpy_cmd_buf: vk::CommandBuffer,
     vertex_buffer: vkal::Buffer,
     uniform_buffers: Vec<vkal::Buffer>,
     render_pass: vkal::RenderPass,
@@ -37,7 +36,8 @@ pub struct TriangleDemo {
 
     start_time: SystemTime,
     frame_count: usize,
-    last_lap_time: SystemTime,
+    last_sec_time: SystemTime,
+    last_sec_frame_count: usize,
     translation: na::Matrix4<f32>,
     projection: na::Matrix4<f32>,
 }
@@ -82,8 +82,6 @@ impl TriangleDemo {
 
         let pipeline = vkal::Pipeline::new(Rc::clone(vk_core.get_device()), &render_pass, &shader, &layouts)?;
 
-        let bufcpy_cmd_buf = vkal::cmd_buffer::new(cmd_pool, vk_core.get_device())?;
-        vk_core.get_cmd_pool_mut().get_buffers_mut().push(bufcpy_cmd_buf);
 
         let vertices : [Vertex;3] = [
             Vertex { pos: Vec3::new( 0.0,  0.7, 0.0), color: Vec3::new(1.0, 0.0, 0.0), }, // top center
@@ -92,7 +90,7 @@ impl TriangleDemo {
         ];
         let staging_buffer = vkal::Buffer::new_staging_from_data::<Vertex>(Rc::clone(vk_core.get_device()), &vertices)?;
         let vertex_buffer = vkal::Buffer::new_vertex::<Vertex>(Rc::clone(vk_core.get_device()), vertices.len())?;
-        Self::copy_buffer(&vk_core, bufcpy_cmd_buf, &staging_buffer, &vertex_buffer)?;
+        Self::copy_buffer(&vk_core, &staging_buffer, &vertex_buffer)?;
         drop(staging_buffer);
 
         let uniform_buffers = (0..num_imgs).map(|_|
@@ -145,18 +143,20 @@ impl TriangleDemo {
         let projection = na::Matrix4::new_perspective(aspect, 100.0, 0.01, 100.0);
 
         let start_time = SystemTime::now();
-        let last_lap_time = start_time;
+        let last_sec_time = start_time;
 
 
         Ok(Self {
-            start_time, last_lap_time, frame_count: 0,
+            start_time, last_sec_time, frame_count: 0, last_sec_frame_count: 0,
             translation, projection,
-            bufcpy_cmd_buf, vk_core, render_pass, pipeline, shader,
+            vk_core, render_pass, pipeline, shader,
             vertex_buffer, uniform_buffers
         })
     }
 
-    fn copy_buffer(vk_core: &vkal::VulkanCore, bufcpy_cmd_buf: vk::CommandBuffer, src: &vkal::Buffer, dst: &vkal::Buffer) -> vkal::Result<()>{
+    fn copy_buffer(vk_core: &vkal::VulkanCore, src: &vkal::Buffer, dst: &vkal::Buffer) -> vkal::Result<()>{
+        let bufcpy_cmd_buf = vkal::cmd_buffer::new(**vk_core.get_cmd_pool(), vk_core.get_device())?;
+
         let device = vk_core.get_device();
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -177,6 +177,9 @@ impl TriangleDemo {
         unsafe { device.end_command_buffer(bufcpy_cmd_buf) }.unwrap();
 
         vk_core.get_queue().submit_sync(bufcpy_cmd_buf)?;
+        unsafe { device.device_wait_idle() }?;
+
+        unsafe { device.free_command_buffers(**vk_core.get_cmd_pool(), &[bufcpy_cmd_buf]) };
         // vk_core.get_queue().wait_idle()?;
 
         Ok(())
@@ -244,22 +247,25 @@ impl TriangleDemo {
 }
 impl Demo for TriangleDemo {
     fn render(&mut self) -> vkal::Result<()> {
-        let img_idx = self.vk_core.get_queue().acquire_next_image().unwrap();
+        let swapchain = **self.vk_core.get_swapchain();
+
+        let img_idx = self.vk_core.get_queue().acquire_next_image(swapchain)?;
         let time = SystemTime::now().duration_since(self.start_time).unwrap().as_millis() as f32 / 1000.0;
 
-        // at every lap (a few frames) print avg framerate over the last lap
-        const LAP_FRAMES: usize = 5_000; // the number of frames in a lap
-        if (self.frame_count+1) % LAP_FRAMES == 0 {
-            let now = SystemTime::now();
-            let elapsed = now.duration_since(self.last_lap_time).unwrap().as_millis() as f32 / 1000.0;
-            let framerate = LAP_FRAMES as f32 / elapsed;
+        // every second print avg framerate over the last second
+        let now = SystemTime::now();
+        let elapsed = now.duration_since(self.last_sec_time).unwrap().as_millis() as f32 / 1000.0;
+        if elapsed > 1.0 {
+            let frames = self.frame_count - self.last_sec_frame_count;
+            let framerate = frames as f32 / elapsed;
             println!("current framerate: {framerate} fps");
 
-            self.last_lap_time = now;
+            self.last_sec_time = now;
+            self.last_sec_frame_count = self.frame_count;
         }
 
         let uniforms = {
-            let angle = time * 3.1415926 / 4.0;
+            let angle = time * std::f32::consts::PI / 4.0;
             // let up = na::Vector3::y_axis();
             // let rotation = na::Matrix4::<f32>::from_axis_angle(&up, time); // rotate
 
@@ -283,7 +289,7 @@ impl Demo for TriangleDemo {
         let cmd_buf = self.vk_core.get_cmd_pool().get_buffers()[img_idx as usize];
         self.vk_core.get_queue().submit_async(cmd_buf)?;
 
-        self.vk_core.get_queue().present(img_idx)?;
+        self.vk_core.get_queue_mut().present(swapchain, img_idx)?;
 
         self.frame_count += 1;
 
