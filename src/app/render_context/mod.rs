@@ -144,6 +144,7 @@ impl RenderContext {
 
         let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
 
+        //i don't understand completely the black background
         GraphicsPipeline::new(
             device.clone(),
             None,

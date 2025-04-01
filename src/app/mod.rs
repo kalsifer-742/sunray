@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::{convert::identity, f32::consts::FRAC_PI_2, sync::Arc, time::Instant};
+
+use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, Rotation3, Vector3};
 
 use render_context::RenderContext;
 use vulkano::{
@@ -7,14 +9,20 @@ use vulkano::{
         allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage,
         RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
     },
+    descriptor_set::{
+        allocator::StandardDescriptorSetAllocator, DescriptorSet, WriteDescriptorSet,
+    },
     device::{
         physical::{PhysicalDevice, PhysicalDeviceType},
         Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
     },
     impl_vertex_member,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::graphics::vertex_input::Vertex,
+    memory::allocator::{
+        AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
+        StandardMemoryAllocator,
+    },
+    pipeline::{graphics::vertex_input::Vertex, Pipeline, PipelineBindPoint},
     swapchain::{self, Surface, SwapchainPresentInfo},
     sync::{self, GpuFuture},
     Validated, VulkanError, VulkanLibrary,
@@ -40,7 +48,7 @@ struct MyVertex {
 mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "assets/shader.vert"
+        path: "assets/shader.vert",
     }
 }
 
@@ -51,13 +59,48 @@ mod fs {
     }
 }
 
+struct MVP {
+    model: Matrix4<f32>,
+    view: Matrix4<f32>,
+    projection: Matrix4<f32>,
+}
+
+impl MVP {
+    fn new() -> MVP {
+        Self {
+            model: Matrix4::identity(),
+            view: Matrix4::identity(),
+            projection: Matrix4::identity(),
+        }
+    }
+
+    fn get_uniform(&self) -> MyUniform {
+        MyUniform {
+            model: self.model.into(),
+            view: self.view.into(),
+            projection: self.projection.into(),
+        }
+    }
+}
+
+#[derive(BufferContents)]
+#[repr(C)] //memory stuff? what is this?
+struct MyUniform {
+    model: [[f32; 4]; 4],
+    view: [[f32; 4]; 4],
+    projection: [[f32; 4]; 4],
+}
+
 pub struct App {
     instance: Arc<Instance>,
     device: Arc<Device>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    vertex_buffer: Subbuffer<[MyVertex]>,
+    memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     queue: Arc<Queue>,
+    vertex_buffer: Subbuffer<[MyVertex]>,
     render_context: Option<RenderContext>,
+    rotation_start: Instant,
+    mvp: MVP,
 }
 
 impl App {
@@ -105,6 +148,8 @@ impl App {
         ));
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
+        let queue = queues.next().unwrap(); //selecting a random queue
+
         let vertices = [
             MyVertex {
                 position: [-0.5, 0.5, 0.0],
@@ -121,7 +166,7 @@ impl App {
         ];
 
         let vertex_buffer = Buffer::from_iter(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
@@ -135,15 +180,23 @@ impl App {
         )
         .unwrap();
 
-        let queue = queues.next().unwrap(); //selecting a random queue
+        let mut mvp = MVP::new();
+        let eye = Point3::new(0.0, 0.0, 2.0);
+        let target = Point3::new(0.0, 0.0, 0.0);
+        mvp.view = Isometry3::look_at_rh(&eye, &target, &Vector3::y()).into();
+        // mvp.model = Isometry3::new(Vector3::x(), nalgebra::zero()).into();
+        // mvp.projection = Perspective3::new(16.0 / 9.0, 3.14 / 2.0, 0.00, 100.0).into();
 
         Self {
             instance,
             device,
             command_buffer_allocator,
-            vertex_buffer,
+            memory_allocator,
             queue,
+            vertex_buffer,
             render_context: None,
+            rotation_start: Instant::now(),
+            mvp,
         }
     }
 
@@ -187,6 +240,10 @@ impl ApplicationHandler for App {
                 .unwrap(),
         );
 
+        let image_extent: [u32; 2] = window.inner_size().into();
+        let aspect_ratio = image_extent[0] as f32 / image_extent[1] as f32;
+        self.mvp.projection = Perspective3::new(aspect_ratio, 3.14 / 2.0, 0.00, 100.0).into();
+
         self.render_context = Some(RenderContext::new(
             self.device.clone(),
             self.instance.clone(),
@@ -207,7 +264,7 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(_) => {
-                () //set swapchain as invalid
+                //render_context.recreate_swapchain = true;
             }
             WindowEvent::RedrawRequested => {
                 render_context
@@ -218,6 +275,11 @@ impl ApplicationHandler for App {
 
                 if render_context.recreate_swapchain {
                     render_context.recreate_swapchain();
+
+                    let image_extent: [u32; 2] = render_context.window.inner_size().into();
+                    let aspect_ratio = image_extent[0] as f32 / image_extent[1] as f32;
+                    self.mvp.projection =
+                        Perspective3::new(aspect_ratio, 3.14 / 2.0, 0.00, 100.0).into();
                 }
 
                 let (image_index, suboptimal, acquire_future) = match swapchain::acquire_next_image(render_context.swapchain.clone(), None)
@@ -237,10 +299,50 @@ impl ApplicationHandler for App {
 
                 let clear_values = vec![Some([0.0, 0.0, 0.0, 1.0].into())];
 
+                let elapsed = self.rotation_start.elapsed().as_secs_f32();
+                let rotation = Matrix4::from_axis_angle(&Vector3::y_axis(), elapsed);
+                self.mvp.model = rotation;
+                let uniform_data = self.mvp.get_uniform();
+
+                let uniform_buffer = Buffer::from_data(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::UNIFORM_BUFFER,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                        ..Default::default()
+                    },
+                    uniform_data,
+                )
+                .unwrap();
+
                 let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
                     self.command_buffer_allocator.clone(),
                     self.queue.queue_family_index(),
                     CommandBufferUsage::OneTimeSubmit,
+                )
+                .unwrap();
+
+                let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+                    self.device.clone(),
+                    Default::default(),
+                ));
+
+                let descriptor_set_layout = render_context
+                    .pipeline
+                    .layout()
+                    .set_layouts()
+                    .get(0)
+                    .unwrap();
+
+                let descriptor_set = DescriptorSet::new(
+                    descriptor_set_allocator,
+                    descriptor_set_layout.clone(),
+                    [WriteDescriptorSet::buffer(0, uniform_buffer.clone())], // 0 is the binding
+                    [],
                 )
                 .unwrap();
 
@@ -260,6 +362,13 @@ impl ApplicationHandler for App {
                     )
                     .unwrap()
                     .bind_pipeline_graphics(render_context.pipeline.clone())
+                    .unwrap()
+                    .bind_descriptor_sets(
+                        PipelineBindPoint::Graphics,
+                        render_context.pipeline.layout().clone(),
+                        0,
+                        descriptor_set,
+                    )
                     .unwrap()
                     .bind_vertex_buffers(0, self.vertex_buffer.clone())
                     .unwrap();
@@ -303,6 +412,8 @@ impl ApplicationHandler for App {
                         panic!("failed to flush future: {e}");
                     }
                 }
+
+                render_context.window.request_redraw();
             }
             _ => (),
         }
