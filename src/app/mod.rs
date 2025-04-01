@@ -1,4 +1,4 @@
-use std::{convert::identity, f32::consts::FRAC_PI_2, sync::Arc, time::Instant};
+use std::{alloc::System, convert::identity, f32::consts::FRAC_PI_2, sync::Arc, time::Instant};
 
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, Rotation3, Vector3};
 
@@ -99,8 +99,9 @@ pub struct App {
     queue: Arc<Queue>,
     vertex_buffer: Subbuffer<[MyVertex]>,
     render_context: Option<RenderContext>,
-    rotation_start: Instant,
+    start_time: Instant,
     mvp: MVP,
+    frame_counter: usize,
 }
 
 impl App {
@@ -195,8 +196,9 @@ impl App {
             queue,
             vertex_buffer,
             render_context: None,
-            rotation_start: Instant::now(),
+            start_time: Instant::now(),
             mvp,
+            frame_counter: 0,
         }
     }
 
@@ -261,12 +263,22 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
+                let avg_fps = self.frame_counter as f32 / self.start_time.elapsed().as_secs_f32();
+                println!(
+                    "frames: {} | seconds {} | avg_fps {}",
+                    self.frame_counter,
+                    self.start_time.elapsed().as_secs_f32(),
+                    avg_fps
+                );
+
                 event_loop.exit();
             }
             WindowEvent::Resized(_) => {
                 //render_context.recreate_swapchain = true;
             }
             WindowEvent::RedrawRequested => {
+                self.frame_counter += 1;
+
                 render_context
                     .previous_future
                     .as_mut()
@@ -299,7 +311,7 @@ impl ApplicationHandler for App {
 
                 let clear_values = vec![Some([0.0, 0.0, 0.0, 1.0].into())];
 
-                let elapsed = self.rotation_start.elapsed().as_secs_f32();
+                let elapsed = self.start_time.elapsed().as_secs_f32();
                 let rotation = Matrix4::from_axis_angle(&Vector3::y_axis(), elapsed);
                 self.mvp.model = rotation;
                 let uniform_data = self.mvp.get_uniform();
