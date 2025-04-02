@@ -1,6 +1,6 @@
-use std::{alloc::System, convert::identity, f32::consts::FRAC_PI_2, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
-use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, Rotation3, Vector3};
+use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, Vector3};
 
 use render_context::RenderContext;
 use vulkano::{
@@ -16,7 +16,6 @@ use vulkano::{
         physical::{PhysicalDevice, PhysicalDeviceType},
         Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
     },
-    impl_vertex_member,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::{
         AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,

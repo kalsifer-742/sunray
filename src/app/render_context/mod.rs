@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use vulkano::{
-    buffer::BufferContents,
     device::Device,
     image::{view::ImageView, Image},
     instance::Instance,
@@ -11,8 +10,8 @@ use vulkano::{
             input_assembly::InputAssemblyState,
             multisample::MultisampleState,
             rasterization::RasterizationState,
-            vertex_input::{self, Vertex, VertexDefinition},
-            viewport::{self, Viewport, ViewportState},
+            vertex_input::{Vertex, VertexDefinition},
+            viewport::{Viewport, ViewportState},
             GraphicsPipelineCreateInfo,
         },
         layout::PipelineDescriptorSetLayoutCreateInfo,
