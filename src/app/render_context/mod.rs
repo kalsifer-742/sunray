@@ -23,6 +23,7 @@ use vulkano::{
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
     sync::{self, GpuFuture},
 };
+use vulkano::image::ImageUsage;
 use winit::window::Window;
 
 pub struct RenderContext {
@@ -82,6 +83,15 @@ impl RenderContext {
             .unwrap()[0]
             .0;
 
+        // circled_square code
+        // let surface_formats = device.physical_device().surface_formats(&surface, Default::default()).unwrap();
+        // let mut image_format= surface_formats[0].0;
+        // for (format, color_space) in surface_formats.iter() {
+        //     if *format == Format::B8G8R8A8_SRGB && *color_space == ColorSpace::SrgbNonLinear {
+        //         image_format = *format;
+        //     }
+        // }
+
         Swapchain::new(
             device,
             surface,
@@ -89,7 +99,7 @@ impl RenderContext {
                 min_image_count: caps.min_image_count,
                 image_format,
                 image_extent: window.inner_size().into(),
-                image_usage: caps.supported_usage_flags,
+                image_usage: ImageUsage::COLOR_ATTACHMENT,
                 composite_alpha: alpha,
                 ..Default::default()
             },
