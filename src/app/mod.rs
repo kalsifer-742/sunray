@@ -273,7 +273,7 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(_) => {
-                //render_context.recreate_swapchain = true;
+                render_context.recreate_swapchain = true;
             }
             WindowEvent::RedrawRequested => {
                 self.frame_counter += 1;

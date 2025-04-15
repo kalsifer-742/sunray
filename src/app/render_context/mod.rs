@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use vulkano::image::ImageUsage;
 use vulkano::{
     device::Device,
     image::{view::ImageView, Image},
@@ -23,7 +24,6 @@ use vulkano::{
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
     sync::{self, GpuFuture},
 };
-use vulkano::image::ImageUsage;
 use winit::window::Window;
 
 pub struct RenderContext {
@@ -75,7 +75,7 @@ impl RenderContext {
             .physical_device()
             .surface_capabilities(&surface, Default::default())
             .unwrap();
-        let alpha = caps.supported_composite_alpha.into_iter().next().unwrap(); //another strange type wich i don't understand
+        let alpha = caps.supported_composite_alpha.into_iter().next().unwrap(); //another strange type which i don't understand
 
         let image_format = device
             .physical_device()
