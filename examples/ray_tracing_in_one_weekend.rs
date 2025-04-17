@@ -20,9 +20,12 @@ impl ApplicationHandler for App {
                 .unwrap(),
         );
 
-        //TODO implement enumerate_required_extensions
-        let required_extensions =
-            ash_window::enumerate_required_extensions(self.window.unwrap().raw_display_handle()); //mixmatched version problem
+        let required_extensions = sunray::utils::enumerate_required_extensions(
+            self.window.as_ref().unwrap().raw_display_handle(),
+        )
+        .unwrap();
+
+        let _core = Core::new(required_extensions).unwrap();
     }
 
     fn window_event(
