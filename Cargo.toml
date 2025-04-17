@@ -11,7 +11,6 @@ categories = ["graphics", "hardware-support", "game-development"]
 
 [dependencies]
 ash = { version = "0.38.0", features = ["linked"] }
+winit = { version = "0.30.9", features = ["rwh_05"] } #make it a feature
 
 [dev-dependencies]
-ash-window = "0.13.0"
-winit = { version = "0.30.9", features = ["rwh_05"] }
