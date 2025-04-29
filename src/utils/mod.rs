@@ -1,11 +1,12 @@
 use std::ffi::c_char;
 
 use ash::{
+    Entry, Instance,
     ext::metal_surface,
     khr::{android_surface, surface, wayland_surface, win32_surface, xcb_surface, xlib_surface},
     vk,
 };
-use winit::raw_window_handle_05::RawDisplayHandle;
+use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 use crate::error::{SrError, SrResult};
 
@@ -70,4 +71,142 @@ pub fn enumerate_required_extensions(
     };
 
     Ok(extensions)
+}
+
+/// Create a surface from a raw display and window handle.
+
+///
+
+/// `instance` must have created with platform specific surface extensions enabled, acquired
+
+/// through [`enumerate_required_extensions()`].
+
+///
+
+/// # Safety
+
+///
+
+/// There is a [parent/child relation] between [`Instance`] and [`Entry`], and the resulting
+
+/// [`vk::SurfaceKHR`].  The application must not [destroy][Instance::destroy_instance()] these
+
+/// parent objects before first [destroying][surface::Instance::destroy_surface()] the returned
+
+/// [`vk::SurfaceKHR`] child object.  [`vk::SurfaceKHR`] does _not_ implement [drop][drop()]
+
+/// semantics and can only be destroyed via [`destroy_surface()`][surface::Instance::destroy_surface()].
+
+///
+
+/// See the [`Entry::create_instance()`] documentation for more destruction ordering rules on
+
+/// [`Instance`].
+
+///
+
+/// The window represented by `window_handle` must be associated with the display connection
+
+/// in `display_handle`.
+
+///
+
+/// `window_handle` and `display_handle` must be associated with a valid window and display
+
+/// connection, which must not be destroyed for the lifetime of the returned [`vk::SurfaceKHR`].
+
+///
+
+/// [parent/child relation]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#fundamentals-objectmodel-lifetime
+
+pub unsafe fn create_surface(
+    entry: &Entry,
+    instance: &Instance,
+    display_handle: RawDisplayHandle,
+    window_handle: RawWindowHandle,
+    allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
+) -> SrResult<vk::SurfaceKHR> {
+    match (display_handle, window_handle) {
+        (RawDisplayHandle::Windows(_), RawWindowHandle::Win32(window)) => {
+            let surface_desc = vk::Win32SurfaceCreateInfoKHR::default()
+                .hwnd(window.hwnd as isize)
+                .hinstance(window.hinstance as isize);
+
+            let surface_fn = win32_surface::Instance::new(entry, instance);
+
+            unsafe { surface_fn.create_win32_surface(&surface_desc, allocation_callbacks) }
+        }
+
+        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(window)) => {
+            let surface_desc = vk::WaylandSurfaceCreateInfoKHR::default()
+                .display(display.display)
+                .surface(window.surface);
+
+            let surface_fn = wayland_surface::Instance::new(entry, instance);
+
+            unsafe { surface_fn.create_wayland_surface(&surface_desc, allocation_callbacks) }
+        }
+
+        (RawDisplayHandle::Xlib(display), RawWindowHandle::Xlib(window)) => {
+            let surface_desc = vk::XlibSurfaceCreateInfoKHR::default()
+                .dpy(display.display)
+                .window(window.window);
+
+            let surface_fn = xlib_surface::Instance::new(entry, instance);
+
+            unsafe { surface_fn.create_xlib_surface(&surface_desc, allocation_callbacks) }
+        }
+
+        (RawDisplayHandle::Xcb(display), RawWindowHandle::Xcb(window)) => {
+            let surface_desc = vk::XcbSurfaceCreateInfoKHR::default()
+                .connection(display.connection)
+                .window(window.window);
+
+            let surface_fn = xcb_surface::Instance::new(entry, instance);
+
+            unsafe { surface_fn.create_xcb_surface(&surface_desc, allocation_callbacks) }
+        }
+
+        (RawDisplayHandle::Android(_), RawWindowHandle::AndroidNdk(window)) => {
+            let surface_desc =
+                vk::AndroidSurfaceCreateInfoKHR::default().window(window.a_native_window);
+
+            let surface_fn = android_surface::Instance::new(entry, instance);
+
+            unsafe { surface_fn.create_android_surface(&surface_desc, allocation_callbacks) }
+        }
+
+        #[cfg(target_os = "macos")]
+        (RawDisplayHandle::AppKit(_), RawWindowHandle::AppKit(window)) => {
+            use raw_window_metal::{Layer, appkit};
+
+            let layer = match appkit::metal_layer_from_handle(window) {
+                Layer::Existing(layer) | Layer::Allocated(layer) => layer.cast(),
+            };
+
+            let surface_desc = vk::MetalSurfaceCreateInfoEXT::default().layer(&*layer);
+
+            let surface_fn = metal_surface::Instance::new(entry, instance);
+
+            unsafe { surface_fn.create_metal_surface(&surface_desc, allocation_callbacks) }
+        }
+
+        #[cfg(target_os = "ios")]
+        (RawDisplayHandle::UiKit(_), RawWindowHandle::UiKit(window)) => {
+            use raw_window_metal::{Layer, uikit};
+
+            let layer = match uikit::metal_layer_from_handle(window) {
+                Layer::Existing(layer) | Layer::Allocated(layer) => layer.cast(),
+            };
+
+            let surface_desc = vk::MetalSurfaceCreateInfoEXT::default().layer(&*layer);
+
+            let surface_fn = metal_surface::Instance::new(entry, instance);
+
+            unsafe { surface_fn.create_metal_surface(&surface_desc, allocation_callbacks) }
+        }
+
+        _ => Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT),
+    }
+    .map_err(SrError::from_vk_result)
 }
