@@ -3,7 +3,7 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{self, ControlFlow, EventLoop},
-    raw_window_handle_05::HasRawDisplayHandle,
+    raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle},
     window::Window,
 };
 
@@ -20,12 +20,12 @@ impl ApplicationHandler for App {
                 .unwrap(),
         );
 
-        let required_extensions = sunray::utils::enumerate_required_extensions(
+        let _core = Core::new(
+            self.window.as_ref().unwrap().inner_size().into(),
+            self.window.as_ref().unwrap().raw_window_handle(),
             self.window.as_ref().unwrap().raw_display_handle(),
         )
         .unwrap();
-
-        let _core = Core::new(required_extensions).unwrap();
     }
 
     fn window_event(
