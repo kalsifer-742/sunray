@@ -12,6 +12,7 @@ use ash::{
         SwapchainKHR, make_api_version,
     },
 };
+use ash::vk::{AccelerationStructureKHR, Image, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR};
 use error::{SrError, SrResult};
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
@@ -65,15 +66,18 @@ impl SwapchainSupportDetails {
 //TODO: impl Drop
 
 pub struct Core {
-    entry: ash::Entry,
-    instance: ash::Instance,
+    entry: Entry,
+    instance: Instance,
     device: ash::Device,
     queue: ash::vk::Queue,
-    surface: ash::vk::SurfaceKHR,
+    surface: SurfaceKHR,
+    images: Vec<Image>,
+    image_views: Vec<ImageView>,
+    physical_device_rt_pipeline_properties : PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>, // 'static because pNext is null
 }
 
 impl Core {
-    const VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
+    const VALIDATION_LAYER_NAME: &'static CStr = c"VK_LAYER_KHRONOS_validation";
 
     // TODO: currently take for granted that the user has a window, no support for offline rendering
     pub fn new(
@@ -119,7 +123,7 @@ impl Core {
             khr::deferred_host_operations::NAME,
             khr::swapchain::NAME, // TODO: not needed for offline rendering
         ]
-        .map(CStr::as_ptr);
+            .map(CStr::as_ptr);
 
         let physical_devices =
             unsafe { instance.enumerate_physical_devices() }.map_err(SrError::from_vk_result)?;
@@ -133,10 +137,10 @@ impl Core {
 
                 device_type == PhysicalDeviceType::DISCRETE_GPU
                     && Self::check_device_extension_support(
-                        &instance,
-                        *physical_device,
-                        required_device_extensions,
-                    )
+                    &instance,
+                    *physical_device,
+                    required_device_extensions,
+                )
             })
             .filter_map(|physical_device| {
                 let swapchain_support_details =
@@ -234,9 +238,9 @@ impl Core {
             .max_image_count
             > 0
             && image_count
-                > swapchain_support_details
-                    .surface_capabilities
-                    .max_image_count
+            > swapchain_support_details
+            .surface_capabilities
+            .max_image_count
         {
             image_count = swapchain_support_details
                 .surface_capabilities
@@ -296,13 +300,30 @@ impl Core {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        let physical_device_rt_pipeline_properties = {
+            let mut physical_device_rt_pipeline_properties = PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+
+            let mut physical_device_properties = PhysicalDeviceProperties2::default()
+                .push_next(&mut physical_device_rt_pipeline_properties);
+
+            unsafe { instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
+
+            physical_device_rt_pipeline_properties
+        };
+
+        let acceleration_structure = Self::build_blas();
+
         Ok(Self {
             entry,
             instance,
             device,
             queue,
             surface,
+            images,
+            image_views,
+            physical_device_rt_pipeline_properties,
         })
+
     }
 
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
@@ -328,12 +349,12 @@ impl Core {
                     .queue_flags
                     .contains(QueueFlags::GRAPHICS)
                     && unsafe {
-                        surface_instance.get_physical_device_surface_support(
-                            physical_device,
-                            *queue_family_index as u32,
-                            surface,
-                        )
-                    }
+                    surface_instance.get_physical_device_surface_support(
+                        physical_device,
+                        *queue_family_index as u32,
+                        surface,
+                    )
+                }
                     .unwrap_or(false)
             })
             .map(|(queue_family_index, _)| queue_family_index as u32)
@@ -357,5 +378,9 @@ impl Core {
                 ext_props.extension_name_as_c_str().unwrap() == ext_cstr
             })
         })
+    }
+
+    fn build_blas() -> AccelerationStructureKHR {
+        todo!()
     }
 }
