@@ -13,11 +13,12 @@ use ash::{
     },
 };
 use ash::vk::{AccelerationStructureKHR, Image, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR};
-use error::{SrError, SrResult};
+use crate::error::{SrError, SrResult, unsafe_vk};
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 pub mod error;
 pub mod utils;
+mod vulkan_abstraction;
 
 struct SwapchainSupportDetails {
     surface_capabilities: SurfaceCapabilitiesKHR,
@@ -35,27 +36,18 @@ impl SwapchainSupportDetails {
         surface: SurfaceKHR,
         surface_instance: &surface::Instance,
         physical_device: PhysicalDevice,
-    ) -> Self {
-        let surface_capabilities = unsafe {
-            surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
-        }
-        .unwrap();
+    ) -> SrResult<Self> {
+        let surface_capabilities = unsafe_vk!{ surface_instance.get_physical_device_surface_capabilities(physical_device, surface) }?;
 
-        let surface_formats = unsafe {
-            surface_instance.get_physical_device_surface_formats(physical_device, surface)
-        }
-        .unwrap();
+        let surface_formats = unsafe_vk!(surface_instance.get_physical_device_surface_formats(physical_device, surface))?;
 
-        let surface_present_modes = unsafe {
-            surface_instance.get_physical_device_surface_present_modes(physical_device, surface)
-        }
-        .unwrap();
+        let surface_present_modes = unsafe_vk!(surface_instance.get_physical_device_surface_present_modes(physical_device, surface))?;
 
-        Self {
+        Ok(Self {
             surface_capabilities,
             surface_formats,
             surface_present_modes,
-        }
+        })
     }
 
     fn check_swapchain_support(&self) -> bool {
@@ -102,8 +94,7 @@ impl Core {
             .enabled_layer_names(enabled_layer_names)
             .enabled_extension_names(required_extensions);
 
-        let instance = unsafe { entry.create_instance(&instance_create_info, None) }
-            .map_err(|e| SrError::from_vk_result(e))?;
+        let instance = unsafe_vk! { entry.create_instance(&instance_create_info, None) }?;
 
         let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
 
@@ -125,26 +116,28 @@ impl Core {
         ]
             .map(CStr::as_ptr);
 
-        let physical_devices =
-            unsafe { instance.enumerate_physical_devices() }.map_err(SrError::from_vk_result)?;
+        let physical_devices = unsafe_vk! { instance.enumerate_physical_devices() }?;
 
         let (physical_device, queue_family_index, swapchain_support_details) = physical_devices
             .into_iter()
+            //only allow discrete GPUs
             .filter(|physical_device| {
                 let device_type =
                     unsafe { instance.get_physical_device_properties(*physical_device) }
                         .device_type;
 
                 device_type == PhysicalDeviceType::DISCRETE_GPU
-                    && Self::check_device_extension_support(
-                    &instance,
-                    *physical_device,
-                    required_device_extensions,
-                )
             })
+            //only allow devices which support all required extensions
+            .filter(|physical_device| Self::check_device_extension_support(
+                &instance,
+                *physical_device,
+                required_device_extensions,
+            ))
+            //only allow devices with swapchain support
             .filter_map(|physical_device| {
                 let swapchain_support_details =
-                    SwapchainSupportDetails::new(surface, &surface_instance, physical_device);
+                    SwapchainSupportDetails::new(surface, &surface_instance, physical_device).ok()?; // currently ignoring devices which return errors while querying their swapchain support
 
                 if swapchain_support_details.check_swapchain_support() {
                     Some((physical_device, swapchain_support_details))
@@ -176,8 +169,7 @@ impl Core {
             .enabled_extension_names(required_device_extensions)
             .queue_create_infos(&queue_create_infos);
 
-        let device = unsafe { instance.create_device(physical_device, &device_create_info, None) }
-            .map_err(SrError::from_vk_result)?; //TODO manage errors
+        let device = unsafe_vk!{ instance.create_device(physical_device, &device_create_info, None) }?;
 
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
@@ -185,16 +177,17 @@ impl Core {
             swapchain_support_details
                 .surface_formats
                 .iter()
+                //find the BGRA8 SRGB nonlinear surface format
                 .find(|surface_format| {
                     surface_format.format == Format::B8G8R8A8_SRGB
                         && surface_format.color_space == ColorSpaceKHR::SRGB_NONLINEAR
                 })
-                .unwrap_or(swapchain_support_details.surface_formats.first().ok_or(
-                    SrError::new(
-                        None,
-                        String::from("Physical device does not support any surface formats"),
-                    ),
-                )?);
+                //or else get the first format the device offers
+                .unwrap_or({
+                    swapchain_support_details.surface_formats.first().ok_or(
+                        SrError::new(None,String::from("Physical device does not support any surface formats")),
+                    )?
+                });
 
         let presentation_mode = if swapchain_support_details
             .surface_present_modes
@@ -226,7 +219,8 @@ impl Core {
             }
         };
 
-        //sticking to this minimum means that we may sometimes have to wait on the driver to complete internal operations before we can acquire another image to render to.
+        // Sticking to this minimum means that we may sometimes have to wait on the driver to
+        // complete internal operations before we can acquire another image to render to.
         // Therefore it is recommended to request at least one more image than the minimum
         let mut image_count = swapchain_support_details
             .surface_capabilities
@@ -267,11 +261,9 @@ impl Core {
             .old_swapchain(SwapchainKHR::null());
 
         let swapchain_device = swapchain::Device::new(&instance, &device);
-        let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }
-            .map_err(SrError::from_vk_result)?;
+        let swapchain = unsafe_vk!{ swapchain_device.create_swapchain(&swapchain_create_info, None) }?;
 
-        let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }
-            .map_err(SrError::from_vk_result)?;
+        let images = unsafe_vk!{ swapchain_device.get_swapchain_images(swapchain) }?;
 
         let image_views = images
             .iter()
@@ -295,8 +287,7 @@ impl Core {
                             .layer_count(1),
                     );
 
-                unsafe { device.create_image_view(&image_view_create_info, None) }
-                    .map_err(SrError::from_vk_result)
+                unsafe_vk!{ device.create_image_view(&image_view_create_info, None) }
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -327,8 +318,7 @@ impl Core {
     }
 
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
-        let layers_props = unsafe { entry.enumerate_instance_layer_properties() }
-            .map_err(SrError::from_vk_result)?;
+        let layers_props = unsafe_vk!{ entry.enumerate_instance_layer_properties() }?;
 
         Ok(layers_props
             .iter()
