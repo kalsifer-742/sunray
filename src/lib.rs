@@ -1,16 +1,9 @@
 use std::ffi::CStr;
 
 use ash::{
-    Entry, Instance,
-    khr::{self, surface, swapchain},
-    vk::{
-        ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
-        DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, ImageAspectFlags,
-        ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-        InstanceCreateInfo, PhysicalDevice, PhysicalDeviceType, PresentModeKHR, QueueFlags,
-        SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR,
-        SwapchainKHR, make_api_version,
-    },
+    khr::{self, surface, swapchain}, vk::{
+        make_api_version, ApplicationInfo, ColorSpaceKHR, CommandPoolCreateFlags, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceType, PresentModeKHR, QueueFlags, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR
+    }, Entry, Instance
 };
 use ash::vk::{AccelerationStructureKHR, Image, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR};
 use crate::error::{SrError, SrResult, unsafe_vk};
@@ -61,11 +54,13 @@ pub struct Core {
     entry: Entry,
     instance: Instance,
     device: ash::Device,
-    queue: ash::vk::Queue,
+    queue: vulkan_abstraction::Queue,
     surface: SurfaceKHR,
     images: Vec<Image>,
     image_views: Vec<ImageView>,
     physical_device_rt_pipeline_properties : PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>, // 'static because pNext is null
+    cmd_pool: vulkan_abstraction::CmdPool,
+    vertex_buffer: vulkan_abstraction::Buffer,
 }
 
 impl Core {
@@ -120,21 +115,24 @@ impl Core {
 
         let (physical_device, queue_family_index, swapchain_support_details) = physical_devices
             .into_iter()
-            //only allow discrete GPUs
+            //only allow discrete and integrated GPUs
             .filter(|physical_device| {
                 let device_type =
                     unsafe { instance.get_physical_device_properties(*physical_device) }
                         .device_type;
 
                 device_type == PhysicalDeviceType::DISCRETE_GPU
+                || device_type == PhysicalDeviceType::INTEGRATED_GPU
             })
             //only allow devices which support all required extensions
-            .filter(|physical_device| Self::check_device_extension_support(
-                &instance,
-                *physical_device,
-                required_device_extensions,
-            ))
-            //only allow devices with swapchain support
+            .filter(|physical_device| {
+                Self::check_device_extension_support(
+                    &instance,
+                    *physical_device,
+                    required_device_extensions,
+                )
+            })
+            //only allow devices with swapchain support, and acquire swapchain support details
             .filter_map(|physical_device| {
                 let swapchain_support_details =
                     SwapchainSupportDetails::new(surface, &surface_instance, physical_device).ok()?; // currently ignoring devices which return errors while querying their swapchain support
@@ -145,20 +143,15 @@ impl Core {
                     None
                 }
             })
+            //choose a suitable queue family, and filter out devices without one
             .filter_map(|(physical_device, swapchain_support_details)| {
                 Some((
                     physical_device,
-                    Self::select_queue_family(
-                        &instance,
-                        &surface_instance,
-                        physical_device,
-                        surface,
-                    )?,
+                    Self::select_queue_family(&instance, &surface_instance, physical_device, surface)?,
                     swapchain_support_details,
                 ))
             })
-            .next()
-            .unwrap(); //TODO return error
+            .next().ok_or(SrError::new(None, String::from("No suitable GPU found!")))?;
 
         let queue_priorities = vec![1.0; 1]; // TODO: use more than 1 queue
         let queue_create_infos = [DeviceQueueCreateInfo::default()
@@ -171,7 +164,8 @@ impl Core {
 
         let device = unsafe_vk!{ instance.create_device(physical_device, &device_create_info, None) }?;
 
-        let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+        let swapchain_device = swapchain::Device::new(&instance, &device);
+        let queue = vulkan_abstraction::Queue::new(device.clone(), swapchain_device.clone(), queue_family_index, 0)?;
 
         let surface_format =
             swapchain_support_details
@@ -189,32 +183,27 @@ impl Core {
                     )?
                 });
 
-        let presentation_mode = if swapchain_support_details
-            .surface_present_modes
-            .contains(&PresentModeKHR::MAILBOX)
-        {
+        let present_modes = &swapchain_support_details.surface_present_modes;
+        let present_mode = if present_modes.contains(&PresentModeKHR::MAILBOX) {
             PresentModeKHR::MAILBOX
-        } else if swapchain_support_details
-            .surface_present_modes
-            .contains(&PresentModeKHR::IMMEDIATE)
-        {
+        } else if present_modes.contains(&PresentModeKHR::IMMEDIATE) {
             PresentModeKHR::IMMEDIATE
         } else {
             PresentModeKHR::FIFO // fifo is guaranteed to exist
         };
 
-        let capabilities = swapchain_support_details.surface_capabilities;
-        let image_extent = if capabilities.current_extent.width != u32::MAX {
-            capabilities.current_extent
+        let surface_capabilities = &swapchain_support_details.surface_capabilities;
+        let image_extent = if surface_capabilities.current_extent.width != u32::MAX {
+            surface_capabilities.current_extent
         } else {
             Extent2D {
                 width: window_extent[0].clamp(
-                    capabilities.min_image_extent.width,
-                    capabilities.max_image_extent.width,
+                    surface_capabilities.min_image_extent.width,
+                    surface_capabilities.max_image_extent.width,
                 ),
                 height: window_extent[1].clamp(
-                    capabilities.min_image_extent.height,
-                    capabilities.max_image_extent.height,
+                    surface_capabilities.min_image_extent.height,
+                    surface_capabilities.max_image_extent.height,
                 ),
             }
         };
@@ -222,23 +211,10 @@ impl Core {
         // Sticking to this minimum means that we may sometimes have to wait on the driver to
         // complete internal operations before we can acquire another image to render to.
         // Therefore it is recommended to request at least one more image than the minimum
-        let mut image_count = swapchain_support_details
-            .surface_capabilities
-            .min_image_count
-            + 1;
+        let mut image_count = surface_capabilities.min_image_count + 1;
 
-        if swapchain_support_details
-            .surface_capabilities
-            .max_image_count
-            > 0
-            && image_count
-            > swapchain_support_details
-            .surface_capabilities
-            .max_image_count
-        {
-            image_count = swapchain_support_details
-                .surface_capabilities
-                .max_image_count;
+        if surface_capabilities.max_image_count > 0 && image_count > surface_capabilities.max_image_count {
+            image_count = surface_capabilities.max_image_count;
         }
 
         let swapchain_create_info = SwapchainCreateInfoKHR::default()
@@ -250,17 +226,12 @@ impl Core {
             .image_array_layers(1)
             .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(SharingMode::EXCLUSIVE)
-            .pre_transform(
-                swapchain_support_details
-                    .surface_capabilities
-                    .current_transform,
-            )
+            .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(presentation_mode)
+            .present_mode(present_mode)
             .clipped(true)
             .old_swapchain(SwapchainKHR::null());
 
-        let swapchain_device = swapchain::Device::new(&instance, &device);
         let swapchain = unsafe_vk!{ swapchain_device.create_swapchain(&swapchain_create_info, None) }?;
 
         let images = unsafe_vk!{ swapchain_device.get_swapchain_images(swapchain) }?;
@@ -291,6 +262,10 @@ impl Core {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        let physical_device_memory_properties = unsafe { 
+            instance.get_physical_device_memory_properties(physical_device)
+        };
+
         let physical_device_rt_pipeline_properties = {
             let mut physical_device_rt_pipeline_properties = PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
 
@@ -302,7 +277,29 @@ impl Core {
             physical_device_rt_pipeline_properties
         };
 
-        let acceleration_structure = Self::build_blas();
+        let cmd_pool = vulkan_abstraction::CmdPool::new(device.clone(), CommandPoolCreateFlags::empty(), queue_family_index)?;
+
+        let vertex_buffer = {
+            struct Vertex {
+                pos: [f32; 3]
+            }
+
+            let verts = [ 
+                Vertex { pos: [-1.0, 0.0, 0.0 ] },
+                Vertex { pos: [ 1.0, 0.0, 0.0 ] },
+                Vertex { pos: [ 0.0, 1.0, 0.0 ] },
+            ];
+            let staging_buffer = vulkan_abstraction::Buffer::new_staging::<Vertex>(
+                device.clone(), verts.len(), physical_device_memory_properties
+            )?;
+            let vertex_buffer = vulkan_abstraction::Buffer::new_vertex::<Vertex>(
+                device.clone(), verts.len(), physical_device_memory_properties
+            )?;
+            vulkan_abstraction::Buffer::clone_buffer(&device, &queue, &cmd_pool, &staging_buffer, &vertex_buffer)?;
+
+            vertex_buffer
+        };
+        // let acceleration_structure = Self::build_blas();
 
         Ok(Self {
             entry,
@@ -313,8 +310,9 @@ impl Core {
             images,
             image_views,
             physical_device_rt_pipeline_properties,
+            cmd_pool,
+            vertex_buffer,
         })
-
     }
 
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
@@ -358,10 +356,10 @@ impl Core {
         physical_device: PhysicalDevice,
         required_device_extensions: &[*const i8],
     ) -> bool {
+        let available_extensions =
+            unsafe { instance.enumerate_device_extension_properties(physical_device) }.unwrap(); // TODO: manage error
+        
         required_device_extensions.iter().all(|ext| {
-            let available_extensions =
-                unsafe { instance.enumerate_device_extension_properties(physical_device) }.unwrap(); // TODO: manage error
-
             available_extensions.iter().any(|ext_props| {
                 let ext_cstr = unsafe { CStr::from_ptr(*ext) };
 
