@@ -1,12 +1,12 @@
-use std::ffi::CStr;
+use std::{collections::HashSet, ffi::CStr};
 
 use ash::{
-    khr::{self, surface, swapchain}, vk::{
-        make_api_version, ApplicationInfo, ColorSpaceKHR, CommandPoolCreateFlags, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceType, PresentModeKHR, QueueFlags, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR
-    }, Entry, Instance
+    khr::{self, acceleration_structure, surface, swapchain}, vk::{
+        make_api_version, ApplicationInfo, ColorSpaceKHR, CommandPoolCreateFlags, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceAccelerationStructureFeaturesKHR, PhysicalDeviceRayTracingPipelineFeaturesKHR, PhysicalDeviceType, PhysicalDeviceVulkan12Features, PresentModeKHR, QueueFlags, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR
+    }, Device, Entry, Instance
 };
-use ash::vk::{AccelerationStructureKHR, Image, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR};
-use crate::error::{SrError, SrResult, unsafe_vk};
+use ash::vk::{Image, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR};
+use crate::error::*;
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 pub mod error;
@@ -30,11 +30,17 @@ impl SwapchainSupportDetails {
         surface_instance: &surface::Instance,
         physical_device: PhysicalDevice,
     ) -> SrResult<Self> {
-        let surface_capabilities = unsafe_vk!{ surface_instance.get_physical_device_surface_capabilities(physical_device, surface) }?;
+        let surface_capabilities = unsafe { 
+            surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
+        }.to_sr_result()?;
 
-        let surface_formats = unsafe_vk!(surface_instance.get_physical_device_surface_formats(physical_device, surface))?;
+        let surface_formats = unsafe { 
+            surface_instance.get_physical_device_surface_formats(physical_device, surface)
+        }.to_sr_result()?;
 
-        let surface_present_modes = unsafe_vk!(surface_instance.get_physical_device_surface_present_modes(physical_device, surface))?;
+        let surface_present_modes = unsafe {
+            surface_instance.get_physical_device_surface_present_modes(physical_device, surface)
+        }.to_sr_result()?;
 
         Ok(Self {
             surface_capabilities,
@@ -50,17 +56,21 @@ impl SwapchainSupportDetails {
 
 //TODO: impl Drop
 
+#[allow(dead_code)]
 pub struct Core {
     entry: Entry,
     instance: Instance,
-    device: ash::Device,
+    device: Device,
     queue: vulkan_abstraction::Queue,
     surface: SurfaceKHR,
+    swapchain: SwapchainKHR,
     images: Vec<Image>,
     image_views: Vec<ImageView>,
     physical_device_rt_pipeline_properties : PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>, // 'static because pNext is null
     cmd_pool: vulkan_abstraction::CmdPool,
-    vertex_buffer: vulkan_abstraction::Buffer,
+    vertex_buffer: vulkan_abstraction::VertexBuffer,
+    index_buffer: vulkan_abstraction::IndexBuffer,
+    blas: vulkan_abstraction::BLAS,
 }
 
 impl Core {
@@ -89,7 +99,9 @@ impl Core {
             .enabled_layer_names(enabled_layer_names)
             .enabled_extension_names(required_extensions);
 
-        let instance = unsafe_vk! { entry.create_instance(&instance_create_info, None) }?;
+        let instance = unsafe { 
+            entry.create_instance(&instance_create_info, None)
+        }.to_sr_result()?;
 
         let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
 
@@ -111,7 +123,7 @@ impl Core {
         ]
             .map(CStr::as_ptr);
 
-        let physical_devices = unsafe_vk! { instance.enumerate_physical_devices() }?;
+        let physical_devices = unsafe { instance.enumerate_physical_devices() }.to_sr_result()?;
 
         let (physical_device, queue_family_index, swapchain_support_details) = physical_devices
             .into_iter()
@@ -151,37 +163,54 @@ impl Core {
                     swapchain_support_details,
                 ))
             })
-            .next().ok_or(SrError::new(None, String::from("No suitable GPU found!")))?;
+            .next()
+            .ok_or(SrError::new(None, String::from("No suitable GPU found!")))?;
 
         let queue_priorities = vec![1.0; 1]; // TODO: use more than 1 queue
         let queue_create_infos = [DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
             .queue_priorities(&queue_priorities)];
 
+        let mut vk12_features = PhysicalDeviceVulkan12Features::default()
+                .buffer_device_address(true);
+        let mut physical_device_rt_pipeline_features = PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
+            .ray_tracing_pipeline(true);
+        let mut physical_device_acceleration_structure_features = PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+            .acceleration_structure(true);
         let device_create_info = DeviceCreateInfo::default()
             .enabled_extension_names(required_device_extensions)
+            .push_next(&mut vk12_features)
+            .push_next(&mut physical_device_rt_pipeline_features)
+            .push_next(&mut physical_device_acceleration_structure_features)
             .queue_create_infos(&queue_create_infos);
 
-        let device = unsafe_vk!{ instance.create_device(physical_device, &device_create_info, None) }?;
+        let device = unsafe { 
+            instance.create_device(physical_device, &device_create_info, None)
+        }.to_sr_result()?;
 
         let swapchain_device = swapchain::Device::new(&instance, &device);
         let queue = vulkan_abstraction::Queue::new(device.clone(), swapchain_device.clone(), queue_family_index, 0)?;
 
-        let surface_format =
-            swapchain_support_details
-                .surface_formats
-                .iter()
-                //find the BGRA8 SRGB nonlinear surface format
+        let surface_format = {
+            let formats = swapchain_support_details.surface_formats;
+
+            //find the BGRA8 SRGB nonlinear surface format
+            let bgra8_srgb_nonlinear = 
+                formats.iter()
                 .find(|surface_format| {
                     surface_format.format == Format::B8G8R8A8_SRGB
                         && surface_format.color_space == ColorSpaceKHR::SRGB_NONLINEAR
-                })
-                //or else get the first format the device offers
-                .unwrap_or({
-                    swapchain_support_details.surface_formats.first().ok_or(
-                        SrError::new(None,String::from("Physical device does not support any surface formats")),
-                    )?
                 });
+            
+            if let Some(format) = bgra8_srgb_nonlinear {
+                *format
+            } else {
+                //or else get the first format the device offers
+                *formats.first().ok_or(
+                    SrError::new(None,String::from("Physical device does not support any surface formats")),
+                )?
+            }
+        };
 
         let present_modes = &swapchain_support_details.surface_present_modes;
         let present_mode = if present_modes.contains(&PresentModeKHR::MAILBOX) {
@@ -232,9 +261,9 @@ impl Core {
             .clipped(true)
             .old_swapchain(SwapchainKHR::null());
 
-        let swapchain = unsafe_vk!{ swapchain_device.create_swapchain(&swapchain_create_info, None) }?;
+        let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }.to_sr_result()?;
 
-        let images = unsafe_vk!{ swapchain_device.get_swapchain_images(swapchain) }?;
+        let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.to_sr_result()?;
 
         let image_views = images
             .iter()
@@ -258,7 +287,7 @@ impl Core {
                             .layer_count(1),
                     );
 
-                unsafe_vk!{ device.create_image_view(&image_view_create_info, None) }
+                unsafe { device.create_image_view(&image_view_create_info, None) }.to_sr_result()
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -280,7 +309,9 @@ impl Core {
         let cmd_pool = vulkan_abstraction::CmdPool::new(device.clone(), CommandPoolCreateFlags::empty(), queue_family_index)?;
 
         let vertex_buffer = {
+            #[derive(Clone, Copy)]
             struct Vertex {
+                #[allow(dead_code)]
                 pos: [f32; 3]
             }
 
@@ -289,17 +320,36 @@ impl Core {
                 Vertex { pos: [ 1.0, 0.0, 0.0 ] },
                 Vertex { pos: [ 0.0, 1.0, 0.0 ] },
             ];
-            let staging_buffer = vulkan_abstraction::Buffer::new_staging::<Vertex>(
-                device.clone(), verts.len(), physical_device_memory_properties
+            let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<Vertex>(
+                device.clone(), &verts, &physical_device_memory_properties
             )?;
-            let vertex_buffer = vulkan_abstraction::Buffer::new_vertex::<Vertex>(
-                device.clone(), verts.len(), physical_device_memory_properties
+            let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas::<Vertex>(
+                device.clone(), verts.len(), &physical_device_memory_properties
             )?;
             vulkan_abstraction::Buffer::clone_buffer(&device, &queue, &cmd_pool, &staging_buffer, &vertex_buffer)?;
 
             vertex_buffer
         };
-        // let acceleration_structure = Self::build_blas();
+        let index_buffer = {
+            let indices = [ 0, 1, 2 ];
+            let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<u32>(
+                device.clone(), &indices, &physical_device_memory_properties
+            )?;
+            let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas::<u32>(
+                device.clone(), indices.len(), &physical_device_memory_properties
+            )?;
+            vulkan_abstraction::Buffer::clone_buffer(&device, &queue, &cmd_pool, &staging_buffer, &index_buffer)?;
+
+            index_buffer
+        };        
+        let acceleration_structure_device = acceleration_structure::Device::new(&instance, &device);
+
+        let blas = vulkan_abstraction::BLAS::new(
+            &device, &acceleration_structure_device, 
+            &physical_device_memory_properties,
+            &cmd_pool, &queue, 
+            &vertex_buffer, &index_buffer
+        )?;
 
         Ok(Self {
             entry,
@@ -307,16 +357,19 @@ impl Core {
             device,
             queue,
             surface,
+            swapchain,
             images,
             image_views,
             physical_device_rt_pipeline_properties,
             cmd_pool,
             vertex_buffer,
+            index_buffer,
+            blas,
         })
     }
 
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
-        let layers_props = unsafe_vk!{ entry.enumerate_instance_layer_properties() }?;
+        let layers_props = unsafe { entry.enumerate_instance_layer_properties() }.to_sr_result()?;
 
         Ok(layers_props
             .iter()
@@ -349,26 +402,25 @@ impl Core {
             .next()
     }
 
-    // TODO: make more readable (create 2 sets, call .is_subset or whatever)
-    //      example: https://docs.vulkan.org/tutorial/latest/03_Drawing_a_triangle/01_Presentation/01_Swap_chain.html
     fn check_device_extension_support(
         instance: &Instance,
         physical_device: PhysicalDevice,
         required_device_extensions: &[*const i8],
     ) -> bool {
-        let available_extensions =
-            unsafe { instance.enumerate_device_extension_properties(physical_device) }.unwrap(); // TODO: manage error
         
-        required_device_extensions.iter().all(|ext| {
-            available_extensions.iter().any(|ext_props| {
-                let ext_cstr = unsafe { CStr::from_ptr(*ext) };
+        let required_exts_set : HashSet<&CStr> = required_device_extensions
+            .iter()
+            .map(|p| unsafe { CStr::from_ptr(*p) })
+            .collect();
 
-                ext_props.extension_name_as_c_str().unwrap() == ext_cstr
-            })
-        })
-    }
+        let available_exts =
+            unsafe { instance.enumerate_device_extension_properties(physical_device) }.unwrap(); // TODO: unwrap
 
-    fn build_blas() -> AccelerationStructureKHR {
-        todo!()
+        let available_exts_set : HashSet<&CStr> = available_exts
+            .iter()
+            .map(|props| props.extension_name_as_c_str().unwrap()) // TODO: unwrap
+            .collect();
+
+        return required_exts_set.is_subset(&available_exts_set);
     }
 }

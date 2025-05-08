@@ -2,10 +2,7 @@ use ash::vk;
 use std::fmt::Display;
 
 pub type SrResult<T> = std::result::Result<T, SrError>;
-macro_rules! unsafe_vk {
-    { $e:expr } => { unsafe { $e }.map_err(SrError::from_vk_result) };
-}
-pub(crate) use unsafe_vk;
+
 #[derive(Debug)]
 pub struct SrError {
     source: Option<vk::Result>,
@@ -42,5 +39,19 @@ impl std::error::Error for SrError {
             Some(src) => Some(src),
             None => None,
         }
+    }
+}
+
+pub trait ToSrResult {
+    type OkType;
+
+    fn to_sr_result(self) -> SrResult<Self::OkType>;
+}
+
+impl<T> ToSrResult for ash::prelude::VkResult<T> {
+    type OkType = T;
+
+    fn to_sr_result(self) -> SrResult<T> {
+        self.map_err(SrError::from_vk_result)
     }
 }

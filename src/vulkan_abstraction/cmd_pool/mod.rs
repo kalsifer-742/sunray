@@ -19,7 +19,7 @@ impl CmdPool {
             .queue_family_index(queue_family)
             .flags(flags);
 
-        let cmd_pool = unsafe_vk!{ device.create_command_pool(&info, None) }?;
+        let cmd_pool = unsafe { device.create_command_pool(&info, None)  }.to_sr_result()?;
 
         Ok(Self { cmd_pool, device, cmd_bufs: vec![] })
     }
@@ -38,8 +38,10 @@ impl CmdPool {
 }
 impl Drop for CmdPool {
     fn drop(&mut self) {
-        // cmd_bufs must be destroyed before cmd_pool
-        unsafe { self.device.free_command_buffers(self.cmd_pool, &self.cmd_bufs) };
+        if self.cmd_bufs.len() != 0 {
+            // cmd_bufs must be destroyed before cmd_pool
+            unsafe { self.device.free_command_buffers(self.cmd_pool, &self.cmd_bufs) };
+        }
 
         unsafe { self.device.destroy_command_pool(self.cmd_pool, None) };
     }
