@@ -8,7 +8,7 @@ use ash::{
 };
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
-use crate::error::{SrError, SrResult};
+use crate::error::*;
 
 /// Query the required instance extensions for creating a surface from a raw display handle.
 ///
@@ -63,60 +63,34 @@ pub fn enumerate_required_extensions(
             &METAL_EXTS
         }
 
-        _ => {
-            return Err(SrError::from_vk_result(
-                vk::Result::ERROR_EXTENSION_NOT_PRESENT,
-            ));
-        }
+        _ => return Err(SrError::from(vk::Result::ERROR_EXTENSION_NOT_PRESENT)),
     };
 
     Ok(extensions)
 }
 
 /// Create a surface from a raw display and window handle.
-
 ///
-
 /// `instance` must have created with platform specific surface extensions enabled, acquired
-
 /// through [`enumerate_required_extensions()`].
-
 ///
-
 /// # Safety
-
 ///
-
 /// There is a [parent/child relation] between [`Instance`] and [`Entry`], and the resulting
-
 /// [`vk::SurfaceKHR`].  The application must not [destroy][Instance::destroy_instance()] these
-
 /// parent objects before first [destroying][surface::Instance::destroy_surface()] the returned
-
 /// [`vk::SurfaceKHR`] child object.  [`vk::SurfaceKHR`] does _not_ implement [drop][drop()]
-
 /// semantics and can only be destroyed via [`destroy_surface()`][surface::Instance::destroy_surface()].
-
 ///
-
 /// See the [`Entry::create_instance()`] documentation for more destruction ordering rules on
-
 /// [`Instance`].
-
 ///
-
 /// The window represented by `window_handle` must be associated with the display connection
-
 /// in `display_handle`.
-
 ///
-
 /// `window_handle` and `display_handle` must be associated with a valid window and display
-
 /// connection, which must not be destroyed for the lifetime of the returned [`vk::SurfaceKHR`].
-
 ///
-
 /// [parent/child relation]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#fundamentals-objectmodel-lifetime
 
 pub unsafe fn create_surface(
@@ -208,5 +182,5 @@ pub unsafe fn create_surface(
 
         _ => Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT),
     }
-    .map_err(SrError::from_vk_result)
+    .map_err(SrError::from)
 }
