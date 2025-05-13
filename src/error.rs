@@ -16,8 +16,9 @@ impl SrError {
             description,
         }
     }
-
-    pub fn from_vk_result(vk_result: vk::Result) -> Self {
+}
+impl From<vk::Result> for SrError {
+    fn from(vk_result: vk::Result) -> Self {
         let description = match vk_result {
             //TODO: provide description for some errors
             e => format!("UNEXPECTED VULKAN ERROR: {}", e),
@@ -41,3 +42,19 @@ impl std::error::Error for SrError {
         }
     }
 }
+
+/*
+//trait for converting VkResult to SrResult
+pub trait ToSrResult {
+    type OkType;
+
+    fn to_sr_result(self) -> SrResult<Self::OkType>;
+}
+
+impl<T> ToSrResult for ash::prelude::VkResult<T> {
+    type OkType = T;
+
+    fn to_sr_result(self) -> SrResult<T> {
+        self.map_err(SrError::from)
+    }
+}*/
