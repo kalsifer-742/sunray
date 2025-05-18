@@ -1,15 +1,25 @@
 use ash::{
     Device,
+    khr::acceleration_structure,
     vk::{
-        AccelerationStructureDeviceAddressInfoKHR, AccelerationStructureInstanceKHR,
-        AccelerationStructureKHR, Buffer, BufferCreateInfo, GeometryFlagsKHR,
-        GeometryInstanceFlagsKHR, Packed24_8, PhysicalDeviceMemoryProperties, TaggedStructure,
-        TransformMatrixKHR,
+        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR,
+        AccelerationStructureBuildSizesInfoKHR, AccelerationStructureCreateInfoKHR,
+        AccelerationStructureDeviceAddressInfoKHR, AccelerationStructureGeometryDataKHR,
+        AccelerationStructureGeometryInstancesDataKHR, AccelerationStructureGeometryKHR,
+        AccelerationStructureInstanceKHR, AccelerationStructureKHR, AccelerationStructureTypeKHR,
+        Buffer, BufferCreateInfo, BufferDeviceAddressInfo, BufferUsageFlags,
+        BuildAccelerationStructureFlagsKHR, CommandBufferBeginInfo, CommandBufferUsageFlags,
+        DeviceOrHostAddressConstKHR, GeometryFlagsKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR,
+        MemoryAllocateFlags, MemoryPropertyFlags, PFN_vkCreateAccelerationStructureKHR, Packed24_8,
+        PhysicalDeviceMemoryProperties, TaggedStructure, TransformMatrixKHR,
     },
 };
 
 use super::BLAS;
-use crate::vulkan_abstraction::{self, instance_buffer::InstanceBuffer};
+use crate::{
+    error::SrError,
+    vulkan_abstraction::{self, instance_buffer::InstanceBuffer},
+};
 
 pub struct TLAS {
     tlas: AccelerationStructureKHR,
@@ -17,11 +27,19 @@ pub struct TLAS {
 
 /*Reading other people code I understood that a commond way of handling the tlas is to inherit everyhting from the blas:
     - device address, ecc...
+
+  TODO:
+  cleanup code
+    - error handling
+    - divide stuff in separate functions if needed
+  comments
+  make it work for multilples blas
 */
 
 impl TLAS {
     pub fn new(
         device: &Device,
+        acceleration_structure_device: acceleration_structure::Device,
         device_memory_props: &PhysicalDeviceMemoryProperties,
         cmd_pool: &vulkan_abstraction::CmdPool,
         blas: BLAS, //this should be an array
@@ -53,11 +71,115 @@ impl TLAS {
             },
         };
 
-        let build_command_buffer = vulkan_abstraction::cmd_buffer::new(cmd_pool, device);
-
         //i should create a buffer for each instance
         let instance_buffer = InstanceBuffer::new::<u8>(device.clone(), 1, device_memory_props)?; //u8 as placeholder, also 1 is a placeholder size
 
-        todo!()
+        let buffer_device_address_info =
+            BufferDeviceAddressInfo::default().buffer(instance_buffer.buffer); //buffer is private
+        let instance_buffer_device_address =
+            unsafe { device.get_buffer_device_address(&buffer_device_address_info) };
+
+        // the s_type usually never appears as a method to modify it but only as a public property.
+        // why it is not required to assign it? default?
+        // should we assign it?
+        //
+        // in general nv tutorial specify less things than this
+        let acceleration_structure_geometry = AccelerationStructureGeometryKHR::default()
+            .geometry_type(GeometryTypeKHR::INSTANCES)
+            .flags(GeometryFlagsKHR::OPAQUE)
+            .geometry(AccelerationStructureGeometryDataKHR {
+                instances: AccelerationStructureGeometryInstancesDataKHR::default()
+                    .array_of_pointers(false)
+                    .data(DeviceOrHostAddressConstKHR {
+                        device_address: instance_buffer_device_address,
+                    }),
+            });
+
+        let acceleration_structure_build_sizes_info =
+            AccelerationStructureBuildSizesInfoKHR::default();
+
+        let acceleration_structure_create_info = AccelerationStructureCreateInfoKHR::default()
+            .ty(AccelerationStructureTypeKHR::TOP_LEVEL)
+            .size(acceleration_structure_build_sizes_info.acceleration_structure_size)
+            .buffer(buffer); //figure out what to put in here
+
+        let tlas = unsafe {
+            acceleration_structure_device
+                .create_acceleration_structure(&acceleration_structure_create_info, None)
+        };
+
+        // inserted less stuff than nv tutorial
+        let acceleration_structure_build_geometry_info =
+            AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(AccelerationStructureTypeKHR::TOP_LEVEL)
+                .flags(BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                .geometries(acceleration_structure_geometry) //pointers stuff
+                .dst_acceleration_structure(tlas);
+
+        let acceleration_structure_build_range_info =
+            AccelerationStructureBuildRangeInfoKHR::default()
+                .primitive_count(1)
+                .primitive_offset(0)
+                .first_vertex(0)
+                .transform_offset(0);
+
+        let acceleration_structure_create_info = AccelerationStructureCreateInfoKHR::default()
+            .ty(AccelerationStructureTypeKHR::TOP_LEVEL)
+            .size(acceleration_structure_build_sizes_info.acceleration_structure_size);
+
+        unsafe {
+            acceleration_structure_device
+                .create_acceleration_structure(&acceleration_structure_create_info, None)
+        };
+
+        let scratch_buffer = vulkan_abstraction::Buffer::new::<u8>(
+            device.clone(),
+            acceleration_structure_build_sizes_info.build_scratch_size, //need to be converted to usize
+            MemoryPropertyFlags::DEVICE_LOCAL,
+            MemoryAllocateFlags::DEVICE_ADDRESS,
+            BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            device_memory_props,
+        )?;
+
+        // one-shot command buffer which we will:
+        // - fill with the commands to build the BLAS
+        // - pass to the queue to be executed (thus building the BLAS)
+        // - free
+        let command_buffer = vulkan_abstraction::cmd_buffer::new(cmd_pool, device)?;
+
+        //record build_command_buffer with the commands to build the BLAS
+        unsafe {
+            device
+                .begin_command_buffer(
+                    command_buffer,
+                    &CommandBufferBeginInfo::default()
+                        .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+                .map_err(SrError::from)?;
+
+            acceleration_structure_device.cmd_build_acceleration_structures(
+                command_buffer,
+                &[acceleration_structure_build_geometry_info],
+                &[&[acceleration_structure_build_range_info]],
+            );
+
+            device
+                .end_command_buffer(command_buffer)
+                .map_err(SrError::from)?
+        }
+
+        //figure out about the queue
+        queue.submit_sync(command_buffer)?;
+
+        // build_command_buffer must not be in a pending state when
+        // free_command_buffers is called on it
+        queue.wait_idle()?;
+
+        unsafe {
+            device.free_command_buffers(**cmd_pool, &[command_buffer]);
+        }
+
+        Self { tlas }
     }
 }
