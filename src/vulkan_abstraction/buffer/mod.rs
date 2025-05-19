@@ -83,6 +83,11 @@ impl Buffer {
 
         Ok(staging_buffer)
     }
+
+    /// # Create a new Buffer
+    ///
+    /// ## Arguments:
+    /// - `len`: the number of items, not the amount of memory. the functions take care of that calculation internally
     pub fn new<V>(
         device: Device,
         len: usize,

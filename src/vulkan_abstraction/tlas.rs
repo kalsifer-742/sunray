@@ -6,23 +6,31 @@ use ash::{
         AccelerationStructureBuildSizesInfoKHR, AccelerationStructureCreateInfoKHR,
         AccelerationStructureDeviceAddressInfoKHR, AccelerationStructureGeometryDataKHR,
         AccelerationStructureGeometryInstancesDataKHR, AccelerationStructureGeometryKHR,
-        AccelerationStructureInstanceKHR, AccelerationStructureKHR, AccelerationStructureTypeKHR,
-        Buffer, BufferCreateInfo, BufferDeviceAddressInfo, BufferUsageFlags,
-        BuildAccelerationStructureFlagsKHR, CommandBufferBeginInfo, CommandBufferUsageFlags,
-        DeviceOrHostAddressConstKHR, GeometryFlagsKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR,
-        MemoryAllocateFlags, MemoryPropertyFlags, PFN_vkCreateAccelerationStructureKHR, Packed24_8,
-        PhysicalDeviceMemoryProperties, TaggedStructure, TransformMatrixKHR,
+        AccelerationStructureInstanceKHR, AccelerationStructureKHR,
+        AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR, Buffer, BufferCreateInfo,
+        BufferDeviceAddressInfo, BufferUsageFlags, BuildAccelerationStructureFlagsKHR,
+        CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR,
+        GeometryFlagsKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags,
+        MemoryPropertyFlags, PFN_vkCreateAccelerationStructureKHR, Packed24_8,
+        PhysicalDeviceAccelerationStructurePropertiesKHR, PhysicalDeviceMemoryProperties,
+        TaggedStructure, TransformMatrixKHR,
     },
 };
 
 use super::BLAS;
 use crate::{
-    error::SrError,
+    error::{SrError, SrResult},
     vulkan_abstraction::{self, instance_buffer::InstanceBuffer},
 };
 
+// Resources:
+// - https://github.com/adrien-ben/vulkan-examples-rs
+// - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
+// - https://github.com/SaschaWillems/Vulkan
+
 pub struct TLAS {
     tlas: AccelerationStructureKHR,
+    buffer: 
 }
 
 /*Reading other people code I understood that a commond way of handling the tlas is to inherit everyhting from the blas:
@@ -36,43 +44,42 @@ pub struct TLAS {
   make it work for multilples blas
 */
 
+// add and check PhysicalDeviceAccelerationStructurePropertiesKHR::max_instance_count(self, max_instance_count)
 impl TLAS {
     pub fn new(
         device: &Device,
         acceleration_structure_device: acceleration_structure::Device,
         device_memory_props: &PhysicalDeviceMemoryProperties,
         cmd_pool: &vulkan_abstraction::CmdPool,
-        blas: BLAS, //this should be an array
-    ) -> Self {
+        blas: Vec<BLAS>,
+    ) -> SrResult<Self> {
+        // This is the transformation for positioning individual BLASes
+        // For now it's an Identity Matrix
         let transform_matrix = TransformMatrixKHR {
             matrix: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         };
 
-        let accelertation_device_address_info =
-            AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(blas.blas);
-
-        let instance = AccelerationStructureInstanceKHR {
-            transform: transform_matrix,
-            instance_custom_index_and_mask: Packed24_8::new(0, 0),
-            instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(
-                0,
-                GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE
-                    .as_raw()
-                    .try_into()
-                    .unwrap(),
-            ),
-            acceleration_structure_reference: ash::vk::AccelerationStructureReferenceKHR {
-                device_handle: unsafe {
-                    blas.acceleration_structure_device
-                        .get_acceleration_structure_device_address(
-                            &accelertation_device_address_info,
-                        )
+        let blas_instances = blas.iter().map(|blas| {
+            AccelerationStructureInstanceKHR {
+                transform: transform_matrix,
+                instance_custom_index_and_mask: Packed24_8::new(0, 0), // gl_InstanceCustomIndex = 0, mask = 0 (don't know what actually does)
+                instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(
+                    0, // hit_group_offset = 0, same hit group for the whole scene
+                    GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8, // disable face culling for semplicity
+                ),
+                acceleration_structure_reference: AccelerationStructureReferenceKHR {
+                    device_handle: unsafe {
+                        blas.acceleration_structure_device()
+                            .get_acceleration_structure_device_address(
+                                &AccelerationStructureDeviceAddressInfoKHR::default()
+                                    .acceleration_structure(blas.blas()), // maybe we should discuss a change of name, proposal: inner
+                            )
+                    },
                 },
-            },
-        };
+            }
+        });
 
-        //i should create a buffer for each instance
-        let instance_buffer = InstanceBuffer::new::<u8>(device.clone(), 1, device_memory_props)?; //u8 as placeholder, also 1 is a placeholder size
+        let instances_buffer = InstanceBuffer::new::<u8>(device.clone(), blas_instances.len(), device_memory_props)?; //u8 as a placeholder copying from the blas, is it correct?
 
         let buffer_device_address_info =
             BufferDeviceAddressInfo::default().buffer(instance_buffer.buffer); //buffer is private
