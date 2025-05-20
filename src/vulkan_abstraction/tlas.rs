@@ -218,6 +218,14 @@ impl TLAS {
     }
 }
 
+impl Deref for TLAS {
+    type Target = AccelerationStructureKHR;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tlas
+    }
+}
+
 impl Drop for TLAS {
     fn drop(&mut self) {
         unsafe {
