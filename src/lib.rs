@@ -1,12 +1,22 @@
 use std::{collections::HashSet, ffi::CStr};
 
-use ash::{
-    khr::{self, acceleration_structure, surface, swapchain}, vk::{
-        make_api_version, ApplicationInfo, ColorSpaceKHR, CommandPoolCreateFlags, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceAccelerationStructureFeaturesKHR, PhysicalDeviceRayTracingPipelineFeaturesKHR, PhysicalDeviceType, PhysicalDeviceVulkan12Features, PresentModeKHR, QueueFlags, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR
-    }, Device, Entry, Instance
-};
-use ash::vk::{Image, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR};
 use crate::error::*;
+use ash::vk::{Image, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR};
+use ash::{
+    Device, Entry, Instance,
+    khr::{self, acceleration_structure, surface, swapchain},
+    vk::{
+        ApplicationInfo, ColorSpaceKHR, CommandPoolCreateFlags, ComponentMapping, ComponentSwizzle,
+        CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format,
+        ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
+        ImageViewType, InstanceCreateInfo, PhysicalDevice,
+        PhysicalDeviceAccelerationStructureFeaturesKHR,
+        PhysicalDeviceRayTracingPipelineFeaturesKHR, PhysicalDeviceType,
+        PhysicalDeviceVulkan12Features, PresentModeKHR, QueueFlags, SharingMode,
+        SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+        make_api_version,
+    },
+};
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 pub mod error;
@@ -30,17 +40,20 @@ impl SwapchainSupportDetails {
         surface_instance: &surface::Instance,
         physical_device: PhysicalDevice,
     ) -> SrResult<Self> {
-        let surface_capabilities = unsafe { 
+        let surface_capabilities = unsafe {
             surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
-        }.map_err(SrError::from)?;
+        }
+        .map_err(SrError::from)?;
 
-        let surface_formats = unsafe { 
+        let surface_formats = unsafe {
             surface_instance.get_physical_device_surface_formats(physical_device, surface)
-        }.map_err(SrError::from)?;
+        }
+        .map_err(SrError::from)?;
 
         let surface_present_modes = unsafe {
             surface_instance.get_physical_device_surface_present_modes(physical_device, surface)
-        }.map_err(SrError::from)?;
+        }
+        .map_err(SrError::from)?;
 
         Ok(Self {
             surface_capabilities,
@@ -70,11 +83,11 @@ pub struct Core {
     swapchain: SwapchainKHR,
     images: Vec<Image>,
     image_views: Vec<ImageView>,
-    physical_device_rt_pipeline_properties : PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>, // 'static because pNext is null
+    physical_device_rt_pipeline_properties: PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>, // 'static because pNext is null
     cmd_pool: vulkan_abstraction::CmdPool,
     vertex_buffer: vulkan_abstraction::VertexBuffer,
     index_buffer: vulkan_abstraction::IndexBuffer,
-    blas: vulkan_abstraction::BLAS,
+    // blas: vulkan_abstraction::BLAS,
 }
 
 impl Core {
@@ -104,9 +117,7 @@ impl Core {
                 .enabled_layer_names(enabled_layer_names)
                 .enabled_extension_names(required_extensions);
 
-            unsafe { 
-                entry.create_instance(&instance_create_info, None)
-            }.map_err(SrError::from)?
+            unsafe { entry.create_instance(&instance_create_info, None) }.map_err(SrError::from)?
         };
 
         let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
@@ -127,9 +138,10 @@ impl Core {
             khr::deferred_host_operations::NAME,
             khr::swapchain::NAME, // TODO: not needed for offline rendering
         ]
-            .map(CStr::as_ptr);
+        .map(CStr::as_ptr);
 
-        let physical_devices = unsafe { instance.enumerate_physical_devices() }.map_err(SrError::from)?;
+        let physical_devices =
+            unsafe { instance.enumerate_physical_devices() }.map_err(SrError::from)?;
 
         let (physical_device, queue_family_index, swapchain_support_details) = physical_devices
             .into_iter()
@@ -144,7 +156,8 @@ impl Core {
             //only allow devices with swapchain support, and acquire swapchain support details
             .filter_map(|physical_device| {
                 let swapchain_support_details =
-                    SwapchainSupportDetails::new(surface, &surface_instance, physical_device).ok()?; // currently ignoring devices which return errors while querying their swapchain support
+                    SwapchainSupportDetails::new(surface, &surface_instance, physical_device)
+                        .ok()?; // currently ignoring devices which return errors while querying their swapchain support
 
                 if swapchain_support_details.check_swapchain_support() {
                     Some((physical_device, swapchain_support_details))
@@ -156,7 +169,12 @@ impl Core {
             .filter_map(|(physical_device, swapchain_support_details)| {
                 Some((
                     physical_device,
-                    Self::select_queue_family(&instance, &surface_instance, physical_device, surface)?,
+                    Self::select_queue_family(
+                        &instance,
+                        &surface_instance,
+                        physical_device,
+                        surface,
+                    )?,
                     swapchain_support_details,
                 ))
             })
@@ -174,7 +192,6 @@ impl Core {
             })
             .ok_or(SrError::new(None, String::from("No suitable GPU found!")))?;
 
-
         let device = {
             let queue_priorities = vec![1.0; 1]; // TODO: use more than 1 queue
             let queue_create_infos = [DeviceQueueCreateInfo::default()
@@ -182,12 +199,13 @@ impl Core {
                 .queue_priorities(&queue_priorities)];
 
             // enable some device features necessary for ray-tracing
-            let mut vk12_features = PhysicalDeviceVulkan12Features::default()
-                .buffer_device_address(true);
-            let mut physical_device_rt_pipeline_features = PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
-                .ray_tracing_pipeline(true);
-            let mut physical_device_acceleration_structure_features = PhysicalDeviceAccelerationStructureFeaturesKHR::default()
-                .acceleration_structure(true);
+            let mut vk12_features =
+                PhysicalDeviceVulkan12Features::default().buffer_device_address(true);
+            let mut physical_device_rt_pipeline_features =
+                PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
+            let mut physical_device_acceleration_structure_features =
+                PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+                    .acceleration_structure(true);
 
             let device_create_info = DeviceCreateInfo::default()
                 .enabled_extension_names(required_device_extensions)
@@ -196,35 +214,38 @@ impl Core {
                 .push_next(&mut physical_device_acceleration_structure_features)
                 .queue_create_infos(&queue_create_infos);
 
-            unsafe {
-                instance.create_device(physical_device, &device_create_info, None)
-            }.map_err(SrError::from)?
+            unsafe { instance.create_device(physical_device, &device_create_info, None) }
+                .map_err(SrError::from)?
         };
 
         let swapchain_device = swapchain::Device::new(&instance, &device);
         let acceleration_structure_device = acceleration_structure::Device::new(&instance, &device);
 
-        let queue = vulkan_abstraction::Queue::new(device.clone(), swapchain_device.clone(), queue_family_index, 0)?;
+        let queue = vulkan_abstraction::Queue::new(
+            device.clone(),
+            swapchain_device.clone(),
+            queue_family_index,
+            0,
+        )?;
 
         // for creating swapchain and image_views
         let surface_format = {
             let formats = swapchain_support_details.surface_formats;
 
             //find the BGRA8 SRGB nonlinear surface format
-            let bgra8_srgb_nonlinear = 
-                formats.iter()
-                .find(|surface_format| {
-                    surface_format.format == Format::B8G8R8A8_SRGB
-                        && surface_format.color_space == ColorSpaceKHR::SRGB_NONLINEAR
-                });
-            
+            let bgra8_srgb_nonlinear = formats.iter().find(|surface_format| {
+                surface_format.format == Format::B8G8R8A8_SRGB
+                    && surface_format.color_space == ColorSpaceKHR::SRGB_NONLINEAR
+            });
+
             if let Some(format) = bgra8_srgb_nonlinear {
                 *format
             } else {
                 //or else get the first format the device offers
-                *formats.first().ok_or(
-                    SrError::new(None,String::from("Physical device does not support any surface formats")),
-                )?
+                *formats.first().ok_or(SrError::new(
+                    None,
+                    String::from("Physical device does not support any surface formats"),
+                ))?
             }
         };
 
@@ -259,7 +280,9 @@ impl Core {
             // Therefore it is recommended to request at least one more image than the minimum
             let mut image_count = surface_capabilities.min_image_count + 1;
 
-            if surface_capabilities.max_image_count > 0 && image_count > surface_capabilities.max_image_count {
+            if surface_capabilities.max_image_count > 0
+                && image_count > surface_capabilities.max_image_count
+            {
                 image_count = surface_capabilities.max_image_count;
             }
 
@@ -278,10 +301,12 @@ impl Core {
                 .clipped(true)
                 .old_swapchain(SwapchainKHR::null());
 
-            unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }.map_err(SrError::from)?
+            unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }
+                .map_err(SrError::from)?
         };
 
-        let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.map_err(SrError::from)?;
+        let images =
+            unsafe { swapchain_device.get_swapchain_images(swapchain) }.map_err(SrError::from)?;
 
         let image_views = images
             .iter()
@@ -305,69 +330,119 @@ impl Core {
                             .layer_count(1),
                     );
 
-                unsafe { device.create_image_view(&image_view_create_info, None) }.map_err(SrError::from)
+                unsafe { device.create_image_view(&image_view_create_info, None) }
+                    .map_err(SrError::from)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
         //necessary for memory allocations
-        let physical_device_memory_properties = unsafe { 
-            instance.get_physical_device_memory_properties(physical_device)
-        };
+        let physical_device_memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
         let physical_device_rt_pipeline_properties = {
-            let mut physical_device_rt_pipeline_properties = PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+            let mut physical_device_rt_pipeline_properties =
+                PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
 
             let mut physical_device_properties = PhysicalDeviceProperties2::default()
                 .push_next(&mut physical_device_rt_pipeline_properties);
 
-            unsafe { instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
+            unsafe {
+                instance.get_physical_device_properties2(
+                    physical_device,
+                    &mut physical_device_properties,
+                )
+            };
 
             physical_device_rt_pipeline_properties
         };
 
-        let cmd_pool = vulkan_abstraction::CmdPool::new(device.clone(), CommandPoolCreateFlags::empty(), queue_family_index)?;
+        let cmd_pool = vulkan_abstraction::CmdPool::new(
+            device.clone(),
+            CommandPoolCreateFlags::empty(),
+            queue_family_index,
+        )?;
 
         let vertex_buffer = {
             #[derive(Clone, Copy)]
             struct Vertex {
                 #[allow(dead_code)]
-                pos: [f32; 3]
+                pos: [f32; 3],
             }
 
-            let verts = [ 
-                Vertex { pos: [-1.0, 0.0, 0.0 ] },
-                Vertex { pos: [ 1.0, 0.0, 0.0 ] },
-                Vertex { pos: [ 0.0, 1.0, 0.0 ] },
+            let verts = [
+                Vertex {
+                    pos: [-1.0, 0.0, 0.0],
+                },
+                Vertex {
+                    pos: [1.0, 0.0, 0.0],
+                },
+                Vertex {
+                    pos: [0.0, 1.0, 0.0],
+                },
             ];
             let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<Vertex>(
-                device.clone(), &verts, &physical_device_memory_properties
+                device.clone(),
+                &verts,
+                &physical_device_memory_properties,
             )?;
             let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas::<Vertex>(
-                device.clone(), verts.len(), &physical_device_memory_properties
+                device.clone(),
+                verts.len(),
+                &physical_device_memory_properties,
             )?;
-            vulkan_abstraction::Buffer::clone_buffer(&device, &queue, &cmd_pool, &staging_buffer, &vertex_buffer)?;
+            vulkan_abstraction::Buffer::clone_buffer(
+                &device,
+                &queue,
+                &cmd_pool,
+                &staging_buffer,
+                &vertex_buffer,
+            )?;
 
             vertex_buffer
         };
         let index_buffer = {
-            let indices = [ 0, 1, 2 ];
+            let indices = [0, 1, 2];
             let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<u32>(
-                device.clone(), &indices, &physical_device_memory_properties
+                device.clone(),
+                &indices,
+                &physical_device_memory_properties,
             )?;
             let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas::<u32>(
-                device.clone(), indices.len(), &physical_device_memory_properties
+                device.clone(),
+                indices.len(),
+                &physical_device_memory_properties,
             )?;
-            vulkan_abstraction::Buffer::clone_buffer(&device, &queue, &cmd_pool, &staging_buffer, &index_buffer)?;
+            vulkan_abstraction::Buffer::clone_buffer(
+                &device,
+                &queue,
+                &cmd_pool,
+                &staging_buffer,
+                &index_buffer,
+            )?;
 
             index_buffer
-        };        
+        };
 
         let blas = vulkan_abstraction::BLAS::new(
-            &device, acceleration_structure_device.clone(), 
+            &device,
+            acceleration_structure_device.clone(),
             &physical_device_memory_properties,
-            &cmd_pool, &queue, 
-            &vertex_buffer, &index_buffer
+            &cmd_pool,
+            &queue,
+            &vertex_buffer,
+            &index_buffer,
         )?;
+
+        let blases = vec![blas];
+
+        let tlas = vulkan_abstraction::TLAS::new(
+            &device,
+            acceleration_structure_device.clone(),
+            &physical_device_memory_properties,
+            &cmd_pool,
+            &queue,
+            &blases,
+        );
 
         Ok(Self {
             entry,
@@ -385,12 +460,12 @@ impl Core {
             cmd_pool,
             vertex_buffer,
             index_buffer,
-            blas,
         })
     }
 
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
-        let layers_props = unsafe { entry.enumerate_instance_layer_properties() }.map_err(SrError::from)?;
+        let layers_props =
+            unsafe { entry.enumerate_instance_layer_properties() }.map_err(SrError::from)?;
 
         Ok(layers_props
             .iter()
@@ -414,12 +489,12 @@ impl Core {
                     .queue_flags
                     .contains(QueueFlags::GRAPHICS)
                     && unsafe {
-                    surface_instance.get_physical_device_surface_support(
-                        physical_device,
-                        *queue_family_index as u32,
-                        surface,
-                    )
-                }
+                        surface_instance.get_physical_device_surface_support(
+                            physical_device,
+                            *queue_family_index as u32,
+                            surface,
+                        )
+                    }
                     .unwrap_or(false)
             })
             .map(|(queue_family_index, _)| queue_family_index as u32)
@@ -431,7 +506,7 @@ impl Core {
         physical_device: PhysicalDevice,
         required_device_extensions: &[*const i8],
     ) -> bool {
-        let required_exts_set : HashSet<&CStr> = required_device_extensions
+        let required_exts_set: HashSet<&CStr> = required_device_extensions
             .iter()
             .map(|p| unsafe { CStr::from_ptr(*p) })
             .collect();
@@ -439,7 +514,7 @@ impl Core {
         let available_exts =
             unsafe { instance.enumerate_device_extension_properties(physical_device) }.unwrap(); // TODO: unwrap
 
-        let available_exts_set : HashSet<&CStr> = available_exts
+        let available_exts_set: HashSet<&CStr> = available_exts
             .iter()
             .map(|props| props.extension_name_as_c_str().unwrap()) // TODO: unwrap
             .collect();

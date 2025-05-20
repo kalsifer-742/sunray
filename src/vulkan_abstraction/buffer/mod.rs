@@ -2,11 +2,10 @@ pub mod index_buffer;
 mod mapped_memory;
 pub mod vertex_buffer;
 
+//why use and not just mod?
 pub use index_buffer::*;
 use mapped_memory::*;
 pub use vertex_buffer::*;
-//why use and not just mod?
-pub mod instance_buffer;
 
 use crate::vulkan_abstraction::queue::Queue;
 
@@ -19,6 +18,7 @@ use ash::vk::{
 use ash::{Device, vk};
 use std::ops::Deref;
 
+//I think Buffer should be a trait with some default implementations
 pub struct Buffer {
     usable_byte_size: DeviceSize,
     device: Device,
@@ -33,17 +33,17 @@ impl Buffer {
         size: usize,
         mem_props: &PhysicalDeviceMemoryProperties,
     ) -> SrResult<Self> {
-        let mem_flags =
+        let memory_property_flags =
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let mem_alloc_flags = MemoryAllocateFlags::empty();
-        let usage_flags = vk::BufferUsageFlags::TRANSFER_SRC;
+        let memory_allocate_flags = MemoryAllocateFlags::empty();
+        let buffer_usage_flags = vk::BufferUsageFlags::TRANSFER_SRC;
 
         Self::new::<V>(
             device,
             size,
-            mem_flags,
-            mem_alloc_flags,
-            usage_flags,
+            memory_property_flags,
+            memory_allocate_flags,
+            buffer_usage_flags,
             mem_props,
         )
     }
@@ -53,17 +53,17 @@ impl Buffer {
         device: Device,
         mem_props: &PhysicalDeviceMemoryProperties,
     ) -> SrResult<Self> {
-        let mem_flags =
+        let memory_property_flags =
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let mem_alloc_flags = MemoryAllocateFlags::empty();
-        let usage_flags = vk::BufferUsageFlags::UNIFORM_BUFFER;
+        let memory_allocate_flags = MemoryAllocateFlags::empty();
+        let buffer_usage_flags = vk::BufferUsageFlags::UNIFORM_BUFFER;
 
         Self::new::<T>(
             device,
             1,
-            mem_flags,
-            mem_alloc_flags,
-            usage_flags,
+            memory_property_flags,
+            memory_allocate_flags,
+            buffer_usage_flags,
             mem_props,
         )
     }
@@ -91,16 +91,16 @@ impl Buffer {
     pub fn new<V>(
         device: Device,
         len: usize,
-        mem_flags: MemoryPropertyFlags,
+        memory_property_flags: MemoryPropertyFlags,
         alloc_flags: MemoryAllocateFlags,
-        usage_flags: BufferUsageFlags,
+        buffer_usage_flags: BufferUsageFlags,
         mem_props: &PhysicalDeviceMemoryProperties,
     ) -> SrResult<Self> {
         let usable_byte_size = (len * size_of::<V>()) as vk::DeviceSize;
         let buffer = {
             let buf_info = vk::BufferCreateInfo::default()
                 .size(usable_byte_size)
-                .usage(usage_flags)
+                .usage(buffer_usage_flags)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
             unsafe { device.create_buffer(&buf_info, None) }.map_err(SrError::from)?
@@ -118,7 +118,8 @@ impl Buffer {
             for i in 0..(8 * size_of::<BitsType>()) {
                 let mem_type_is_supported = bits & (1 << i) != 0;
                 if mem_type_is_supported {
-                    if mem_types[i].property_flags & mem_flags == mem_flags {
+                    if mem_types[i].property_flags & memory_property_flags == memory_property_flags
+                    {
                         idx = i as isize;
                         break;
                     }
@@ -134,7 +135,7 @@ impl Buffer {
             idx as u32
         };
 
-        let mut mem_alloc_flags_info = MemoryAllocateFlagsInfo::default().flags(alloc_flags);
+        let mut memory_allocate_flags_info = MemoryAllocateFlagsInfo::default().flags(alloc_flags);
 
         let mem_alloc_info = {
             let mem_alloc_info = vk::MemoryAllocateInfo::default()
@@ -144,7 +145,7 @@ impl Buffer {
             if alloc_flags == MemoryAllocateFlags::empty() {
                 mem_alloc_info
             } else {
-                mem_alloc_info.push_next(&mut mem_alloc_flags_info)
+                mem_alloc_info.push_next(&mut memory_allocate_flags_info)
             }
         };
         let memory =
@@ -204,6 +205,7 @@ impl Buffer {
 
         debug_assert!(src.byte_size() <= dst.byte_size());
 
+        //documentation please :) ~kalsifer
         let regions = [vk::BufferCopy::default()
             .size(src.byte_size())
             .src_offset(0)

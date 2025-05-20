@@ -199,14 +199,6 @@ impl BLAS {
     pub fn buffer(&self) -> &vulkan_abstraction::Buffer {
         &self.blas_buffer
     }
-
-    pub fn blas(&self) -> AccelerationStructureKHR {
-        self.blas
-    }
-
-    pub fn acceleration_structure_device(&self) -> &ash::khr::acceleration_structure::Device {
-        &self.acceleration_structure_device
-    }
 }
 impl Drop for BLAS {
     fn drop(&mut self) {
