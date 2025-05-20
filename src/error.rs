@@ -43,7 +43,6 @@ impl std::error::Error for SrError {
     }
 }
 
-/*
 //trait for converting VkResult to SrResult
 pub trait ToSrResult {
     type OkType;
@@ -57,4 +56,4 @@ impl<T> ToSrResult for ash::prelude::VkResult<T> {
     fn to_sr_result(self) -> SrResult<T> {
         self.map_err(SrError::from)
     }
-}*/
+}

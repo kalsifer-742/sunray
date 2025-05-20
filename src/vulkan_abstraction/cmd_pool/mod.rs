@@ -19,7 +19,7 @@ impl CmdPool {
             .queue_family_index(queue_family)
             .flags(flags);
 
-        let cmd_pool = unsafe { device.create_command_pool(&info, None)  }.map_err(SrError::from)?;
+        let cmd_pool = unsafe { device.create_command_pool(&info, None)  }.to_sr_result()?;
 
         Ok(Self { cmd_pool, device, cmd_bufs: vec![] })
     }

@@ -20,7 +20,7 @@ impl Queue {
     pub fn new(device: Device, swapchain_device: khr::swapchain::Device, q_family: u32, q_index: u32) -> SrResult<Self> {
         let queue = unsafe { device.get_device_queue(q_family, q_index) };
 
-        let create_semaphore =  || unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)  }.map_err(SrError::from);
+        let create_semaphore =  || unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)  }.to_sr_result();
         let render_complete_sems = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_semaphore()).collect::<Result<_, _>>()?;
         let img_available_sem = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_semaphore()).collect::<Result<_, _>>()?;
 
@@ -29,7 +29,7 @@ impl Queue {
             let fence_info = vk::FenceCreateInfo::default()
                 .flags(fence_flags);
 
-            unsafe { device.create_fence(&fence_info, None)  }.map_err(SrError::from)
+            unsafe { device.create_fence(&fence_info, None)  }.to_sr_result()
         };
         let render_complete_fences = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_fence()).collect::<Result<_,_>>()?;
 
@@ -41,20 +41,20 @@ impl Queue {
 
     #[allow(dead_code)]
     pub fn wait_idle(&self) -> SrResult<()> {
-        unsafe { self.device.queue_wait_idle(self.queue)  }.map_err(SrError::from)?;
+        unsafe { self.device.queue_wait_idle(self.queue)  }.to_sr_result()?;
         Ok(())
     }
 
     pub fn acquire_next_image(&self, swapchain: vk::SwapchainKHR) -> SrResult<u32> {
         let wait_fence = &self.render_complete_fences[self.current_frame..=self.current_frame];
-        unsafe { self.device.wait_for_fences(wait_fence, true, u64::MAX)  }.map_err(SrError::from)?;
-        unsafe { self.device.reset_fences(wait_fence)  }.map_err(SrError::from)?;
+        unsafe { self.device.wait_for_fences(wait_fence, true, u64::MAX)  }.to_sr_result()?;
+        unsafe { self.device.reset_fences(wait_fence)  }.to_sr_result()?;
         
 
         let image_available_sem = self.img_available_sem[self.current_frame];
         let (index, _suboptimal_surface) = unsafe {
             self.swapchain_device.acquire_next_image(swapchain, u64::MAX, image_available_sem, Fence::null())
-        }.map_err(SrError::from)?;
+        }.to_sr_result()?;
         Ok(index)
     }
 
@@ -70,7 +70,7 @@ impl Queue {
             .signal_semaphores(signal_sem);
         let signal_fence = self.render_complete_fences[self.current_frame];
 
-        unsafe { self.device.queue_submit(self.queue, &[submit_info], signal_fence)  }.map_err(SrError::from)?;
+        unsafe { self.device.queue_submit(self.queue, &[submit_info], signal_fence)  }.to_sr_result()?;
 
         Ok(())
     }
@@ -84,7 +84,7 @@ impl Queue {
             .command_buffers(&command_buffers)
             .signal_semaphores(&[]);
 
-        unsafe { self.device.queue_submit(self.queue, &[submit_info], Fence::null())  }.map_err(SrError::from)?;
+        unsafe { self.device.queue_submit(self.queue, &[submit_info], Fence::null())  }.to_sr_result()?;
         Ok(())
     }
 
@@ -97,7 +97,7 @@ impl Queue {
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
-        unsafe { self.swapchain_device.queue_present(self.queue, &present_info)  }.map_err(SrError::from)?;
+        unsafe { self.swapchain_device.queue_present(self.queue, &present_info)  }.to_sr_result()?;
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         Ok(())
