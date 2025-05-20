@@ -19,7 +19,7 @@ use ash::{
 
 use super::BLAS;
 use crate::{
-    error::{SrError, SrResult},
+    error::*,
     vulkan_abstraction::{self},
 };
 
@@ -190,7 +190,7 @@ impl TLAS {
                     &CommandBufferBeginInfo::default()
                         .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
-                .map_err(SrError::from)?;
+                .to_sr_result()?;
 
             acceleration_structure_device.cmd_build_acceleration_structures(
                 command_buffer,
@@ -198,9 +198,7 @@ impl TLAS {
                 &[&[acceleration_structure_build_range_info]],
             );
 
-            device
-                .end_command_buffer(command_buffer)
-                .map_err(SrError::from)?
+            device.end_command_buffer(command_buffer).to_sr_result()?
         }
 
         queue.submit_sync(command_buffer)?;

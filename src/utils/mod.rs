@@ -182,5 +182,5 @@ pub unsafe fn create_surface(
 
         _ => Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT),
     }
-    .map_err(SrError::from)
+    .to_sr_result()
 }

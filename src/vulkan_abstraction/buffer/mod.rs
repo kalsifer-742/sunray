@@ -103,7 +103,7 @@ impl Buffer {
                 .usage(buffer_usage_flags)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-            unsafe { device.create_buffer(&buf_info, None) }.map_err(SrError::from)?
+            unsafe { device.create_buffer(&buf_info, None) }.to_sr_result()?
         };
 
         let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
@@ -149,9 +149,9 @@ impl Buffer {
             }
         };
         let memory =
-            unsafe { device.allocate_memory(&mem_alloc_info, None) }.map_err(SrError::from)?;
+            unsafe { device.allocate_memory(&mem_alloc_info, None) }.to_sr_result()?;
 
-        unsafe { device.bind_buffer_memory(buffer, memory, 0) }.map_err(SrError::from)?;
+        unsafe { device.bind_buffer_memory(buffer, memory, 0) }.to_sr_result()?;
 
         Ok(Self {
             usable_byte_size,
@@ -171,7 +171,7 @@ impl Buffer {
             self.device
                 .map_memory(self.memory, 0, self.usable_byte_size, flags)
         }
-        .map_err(SrError::from)?;
+        .to_sr_result()?;
         let raw_mem = unsafe { RawMappedMemory::new(p, self.usable_byte_size as usize) };
         self.mapped_memory = Some(raw_mem);
         let ret = self.mapped_memory.as_mut().unwrap().borrow();
@@ -201,7 +201,7 @@ impl Buffer {
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         unsafe { device.begin_command_buffer(bufcpy_cmd_buf, &begin_info) }
-            .map_err(SrError::from)?;
+            .to_sr_result()?;
 
         debug_assert!(src.byte_size() <= dst.byte_size());
 
@@ -213,10 +213,10 @@ impl Buffer {
 
         unsafe { device.cmd_copy_buffer(bufcpy_cmd_buf, **src, **dst, &regions) };
 
-        unsafe { device.end_command_buffer(bufcpy_cmd_buf) }.map_err(SrError::from)?;
+        unsafe { device.end_command_buffer(bufcpy_cmd_buf) }.to_sr_result()?;
 
         queue.submit_sync(bufcpy_cmd_buf)?;
-        unsafe { device.device_wait_idle() }.map_err(SrError::from)?;
+        unsafe { device.device_wait_idle() }.to_sr_result()?;
 
         unsafe { device.free_command_buffers(*cmd_pool, &[bufcpy_cmd_buf]) };
         // vk_core.get_queue().wait_idle()?;

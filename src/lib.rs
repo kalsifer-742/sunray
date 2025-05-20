@@ -43,17 +43,17 @@ impl SwapchainSupportDetails {
         let surface_capabilities = unsafe {
             surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
         }
-        .map_err(SrError::from)?;
+        .to_sr_result()?;
 
         let surface_formats = unsafe {
             surface_instance.get_physical_device_surface_formats(physical_device, surface)
         }
-        .map_err(SrError::from)?;
+        .to_sr_result()?;
 
         let surface_present_modes = unsafe {
             surface_instance.get_physical_device_surface_present_modes(physical_device, surface)
         }
-        .map_err(SrError::from)?;
+        .to_sr_result()?;
 
         Ok(Self {
             surface_capabilities,
@@ -117,7 +117,7 @@ impl Core {
                 .enabled_layer_names(enabled_layer_names)
                 .enabled_extension_names(required_extensions);
 
-            unsafe { entry.create_instance(&instance_create_info, None) }.map_err(SrError::from)?
+            unsafe { entry.create_instance(&instance_create_info, None) }.to_sr_result()?
         };
 
         let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
@@ -140,8 +140,7 @@ impl Core {
         ]
         .map(CStr::as_ptr);
 
-        let physical_devices =
-            unsafe { instance.enumerate_physical_devices() }.map_err(SrError::from)?;
+        let physical_devices = unsafe { instance.enumerate_physical_devices() }.to_sr_result()?;
 
         let (physical_device, queue_family_index, swapchain_support_details) = physical_devices
             .into_iter()
@@ -215,7 +214,7 @@ impl Core {
                 .queue_create_infos(&queue_create_infos);
 
             unsafe { instance.create_device(physical_device, &device_create_info, None) }
-                .map_err(SrError::from)?
+                .to_sr_result()?
         };
 
         let swapchain_device = swapchain::Device::new(&instance, &device);
@@ -302,11 +301,10 @@ impl Core {
                 .old_swapchain(SwapchainKHR::null());
 
             unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }
-                .map_err(SrError::from)?
+                .to_sr_result()?
         };
 
-        let images =
-            unsafe { swapchain_device.get_swapchain_images(swapchain) }.map_err(SrError::from)?;
+        let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.to_sr_result()?;
 
         let image_views = images
             .iter()
@@ -330,8 +328,7 @@ impl Core {
                             .layer_count(1),
                     );
 
-                unsafe { device.create_image_view(&image_view_create_info, None) }
-                    .map_err(SrError::from)
+                unsafe { device.create_image_view(&image_view_create_info, None) }.to_sr_result()
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -464,8 +461,7 @@ impl Core {
     }
 
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
-        let layers_props =
-            unsafe { entry.enumerate_instance_layer_properties() }.map_err(SrError::from)?;
+        let layers_props = unsafe { entry.enumerate_instance_layer_properties() }.to_sr_result()?;
 
         Ok(layers_props
             .iter()

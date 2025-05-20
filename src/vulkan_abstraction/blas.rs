@@ -132,7 +132,7 @@ impl BLAS {
         let blas = unsafe {
             acceleration_structure_device.create_acceleration_structure(&blas_create_info, None)
         }
-        .map_err(SrError::from)?;
+        .to_sr_result()?;
 
         // the scratch buffer that will be used for building the BLAS (and can be dropped afterwards)
         let scratch_buffer = vulkan_abstraction::Buffer::new::<u8>(
@@ -165,7 +165,7 @@ impl BLAS {
                     &CommandBufferBeginInfo::default()
                         .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
-                .map_err(SrError::from)?;
+                .to_sr_result()?;
 
             acceleration_structure_device.cmd_build_acceleration_structures(
                 build_command_buffer,
@@ -175,7 +175,7 @@ impl BLAS {
 
             device
                 .end_command_buffer(build_command_buffer)
-                .map_err(SrError::from)?
+                .to_sr_result()?
         }
 
         queue.submit_sync(build_command_buffer)?;
