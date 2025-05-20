@@ -1,26 +1,26 @@
+use std::ops::Deref;
+
 use ash::{
     Device,
     khr::acceleration_structure,
     vk::{
         AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR,
-        AccelerationStructureBuildSizesInfoKHR, AccelerationStructureCreateInfoKHR,
-        AccelerationStructureDeviceAddressInfoKHR, AccelerationStructureGeometryDataKHR,
-        AccelerationStructureGeometryInstancesDataKHR, AccelerationStructureGeometryKHR,
-        AccelerationStructureInstanceKHR, AccelerationStructureKHR,
-        AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR, Buffer, BufferCreateInfo,
-        BufferDeviceAddressInfo, BufferUsageFlags, BuildAccelerationStructureFlagsKHR,
+        AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR,
+        AccelerationStructureCreateInfoKHR, AccelerationStructureDeviceAddressInfoKHR,
+        AccelerationStructureGeometryDataKHR, AccelerationStructureGeometryInstancesDataKHR,
+        AccelerationStructureGeometryKHR, AccelerationStructureInstanceKHR,
+        AccelerationStructureKHR, AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR,
+        BufferUsageFlags, BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR,
         CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR,
-        GeometryFlagsKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags,
-        MemoryPropertyFlags, PFN_vkCreateAccelerationStructureKHR, Packed24_8,
-        PhysicalDeviceAccelerationStructurePropertiesKHR, PhysicalDeviceMemoryProperties,
-        TaggedStructure, TransformMatrixKHR,
+        GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags, MemoryPropertyFlags,
+        Packed24_8, PhysicalDeviceMemoryProperties, TransformMatrixKHR,
     },
 };
 
 use super::BLAS;
 use crate::{
     error::{SrError, SrResult},
-    vulkan_abstraction::{self, instance_buffer::InstanceBuffer},
+    vulkan_abstraction::{self},
 };
 
 // Resources:
@@ -28,120 +28,119 @@ use crate::{
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
 // - https://github.com/SaschaWillems/Vulkan
 
+// in the needed structs the s_type usually never appears as a method to modify it but only as a public property
+// in c++ it is always assigned meanwhile in the rust examples it si never assigned
+// i think beacuse ::default() takes care of it or some other reason
+// if some problems arise this is something to look into
+
+// in general i assigned only the parameters assigned in the NV tutorial
+// the other examples assingn a lot more stuff
+// if something doesn't work look at the parameters in the other examples
+
+// TODO: implement drop
 pub struct TLAS {
+    acceleration_structure_device: acceleration_structure::Device,
     tlas: AccelerationStructureKHR,
-    buffer: 
 }
 
-/*Reading other people code I understood that a commond way of handling the tlas is to inherit everyhting from the blas:
-    - device address, ecc...
-
-  TODO:
-  cleanup code
-    - error handling
-    - divide stuff in separate functions if needed
-  comments
-  make it work for multilples blas
-*/
-
-// add and check PhysicalDeviceAccelerationStructurePropertiesKHR::max_instance_count(self, max_instance_count)
 impl TLAS {
     pub fn new(
         device: &Device,
         acceleration_structure_device: acceleration_structure::Device,
         device_memory_props: &PhysicalDeviceMemoryProperties,
         cmd_pool: &vulkan_abstraction::CmdPool,
-        blas: Vec<BLAS>,
+        queue: &vulkan_abstraction::Queue,
+        blas: &[BLAS],
     ) -> SrResult<Self> {
-        // This is the transformation for positioning individual BLASes
-        // For now it's an Identity Matrix
+        // this is the transformation for positioning individual BLASes
+        // for now it's an Identity Matrix
         let transform_matrix = TransformMatrixKHR {
             matrix: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         };
 
-        let blas_instances = blas.iter().map(|blas| {
-            AccelerationStructureInstanceKHR {
-                transform: transform_matrix,
-                instance_custom_index_and_mask: Packed24_8::new(0, 0), // gl_InstanceCustomIndex = 0, mask = 0 (don't know what actually does)
-                instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(
-                    0, // hit_group_offset = 0, same hit group for the whole scene
-                    GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8, // disable face culling for semplicity
-                ),
-                acceleration_structure_reference: AccelerationStructureReferenceKHR {
-                    device_handle: unsafe {
-                        blas.acceleration_structure_device()
-                            .get_acceleration_structure_device_address(
+        let blas_instances: Vec<AccelerationStructureInstanceKHR> = blas
+            .iter()
+            .map(|blas| {
+                AccelerationStructureInstanceKHR {
+                    transform: transform_matrix,
+                    instance_custom_index_and_mask: Packed24_8::new(0, 0), // gl_InstanceCustomIndex = 0, mask = 0 (don't know what actually does, NV tutorial writes "Only be hit if rayMask & instance.mask != 0")
+                    instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(
+                        0, // hit_group_offset = 0, same hit group for the whole scene
+                        GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8, // disable face culling for semplicity
+                    ),
+                    acceleration_structure_reference: AccelerationStructureReferenceKHR {
+                        device_handle: unsafe {
+                            acceleration_structure_device.get_acceleration_structure_device_address(
                                 &AccelerationStructureDeviceAddressInfoKHR::default()
-                                    .acceleration_structure(blas.blas()), // maybe we should discuss a change of name, proposal: inner
+                                    .acceleration_structure(*blas.deref()), // maybe we should discuss a change of name, proposal: inner
                             )
+                        },
                     },
-                },
-            }
-        });
+                }
+            })
+            .collect();
+        let blas_instances_n = blas_instances.len();
 
-        let instances_buffer = InstanceBuffer::new::<u8>(device.clone(), blas_instances.len(), device_memory_props)?; //u8 as a placeholder copying from the blas, is it correct?
+        // HOST buffer to hold the instances
+        let staging_instances_buffer = vulkan_abstraction::Buffer::new_staging_from_data(
+            device.clone(),
+            &blas_instances,
+            device_memory_props,
+        )?;
 
-        let buffer_device_address_info =
-            BufferDeviceAddressInfo::default().buffer(instance_buffer.buffer); //buffer is private
-        let instance_buffer_device_address =
-            unsafe { device.get_buffer_device_address(&buffer_device_address_info) };
+        // GPU buffer to hold the instances
+        let instances_buffer = vulkan_abstraction::Buffer::new::<AccelerationStructureInstanceKHR>(
+            device.clone(),
+            blas_instances_n,
+            MemoryPropertyFlags::DEVICE_LOCAL,
+            MemoryAllocateFlags::DEVICE_ADDRESS,
+            BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | BufferUsageFlags::TRANSFER_DST,
+            device_memory_props,
+        )?;
 
-        // the s_type usually never appears as a method to modify it but only as a public property.
-        // why it is not required to assign it? default?
-        // should we assign it?
-        //
-        // in general nv tutorial specify less things than this
+        vulkan_abstraction::Buffer::clone_buffer(
+            device,
+            queue,
+            cmd_pool,
+            &staging_instances_buffer,
+            &instances_buffer,
+        )?;
+
         let acceleration_structure_geometry = AccelerationStructureGeometryKHR::default()
             .geometry_type(GeometryTypeKHR::INSTANCES)
-            .flags(GeometryFlagsKHR::OPAQUE)
             .geometry(AccelerationStructureGeometryDataKHR {
-                instances: AccelerationStructureGeometryInstancesDataKHR::default()
-                    .array_of_pointers(false)
-                    .data(DeviceOrHostAddressConstKHR {
-                        device_address: instance_buffer_device_address,
-                    }),
+                instances: AccelerationStructureGeometryInstancesDataKHR::default().data(
+                    DeviceOrHostAddressConstKHR {
+                        device_address: instances_buffer.get_device_address(),
+                    },
+                ),
             });
 
-        let acceleration_structure_build_sizes_info =
-            AccelerationStructureBuildSizesInfoKHR::default();
-
-        let acceleration_structure_create_info = AccelerationStructureCreateInfoKHR::default()
-            .ty(AccelerationStructureTypeKHR::TOP_LEVEL)
-            .size(acceleration_structure_build_sizes_info.acceleration_structure_size)
-            .buffer(buffer); //figure out what to put in here
-
-        let tlas = unsafe {
-            acceleration_structure_device
-                .create_acceleration_structure(&acceleration_structure_create_info, None)
-        };
-
-        // inserted less stuff than nv tutorial
-        let acceleration_structure_build_geometry_info =
+        let binding = [acceleration_structure_geometry]; //look further into thix fix to the error "temporary value dropped while borrowed"
+        let mut acceleration_structure_build_geometry_info =
             AccelerationStructureBuildGeometryInfoKHR::default()
+                .flags(BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE) // prefer performance over size
+                .geometries(&binding)
+                .mode(BuildAccelerationStructureModeKHR::BUILD)
                 .ty(AccelerationStructureTypeKHR::TOP_LEVEL)
-                .flags(BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-                .geometries(acceleration_structure_geometry) //pointers stuff
-                .dst_acceleration_structure(tlas);
+                .src_acceleration_structure(AccelerationStructureKHR::null());
 
-        let acceleration_structure_build_range_info =
-            AccelerationStructureBuildRangeInfoKHR::default()
-                .primitive_count(1)
-                .primitive_offset(0)
-                .first_vertex(0)
-                .transform_offset(0);
-
-        let acceleration_structure_create_info = AccelerationStructureCreateInfoKHR::default()
-            .ty(AccelerationStructureTypeKHR::TOP_LEVEL)
-            .size(acceleration_structure_build_sizes_info.acceleration_structure_size);
-
+        let mut acceleration_structure_build_sizes_info =
+            AccelerationStructureBuildSizesInfoKHR::default();
         unsafe {
-            acceleration_structure_device
-                .create_acceleration_structure(&acceleration_structure_create_info, None)
+            acceleration_structure_device.get_acceleration_structure_build_sizes(
+                AccelerationStructureBuildTypeKHR::DEVICE,
+                &acceleration_structure_build_geometry_info,
+                &[blas_instances_n as u32],
+                &mut acceleration_structure_build_sizes_info,
+            )
         };
 
-        let scratch_buffer = vulkan_abstraction::Buffer::new::<u8>(
+        let tlas_buffer = vulkan_abstraction::Buffer::new::<u8>(
             device.clone(),
-            acceleration_structure_build_sizes_info.build_scratch_size, //need to be converted to usize
+            acceleration_structure_build_sizes_info.acceleration_structure_size as usize,
             MemoryPropertyFlags::DEVICE_LOCAL,
             MemoryAllocateFlags::DEVICE_ADDRESS,
             BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
@@ -149,13 +148,41 @@ impl TLAS {
             device_memory_props,
         )?;
 
-        // one-shot command buffer which we will:
-        // - fill with the commands to build the BLAS
-        // - pass to the queue to be executed (thus building the BLAS)
-        // - free
+        let acceleration_structure_create_info = AccelerationStructureCreateInfoKHR::default()
+            .ty(AccelerationStructureTypeKHR::TOP_LEVEL)
+            .size(acceleration_structure_build_sizes_info.acceleration_structure_size)
+            .buffer(*tlas_buffer.deref());
+
+        let tlas = unsafe {
+            acceleration_structure_device
+                .create_acceleration_structure(&acceleration_structure_create_info, None)
+        }?;
+
+        let scratch_buffer = vulkan_abstraction::Buffer::new::<u8>(
+            device.clone(),
+            acceleration_structure_build_sizes_info.build_scratch_size as usize,
+            MemoryPropertyFlags::DEVICE_LOCAL,
+            MemoryAllocateFlags::DEVICE_ADDRESS,
+            BufferUsageFlags::STORAGE_BUFFER | BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            device_memory_props,
+        )?;
+
+        // updating acceleration_structure_build_geometry_info with new information
+        acceleration_structure_build_geometry_info.dst_acceleration_structure = tlas;
+        acceleration_structure_build_geometry_info
+            .scratch_data
+            .device_address = scratch_buffer.get_device_address();
+
+        let acceleration_structure_build_range_info =
+            AccelerationStructureBuildRangeInfoKHR::default()
+                .primitive_count(blas_instances_n as u32)
+                .primitive_offset(0)
+                .first_vertex(0)
+                .transform_offset(0);
+
         let command_buffer = vulkan_abstraction::cmd_buffer::new(cmd_pool, device)?;
 
-        //record build_command_buffer with the commands to build the BLAS
+        // we can finally build the tlas
         unsafe {
             device
                 .begin_command_buffer(
@@ -176,7 +203,6 @@ impl TLAS {
                 .map_err(SrError::from)?
         }
 
-        //figure out about the queue
         queue.submit_sync(command_buffer)?;
 
         // build_command_buffer must not be in a pending state when
@@ -187,6 +213,18 @@ impl TLAS {
             device.free_command_buffers(**cmd_pool, &[command_buffer]);
         }
 
-        Self { tlas }
+        Ok(Self {
+            acceleration_structure_device,
+            tlas,
+        })
+    }
+}
+
+impl Drop for TLAS {
+    fn drop(&mut self) {
+        unsafe {
+            self.acceleration_structure_device
+                .destroy_acceleration_structure(self.tlas, None)
+        };
     }
 }
