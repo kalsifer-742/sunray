@@ -112,7 +112,7 @@ impl Core {
 
         let enabled_layer_names =
             if cfg!(debug_assertions) && Self::check_validation_layer_support(&entry)? {
-                &[c"VK_LAYER_KHRONOS_validation".as_ptr()]
+                &[Self::VALIDATION_LAYER_NAME.as_ptr()]
             } else {
                 [].as_slice()
             };
@@ -141,10 +141,12 @@ impl Core {
         }?;
 
         let required_device_extensions = &[
+            khr::swapchain::NAME, // TODO: not needed for offline rendering
+
+            //ray tracing extensions
             khr::ray_tracing_pipeline::NAME,
             khr::acceleration_structure::NAME,
             khr::deferred_host_operations::NAME,
-            khr::swapchain::NAME, // TODO: not needed for offline rendering
         ]
         .map(CStr::as_ptr);
 
@@ -158,7 +160,7 @@ impl Core {
                     &instance,
                     *physical_device,
                     required_device_extensions,
-                )
+                ).unwrap_or(false)
             })
             //only allow devices with swapchain support, and acquire swapchain support details
             .filter_map(|physical_device| {
@@ -406,7 +408,7 @@ impl Core {
             vertex_buffer
         };
         let index_buffer = {
-            let indices = [0, 1, 2];
+            let indices : [u32; 3] = [0, 1, 2];
             let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<u32>(
                 device.clone(),
                 &indices,
@@ -484,9 +486,11 @@ impl Core {
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
         let layers_props = unsafe { entry.enumerate_instance_layer_properties() }.to_sr_result()?;
 
-        Ok(layers_props
+        let supports_validation_layer = layers_props
             .iter()
-            .any(|p| p.layer_name_as_c_str().unwrap() == Self::VALIDATION_LAYER_NAME)) //TODO unwrap
+            .any(|p| p.layer_name_as_c_str().unwrap() == Self::VALIDATION_LAYER_NAME); //TODO unwrap
+
+        Ok(supports_validation_layer)
     }
 
     // TODO:
@@ -522,20 +526,25 @@ impl Core {
         instance: &Instance,
         physical_device: PhysicalDevice,
         required_device_extensions: &[*const i8],
-    ) -> bool {
+    ) -> SrResult<bool> {
         let required_exts_set: HashSet<&CStr> = required_device_extensions
             .iter()
             .map(|p| unsafe { CStr::from_ptr(*p) })
             .collect();
 
         let available_exts =
-            unsafe { instance.enumerate_device_extension_properties(physical_device) }.unwrap(); // TODO: unwrap
+            unsafe { instance.enumerate_device_extension_properties(physical_device) }.to_sr_result()?;
 
         let available_exts_set: HashSet<&CStr> = available_exts
             .iter()
-            .map(|props| props.extension_name_as_c_str().unwrap()) // TODO: unwrap
-            .collect();
+            .map(|props| props.extension_name_as_c_str()) 
+            .collect::<Result<_,_>>()
+            .map_err(|e| {
+                SrError::new(None, format!("Error while checking device extension support. Could not convert extension name to CStr with message: {e}"))
+            })?;
 
-        return required_exts_set.is_subset(&available_exts_set);
+        let all_exts_are_available = required_exts_set.is_subset(&available_exts_set);
+
+        Ok(all_exts_are_available)
     }
 }
