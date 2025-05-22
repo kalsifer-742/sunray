@@ -1,7 +1,13 @@
+extern crate shaderc;
+
 use std::{collections::HashSet, ffi::CStr};
 
 use crate::error::*;
-use ash::vk::{Image, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR};
+use ash::khr::ray_tracing_pipeline;
+use ash::vk::{
+    Image, KHR_RAY_TRACING_PIPELINE_SPEC_VERSION, PhysicalDeviceProperties2,
+    PhysicalDeviceRayTracingPipelinePropertiesKHR,
+};
 use ash::{
     Device, Entry, Instance,
     khr::{self, acceleration_structure, surface, swapchain},
@@ -88,6 +94,8 @@ pub struct Core {
     vertex_buffer: vulkan_abstraction::VertexBuffer,
     index_buffer: vulkan_abstraction::IndexBuffer,
     // blas: vulkan_abstraction::BLAS,
+    tlas: vulkan_abstraction::TLAS,
+    ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
 }
 
 impl Core {
@@ -439,7 +447,18 @@ impl Core {
             &cmd_pool,
             &queue,
             &blases,
-        );
+        )?;
+
+        let descriptor_sets = vulkan_abstraction::DescriptorSets::new(device, &tlas, todo!())?;
+
+        let ray_tracing_pipeline_device =
+            khr::ray_tracing_pipeline::Device::new(&instance, &device);
+
+        let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
+            device,
+            ray_tracing_pipeline_device,
+            &descriptor_sets,
+        )?;
 
         Ok(Self {
             entry,
@@ -457,6 +476,8 @@ impl Core {
             cmd_pool,
             vertex_buffer,
             index_buffer,
+            tlas,
+            ray_tracing_pipeline,
         })
     }
 
