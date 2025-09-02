@@ -16,7 +16,7 @@ impl DescriptorSets {
     const IMAGE_BINDING: u32 = 1;
 
     pub fn new(
-        device: ash::Device,
+        device: &ash::Device,
         tlas: &TLAS,
         output_image_view: &vk::ImageView,
     ) -> SrResult<Self> {

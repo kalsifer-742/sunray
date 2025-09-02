@@ -3,10 +3,8 @@ extern crate shaderc;
 use std::{collections::HashSet, ffi::CStr};
 
 use crate::error::*;
-use ash::khr::ray_tracing_pipeline;
 use ash::vk::{
-    Image, KHR_RAY_TRACING_PIPELINE_SPEC_VERSION, PhysicalDeviceProperties2,
-    PhysicalDeviceRayTracingPipelinePropertiesKHR,
+    Image, ImageCreateFlags, ImageFormatProperties, ImageLayout, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR
 };
 use ash::{
     Device, Entry, Instance,
@@ -258,6 +256,21 @@ impl Core {
             }
         };
 
+        let swapchain_image_extent = if swapchain_support_details.surface_capabilities.current_extent.width != u32::MAX {
+            swapchain_support_details.surface_capabilities.current_extent
+        } else {
+            Extent2D {
+                width: window_extent[0].clamp(
+                    swapchain_support_details.surface_capabilities.min_image_extent.width,
+                    swapchain_support_details.surface_capabilities.max_image_extent.width,
+                ),
+                height: window_extent[1].clamp(
+                    swapchain_support_details.surface_capabilities.min_image_extent.height,
+                    swapchain_support_details.surface_capabilities.max_image_extent.height,
+                ),
+            }
+        };
+
         let swapchain = {
             let present_modes = &swapchain_support_details.surface_present_modes;
             let present_mode = if present_modes.contains(&PresentModeKHR::MAILBOX) {
@@ -269,20 +282,6 @@ impl Core {
             };
 
             let surface_capabilities = &swapchain_support_details.surface_capabilities;
-            let image_extent = if surface_capabilities.current_extent.width != u32::MAX {
-                surface_capabilities.current_extent
-            } else {
-                Extent2D {
-                    width: window_extent[0].clamp(
-                        surface_capabilities.min_image_extent.width,
-                        surface_capabilities.max_image_extent.width,
-                    ),
-                    height: window_extent[1].clamp(
-                        surface_capabilities.min_image_extent.height,
-                        surface_capabilities.max_image_extent.height,
-                    ),
-                }
-            };
 
             // Sticking to this minimum means that we may sometimes have to wait on the driver to
             // complete internal operations before we can acquire another image to render to.
@@ -300,7 +299,7 @@ impl Core {
                 .min_image_count(image_count)
                 .image_format(surface_format.format)
                 .image_color_space(surface_format.color_space)
-                .image_extent(image_extent)
+                .image_extent(swapchain_image_extent)
                 .image_array_layers(1)
                 .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
                 .image_sharing_mode(SharingMode::EXCLUSIVE)
@@ -451,13 +450,69 @@ impl Core {
             &blases,
         )?;
 
-        let descriptor_sets = vulkan_abstraction::DescriptorSets::new(device, &tlas, todo!())?;
+        const OUT_IMAGE_FORMAT: Format = Format::B8G8R8A8_UNORM;
+
+        // the image we will do the rendering on; before every frame it will be copied to the swapchain
+        let image = {
+            let image_create_info = ash::vk::ImageCreateInfo::default()
+                .image_type(ash::vk::ImageType::TYPE_2D)
+                .format(OUT_IMAGE_FORMAT)
+                .extent(swapchain_image_extent.into())
+                .flags(ImageCreateFlags::empty())
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(ash::vk::SampleCountFlags::TYPE_1)
+                .tiling(ash::vk::ImageTiling::OPTIMAL)
+                .usage(
+                    ash::vk::ImageUsageFlags::STORAGE
+                    | ash::vk::ImageUsageFlags::TRANSFER_SRC,
+                    //| ash::vk::ImageUsageFlags::COLOR_ATTACHMENT // from copy&paste
+                )
+                .initial_layout(ImageLayout::UNDEFINED);
+
+            unsafe { device.create_image(&image_create_info, None) }.unwrap()
+        };
+
+        let device_memory = {
+            let mem_reqs = unsafe { device.get_image_memory_requirements(image) };
+            let mem_alloc_info = ash::vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_reqs.size)
+            .memory_type_index(vulkan_abstraction::get_memory_type_index(
+                ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                &mem_reqs,
+                &physical_device_memory_properties,
+            )?);
+
+            unsafe { device.allocate_memory(&mem_alloc_info, None) }.unwrap()
+        };
+
+        unsafe { device.bind_image_memory(image, device_memory, 0) }.unwrap();
+
+        let image_view = {
+            let image_view_create_info = ash::vk::ImageViewCreateInfo::default()
+            .view_type(ash::vk::ImageViewType::TYPE_2D)
+            .format(OUT_IMAGE_FORMAT)
+            .subresource_range(ash::vk::ImageSubresourceRange {
+                aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image(image);
+
+            unsafe { device.create_image_view(&image_view_create_info, None) }.unwrap()
+        };
+
+        /* TODO: maybe do this? https://github.com/KhronosGroup/Vulkan-Samples/blob/main/samples/extensions/ray_tracing_basic/ray_tracing_basic.cpp#L127 */
+
+        let descriptor_sets = vulkan_abstraction::DescriptorSets::new(&device, &tlas, &image_view)?;
 
         let ray_tracing_pipeline_device =
             khr::ray_tracing_pipeline::Device::new(&instance, &device);
 
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
-            device,
+            device.clone(),
             ray_tracing_pipeline_device,
             &descriptor_sets,
         )?;
