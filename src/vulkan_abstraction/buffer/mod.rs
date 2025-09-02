@@ -14,9 +14,37 @@ use crate::vulkan_abstraction::cmd_buffer;
 use ash::vk::{
     BufferUsageFlags, CommandPool, DeviceMemory, DeviceSize, MemoryAllocateFlags,
     MemoryAllocateFlagsInfo, MemoryPropertyFlags, PhysicalDeviceMemoryProperties,
+    MemoryRequirements
 };
 use ash::{Device, vk};
 use std::ops::Deref;
+
+pub fn get_memory_type_index(mem_prop_flags: MemoryPropertyFlags, mem_requirements: &MemoryRequirements, mem_props: &PhysicalDeviceMemoryProperties) -> SrResult<u32> {
+    type BitsType = u32;
+    let bits: BitsType = mem_requirements.memory_type_bits;
+    assert_ne!(bits, 0);
+
+    let mem_types = mem_props.memory_types;
+    let mut idx = -1;
+    for i in 0..(8 * size_of::<BitsType>()) {
+        let mem_type_is_supported = bits & (1 << i) != 0;
+        if mem_type_is_supported {
+            if mem_types[i].property_flags & mem_prop_flags == mem_prop_flags
+            {
+                idx = i as isize;
+                break;
+            }
+        }
+    }
+    if idx < 0 {
+        return Err(SrError::new(
+            None,
+            String::from("Vertex Buffer Memory Type not supported!"),
+        ));
+    }
+
+    Ok(idx as u32)
+}
 
 //I think Buffer should be a trait with some default implementations
 pub struct Buffer {
@@ -108,32 +136,7 @@ impl Buffer {
 
         let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
         let allocation_byte_size = mem_requirements.size;
-        let mem_type_idx = {
-            type BitsType = u32;
-            let bits: BitsType = mem_requirements.memory_type_bits;
-            assert_ne!(bits, 0);
-
-            let mem_types = mem_props.memory_types;
-            let mut idx = -1;
-            for i in 0..(8 * size_of::<BitsType>()) {
-                let mem_type_is_supported = bits & (1 << i) != 0;
-                if mem_type_is_supported {
-                    if mem_types[i].property_flags & memory_property_flags == memory_property_flags
-                    {
-                        idx = i as isize;
-                        break;
-                    }
-                }
-            }
-            if idx < 0 {
-                return Err(SrError::new(
-                    None,
-                    String::from("Vertex Buffer Memory Type not supported!"),
-                ));
-            }
-
-            idx as u32
-        };
+        let mem_type_idx = get_memory_type_index(memory_property_flags, &mem_requirements, &mem_props)?;
 
         let mut memory_allocate_flags_info = MemoryAllocateFlagsInfo::default().flags(alloc_flags);
 
