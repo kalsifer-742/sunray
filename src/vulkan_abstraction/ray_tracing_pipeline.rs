@@ -14,7 +14,9 @@ fn compile_shader_internal(
 ) -> shaderc::CompilationArtifact {
     //TODO: unwrap
     let compiler = shaderc::Compiler::new().unwrap();
-    let options = shaderc::CompileOptions::new().unwrap();
+    let mut options = shaderc::CompileOptions::new().unwrap();
+    options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
+
 
     let binary_result = compiler
         .compile_into_spirv(
@@ -76,7 +78,7 @@ impl RayTracingPipeline {
 
         let ray_miss_module = {
             let spirv =
-                compile_shader!("shaders/ray_miss.glsl", shaderc::ShaderKind::RayGeneration);
+                compile_shader!("shaders/ray_miss.glsl", shaderc::ShaderKind::Miss);
 
             let create_info = vk::ShaderModuleCreateInfo::default()
                 .code(spirv.as_binary())
@@ -88,7 +90,7 @@ impl RayTracingPipeline {
         let ray_miss_create_info = vk::PipelineShaderStageCreateInfo::default()
             .name(SHADER_ENTRY_POINT)
             .module(ray_miss_module)
-            .stage(vk::ShaderStageFlags::RAYGEN_KHR);
+            .stage(vk::ShaderStageFlags::MISS_KHR);
 
         stages.push(ray_miss_create_info);
 
@@ -106,7 +108,7 @@ impl RayTracingPipeline {
         let closest_hit_create_info = vk::PipelineShaderStageCreateInfo::default()
             .name(SHADER_ENTRY_POINT)
             .module(closest_hit_module)
-            .stage(vk::ShaderStageFlags::RAYGEN_KHR);
+            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR);
 
         stages.push(closest_hit_create_info);
 
@@ -114,20 +116,27 @@ impl RayTracingPipeline {
 
         let ray_gen_shader_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR::default()
             .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+            .intersection_shader(vk::SHADER_UNUSED_KHR)
             .general_shader(0); // TODO: bad
 
         shader_groups.push(ray_gen_shader_group_create_info);
 
         let ray_miss_shader_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR::default()
             .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+            .intersection_shader(vk::SHADER_UNUSED_KHR)
             .general_shader(1); // TODO: bad
 
         shader_groups.push(ray_miss_shader_group_create_info);
 
-        let closest_hit_shader_group_create_info =
-            vk::RayTracingShaderGroupCreateInfoKHR::default()
-                .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
-                .closest_hit_shader(2); // TODO: bad
+        let closest_hit_shader_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR::default()
+            .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
+            .intersection_shader(vk::SHADER_UNUSED_KHR)
+            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+            .closest_hit_shader(2); // TODO: bad
 
         shader_groups.push(closest_hit_shader_group_create_info);
 
