@@ -54,7 +54,7 @@ pub struct RayTracingPipeline {
 impl RayTracingPipeline {
     pub fn new(
         device: ash::Device,
-        ray_tracing_pipeline_device: khr::ray_tracing_pipeline::Device,
+        ray_tracing_pipeline_device: &khr::ray_tracing_pipeline::Device,
         descriptor_sets: &vulkan_abstraction::DescriptorSets,
     ) -> SrResult<Self> {
         let mut stages = Vec::new();
@@ -186,6 +186,8 @@ impl RayTracingPipeline {
             pipeline_layout,
         })
     }
+
+    pub fn get_handle(&self) -> vk::Pipeline { self.pipeline }
 }
 
 impl Drop for RayTracingPipeline {

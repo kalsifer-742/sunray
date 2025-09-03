@@ -4,7 +4,7 @@ use std::{collections::HashSet, ffi::CStr};
 
 use crate::error::*;
 use ash::vk::{
-    Image, ImageCreateFlags, ImageFormatProperties, ImageLayout, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR
+    Image, ImageCreateFlags, ImageLayout, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR
 };
 use ash::{
     Device, Entry, Instance,
@@ -94,17 +94,14 @@ pub struct Core {
     // blas: vulkan_abstraction::BLAS,
     tlas: vulkan_abstraction::TLAS,
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
+    shader_binding_table: vulkan_abstraction::ShaderBindingTable,
 }
 
 impl Core {
     const VALIDATION_LAYER_NAME: &'static CStr = c"VK_LAYER_KHRONOS_validation";
 
     // TODO: currently take for granted that the user has a window, no support for offline rendering
-    pub fn new(
-        window_extent: [u32; 2],
-        raw_window_handle: RawWindowHandle,
-        raw_display_handle: RawDisplayHandle,
-    ) -> SrResult<Self> {
+    pub fn new(window_extent: [u32; 2], raw_window_handle: RawWindowHandle, raw_display_handle: RawDisplayHandle) -> SrResult<Self> {
         let entry = Entry::linked();
         let application_info = ApplicationInfo::default().api_version(make_api_version(0, 1, 4, 0));
 
@@ -453,6 +450,7 @@ impl Core {
         const OUT_IMAGE_FORMAT: Format = Format::B8G8R8A8_UNORM;
 
         // the image we will do the rendering on; before every frame it will be copied to the swapchain
+        // TODO: actually copy this image onto the swapchain image at every frame (currently not done)
         let image = {
             let image_create_info = ash::vk::ImageCreateInfo::default()
                 .image_type(ash::vk::ImageType::TYPE_2D)
@@ -513,8 +511,16 @@ impl Core {
 
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
             device.clone(),
-            ray_tracing_pipeline_device,
+            &ray_tracing_pipeline_device,
             &descriptor_sets,
+        )?;
+
+        let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(
+            &device,
+            &ray_tracing_pipeline_device,
+            &ray_tracing_pipeline,
+            &physical_device_rt_pipeline_properties,
+            &physical_device_memory_properties,
         )?;
 
         Ok(Self {
@@ -535,6 +541,7 @@ impl Core {
             index_buffer,
             tlas,
             ray_tracing_pipeline,
+            shader_binding_table,
         })
     }
 
