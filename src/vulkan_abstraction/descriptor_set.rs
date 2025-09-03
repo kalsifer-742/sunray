@@ -112,4 +112,7 @@ impl DescriptorSets {
     pub fn get_layouts(&self) -> &[vk::DescriptorSetLayout] {
         &self.descriptor_set_layouts
     }
+    pub fn get_handles(&self) -> &[vk::DescriptorSet] {
+        &self.descriptor_sets
+    }
 }

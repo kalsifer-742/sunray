@@ -6,7 +6,12 @@ fn aligned_size(value : u32, alignment : u32) -> u32 {
 }
 
 pub struct ShaderBindingTable {
+    #[allow(unused)]
     sbt_buffer: vulkan_abstraction::Buffer,
+    raygen_region: StridedDeviceAddressRegionKHR,
+    miss_region: StridedDeviceAddressRegionKHR,
+    hit_region: StridedDeviceAddressRegionKHR,
+    callable_region: StridedDeviceAddressRegionKHR,
 }
 
 impl ShaderBindingTable {
@@ -40,7 +45,7 @@ impl ShaderBindingTable {
             .stride(handle_size_aligned as u64)
             .size(aligned_size(hit_count * handle_size_aligned, base_alignment) as u64);
 
-        let call_region = StridedDeviceAddressRegionKHR::default();
+        let callable_region = StridedDeviceAddressRegionKHR::default();
 
         let data_size = handle_count as usize * handle_size;
 
@@ -50,7 +55,7 @@ impl ShaderBindingTable {
         }.to_sr_result()?;
 
         // Allocate a buffer for storing the SBT.
-        let sbt_buffer_size = (raygen_region.size + miss_region.size + hit_region.size + call_region.size) as usize;
+        let sbt_buffer_size = (raygen_region.size + miss_region.size + hit_region.size + callable_region.size) as usize;
         let mut sbt_buffer = vulkan_abstraction::Buffer::new::<u8>(
             device.clone(),
             sbt_buffer_size,
@@ -92,7 +97,15 @@ impl ShaderBindingTable {
         hit_region.device_address = sbt_buffer_device_address + raygen_region.size + miss_region.size;
 
         Ok(Self {
-            sbt_buffer
+            sbt_buffer,
+            raygen_region,
+            miss_region,
+            hit_region,
+            callable_region,
         })
     }
+    pub fn get_raygen_region(&self) -> &StridedDeviceAddressRegionKHR { return &self.raygen_region; }
+    pub fn get_miss_region(&self) -> &StridedDeviceAddressRegionKHR { return &self.miss_region; }
+    pub fn get_hit_region(&self) -> &StridedDeviceAddressRegionKHR { return &self.hit_region; }
+    pub fn get_callable_region(&self) -> &StridedDeviceAddressRegionKHR { return &self.callable_region; }
 }

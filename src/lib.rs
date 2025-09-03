@@ -4,7 +4,7 @@ use std::{collections::HashSet, ffi::CStr};
 
 use crate::error::*;
 use ash::vk::{
-    Image, ImageCreateFlags, ImageLayout, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR
+    AccessFlags, CommandBuffer, CommandBufferBeginInfo, CommandBufferUsageFlags, DependencyFlags, Image, ImageCopy, ImageCreateFlags, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR, PipelineBindPoint, PipelineStageFlags, ShaderStageFlags
 };
 use ash::{
     Device, Entry, Instance,
@@ -84,15 +84,19 @@ pub struct Core {
 
     queue: vulkan_abstraction::Queue,
     surface: SurfaceKHR,
+    swapchain_image_extent: Extent2D,
     swapchain: SwapchainKHR,
-    images: Vec<Image>,
-    image_views: Vec<ImageView>,
+    swapchain_images: Vec<Image>,
+    swapchain_image_views: Vec<ImageView>,
     physical_device_rt_pipeline_properties: PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>, // 'static because pNext is null
     cmd_pool: vulkan_abstraction::CmdPool,
     vertex_buffer: vulkan_abstraction::VertexBuffer,
     index_buffer: vulkan_abstraction::IndexBuffer,
     // blas: vulkan_abstraction::BLAS,
     tlas: vulkan_abstraction::TLAS,
+    image: Image,
+    descriptor_sets: vulkan_abstraction::DescriptorSets,
+    ray_tracing_pipeline_device: khr::ray_tracing_pipeline::Device,
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
     shader_binding_table: vulkan_abstraction::ShaderBindingTable,
 }
@@ -232,7 +236,7 @@ impl Core {
             0,
         )?;
 
-        // for creating swapchain and image_views
+        // for creating swapchain and swapchain_image_views
         let surface_format = {
             let formats = swapchain_support_details.surface_formats;
 
@@ -298,7 +302,7 @@ impl Core {
                 .image_color_space(surface_format.color_space)
                 .image_extent(swapchain_image_extent)
                 .image_array_layers(1)
-                .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
+                .image_usage(ImageUsageFlags::COLOR_ATTACHMENT | ImageUsageFlags::TRANSFER_DST)
                 .image_sharing_mode(SharingMode::EXCLUSIVE)
                 .pre_transform(surface_capabilities.current_transform)
                 .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
@@ -310,9 +314,9 @@ impl Core {
                 .to_sr_result()?
         };
 
-        let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.to_sr_result()?;
+        let swapchain_images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.to_sr_result()?;
 
-        let image_views = images
+        let swapchain_image_views = swapchain_images
             .iter()
             .map(|image| {
                 let image_view_create_info = ImageViewCreateInfo::default()
@@ -358,12 +362,18 @@ impl Core {
 
             physical_device_rt_pipeline_properties
         };
+        let cmd_pool = {
+            let mut cmd_pool = vulkan_abstraction::CmdPool::new(
+                device.clone(),
+                CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                queue_family_index,
+            )?;
 
-        let cmd_pool = vulkan_abstraction::CmdPool::new(
-            device.clone(),
-            CommandPoolCreateFlags::empty(),
-            queue_family_index,
-        )?;
+            // add render command buffers to cmd_pool
+            cmd_pool.append_buffers(vulkan_abstraction::cmd_buffer::new_vec(&cmd_pool.as_raw(), &device, swapchain_images.len())?);
+
+            cmd_pool
+        };
 
         let vertex_buffer = {
             #[derive(Clone, Copy)]
@@ -447,62 +457,87 @@ impl Core {
             &blases,
         )?;
 
-        const OUT_IMAGE_FORMAT: Format = Format::B8G8R8A8_UNORM;
+        const OUT_IMAGE_FORMAT: Format = Format::R8G8B8A8_UNORM;
 
         // the image we will do the rendering on; before every frame it will be copied to the swapchain
-        // TODO: actually copy this image onto the swapchain image at every frame (currently not done)
-        let image = {
-            let image_create_info = ash::vk::ImageCreateInfo::default()
-                .image_type(ash::vk::ImageType::TYPE_2D)
+        // TODO: dispose of these respources in drop(), maybe even abstract them into a struct
+        let (image, _image_device_memory, image_view) = {
+            let image = {
+                let image_create_info = ash::vk::ImageCreateInfo::default()
+                    .image_type(ash::vk::ImageType::TYPE_2D)
+                    .format(OUT_IMAGE_FORMAT)
+                    .extent(swapchain_image_extent.into())
+                    .flags(ImageCreateFlags::empty())
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(ash::vk::SampleCountFlags::TYPE_1)
+                    .tiling(ash::vk::ImageTiling::OPTIMAL)
+                    .usage(
+                        ash::vk::ImageUsageFlags::STORAGE
+                        | ash::vk::ImageUsageFlags::TRANSFER_SRC,
+                    )
+                    .initial_layout(ImageLayout::UNDEFINED);
+
+                unsafe { device.create_image(&image_create_info, None) }.unwrap()
+            };
+
+            let image_device_memory = {
+                let mem_reqs = unsafe { device.get_image_memory_requirements(image) };
+                let mem_alloc_info = ash::vk::MemoryAllocateInfo::default()
+                .allocation_size(mem_reqs.size)
+                .memory_type_index(vulkan_abstraction::get_memory_type_index(
+                    ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    &mem_reqs,
+                    &physical_device_memory_properties,
+                )?);
+
+                unsafe { device.allocate_memory(&mem_alloc_info, None) }.unwrap()
+            };
+
+            unsafe { device.bind_image_memory(image, image_device_memory, 0) }.unwrap();
+
+            let image_view = {
+                let image_view_create_info = ash::vk::ImageViewCreateInfo::default()
+                .view_type(ash::vk::ImageViewType::TYPE_2D)
                 .format(OUT_IMAGE_FORMAT)
-                .extent(swapchain_image_extent.into())
-                .flags(ImageCreateFlags::empty())
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(ash::vk::SampleCountFlags::TYPE_1)
-                .tiling(ash::vk::ImageTiling::OPTIMAL)
-                .usage(
-                    ash::vk::ImageUsageFlags::STORAGE
-                    | ash::vk::ImageUsageFlags::TRANSFER_SRC,
-                    //| ash::vk::ImageUsageFlags::COLOR_ATTACHMENT // from copy&paste
-                )
-                .initial_layout(ImageLayout::UNDEFINED);
+                .subresource_range(ash::vk::ImageSubresourceRange {
+                    aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image(image);
 
-            unsafe { device.create_image(&image_create_info, None) }.unwrap()
+                unsafe { device.create_image_view(&image_view_create_info, None) }.unwrap()
+            };
+
+            //switch the ImageLayout from UNDEFINED TO GENERAL
+            {
+                let image_barrier_cmd_buf = vulkan_abstraction::cmd_buffer::new(&cmd_pool.as_raw(), &device)?;
+
+                let begin_info = CommandBufferBeginInfo::default()
+                    .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+                //record command buffer
+                unsafe {
+                    device.begin_command_buffer(image_barrier_cmd_buf, &begin_info)
+                        .to_sr_result()?;
+
+                    Self::cmd_image_memory_barrier(&device, image_barrier_cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL);
+
+                    device.end_command_buffer(image_barrier_cmd_buf).to_sr_result()?;
+                }
+
+                queue.submit_sync(image_barrier_cmd_buf)?;
+
+                unsafe { device.device_wait_idle() }.to_sr_result()?;
+
+                unsafe { device.free_command_buffers(*cmd_pool, &[image_barrier_cmd_buf]) };
+            }
+
+            (image, image_device_memory, image_view)
         };
-
-        let device_memory = {
-            let mem_reqs = unsafe { device.get_image_memory_requirements(image) };
-            let mem_alloc_info = ash::vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_reqs.size)
-            .memory_type_index(vulkan_abstraction::get_memory_type_index(
-                ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                &mem_reqs,
-                &physical_device_memory_properties,
-            )?);
-
-            unsafe { device.allocate_memory(&mem_alloc_info, None) }.unwrap()
-        };
-
-        unsafe { device.bind_image_memory(image, device_memory, 0) }.unwrap();
-
-        let image_view = {
-            let image_view_create_info = ash::vk::ImageViewCreateInfo::default()
-            .view_type(ash::vk::ImageViewType::TYPE_2D)
-            .format(OUT_IMAGE_FORMAT)
-            .subresource_range(ash::vk::ImageSubresourceRange {
-                aspect_mask: ash::vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            })
-            .image(image);
-
-            unsafe { device.create_image_view(&image_view_create_info, None) }.unwrap()
-        };
-
-        /* TODO: maybe do this? https://github.com/KhronosGroup/Vulkan-Samples/blob/main/samples/extensions/ray_tracing_basic/ray_tracing_basic.cpp#L127 */
 
         let descriptor_sets = vulkan_abstraction::DescriptorSets::new(&device, &tlas, &image_view)?;
 
@@ -523,6 +558,19 @@ impl Core {
             &physical_device_memory_properties,
         )?;
 
+        Self::record_render_command_buffers(
+            &device,
+            &cmd_pool.get_buffers()[..swapchain_images.len()],
+            &ray_tracing_pipeline_device,
+            &ray_tracing_pipeline,
+            &descriptor_sets,
+            &shader_binding_table,
+            swapchain_image_extent,
+            &swapchain_images,
+            image,
+        )?;
+
+
         Ok(Self {
             entry,
             instance,
@@ -532,17 +580,146 @@ impl Core {
             acceleration_structure_device,
             queue,
             surface,
+            swapchain_image_extent,
             swapchain,
-            images,
-            image_views,
+            swapchain_images,
+            swapchain_image_views,
             physical_device_rt_pipeline_properties,
             cmd_pool,
             vertex_buffer,
             index_buffer,
             tlas,
+            image,
+            descriptor_sets,
+            ray_tracing_pipeline_device,
             ray_tracing_pipeline,
             shader_binding_table,
         })
+    }
+
+    pub fn render(&mut self) -> SrResult<()> {
+        let img_index = self.queue.acquire_next_image(self.swapchain)?;
+
+        let cmd_buf = self.cmd_pool.get_buffers()[img_index as usize];
+
+        self.queue.submit_async(cmd_buf)?;
+        self.queue.wait_idle()?;
+
+        self.queue.present(self.swapchain, img_index)?;
+
+        self.queue.wait_idle()?;
+
+        Ok(())
+    }
+
+
+
+    unsafe fn cmd_image_memory_barrier (device: &Device, cmd_buf: CommandBuffer, image: Image, old_layout: ImageLayout, new_layout: ImageLayout) {
+        let image_memory_barrier = ImageMemoryBarrier::default()
+            .src_access_mask(AccessFlags::empty())
+            .dst_access_mask(AccessFlags::empty())
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .image(image)
+            .subresource_range(
+                ImageSubresourceRange::default()
+                    .aspect_mask(ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1)
+            );
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                PipelineStageFlags::ALL_COMMANDS,
+                PipelineStageFlags::ALL_COMMANDS,
+                DependencyFlags::empty(),
+                &[], // memory barriers
+                &[], // pipeline memory barriers
+                &[image_memory_barrier]
+            );
+        }
+    }
+
+    fn record_render_command_buffers(
+        device: &Device,
+        cmd_bufs: &[CommandBuffer],
+        rt_pipeline_device : &khr::ray_tracing_pipeline::Device,
+        rt_pipeline: &vulkan_abstraction::RayTracingPipeline,
+        descriptor_sets: &vulkan_abstraction::DescriptorSets,
+        shader_binding_table: &vulkan_abstraction::ShaderBindingTable,
+        swapchain_image_extent: Extent2D,
+        swapchain_images: &[Image],
+        image: Image,
+    ) -> SrResult<()> {
+        let cmd_buf_usage_flags = CommandBufferUsageFlags::SIMULTANEOUS_USE;
+        let cmd_buf_begin_info = CommandBufferBeginInfo::default()
+        .flags(cmd_buf_usage_flags);
+
+        for (i, cmd_buf) in cmd_bufs.iter().cloned().enumerate() {
+            // Initializing push constant values
+            let push_constants = vulkan_abstraction::PushConstant {
+                clear_color: [1.0, 0.0, 0.0, 1.0],
+            };
+
+            unsafe {
+
+
+
+                device.begin_command_buffer(cmd_buf, &cmd_buf_begin_info).to_sr_result()?;
+
+                device.cmd_bind_pipeline(cmd_buf, PipelineBindPoint::RAY_TRACING_KHR, rt_pipeline.get_handle());
+                device.cmd_bind_descriptor_sets(
+                    cmd_buf,
+                    PipelineBindPoint::RAY_TRACING_KHR,
+                    rt_pipeline.get_layout(),
+                    0,
+                    descriptor_sets.get_handles(), &[]
+                );
+                device.cmd_push_constants(
+                    cmd_buf,
+                    rt_pipeline.get_layout(),
+                    ShaderStageFlags::RAYGEN_KHR | ShaderStageFlags::CLOSEST_HIT_KHR | ShaderStageFlags::MISS_KHR,
+                    0, &std::mem::transmute::<vulkan_abstraction::PushConstant, [u8;16]>(push_constants)
+                );
+                rt_pipeline_device.cmd_trace_rays(
+                    cmd_buf,
+                    shader_binding_table.get_raygen_region(),
+                    shader_binding_table.get_miss_region(),
+                    shader_binding_table.get_hit_region(),
+                    shader_binding_table.get_callable_region(),
+                    swapchain_image_extent.width,
+                    swapchain_image_extent.height,
+                    1
+                );
+
+                Self::cmd_image_memory_barrier(device, cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::TRANSFER_SRC_OPTIMAL);
+                Self::cmd_image_memory_barrier(device, cmd_buf, swapchain_images[i], ImageLayout::UNDEFINED, ImageLayout::TRANSFER_DST_OPTIMAL);
+
+                //now copy the image onto the swapchain image
+                let image_subresource_layers = ImageSubresourceLayers::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .mip_level(0)
+                            .base_array_layer(0)
+                            .layer_count(1);
+                let image_copy_info = ImageCopy::default()
+                    .src_subresource(image_subresource_layers)
+                    .src_offset(ash::vk::Offset3D { x: 0, y: 0, z: 0 })
+                    .dst_subresource(image_subresource_layers)
+                    .dst_offset(ash::vk::Offset3D { x: 0, y: 0, z: 0 })
+                    .extent(swapchain_image_extent.into());
+                device.cmd_copy_image(cmd_buf, image, ImageLayout::TRANSFER_SRC_OPTIMAL, swapchain_images[i], ImageLayout::TRANSFER_DST_OPTIMAL, &[image_copy_info]);
+
+                Self::cmd_image_memory_barrier(device, cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL);
+                Self::cmd_image_memory_barrier(device, cmd_buf, swapchain_images[i], ImageLayout::UNDEFINED, ImageLayout::PRESENT_SRC_KHR);
+
+                device.end_command_buffer(cmd_buf).to_sr_result()?;
+            }
+
+        }
+
+        Ok(())
     }
 
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {

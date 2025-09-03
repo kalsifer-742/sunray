@@ -41,8 +41,9 @@ macro_rules! compile_shader {
     };
 }
 
-struct PushConstant {
-    clear_color: [f32; 4],
+#[allow(dead_code)] // read by the gpu
+pub struct PushConstant {
+    pub clear_color: [f32; 4],
 }
 
 pub struct RayTracingPipeline {
@@ -188,6 +189,7 @@ impl RayTracingPipeline {
     }
 
     pub fn get_handle(&self) -> vk::Pipeline { self.pipeline }
+    pub fn get_layout(&self) -> vk::PipelineLayout { self.pipeline_layout }
 }
 
 impl Drop for RayTracingPipeline {

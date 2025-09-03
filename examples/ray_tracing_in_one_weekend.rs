@@ -10,6 +10,7 @@ use winit::{
 #[derive(Default)]
 struct App {
     window: Option<Window>,
+    core: Option<Core>,
 }
 
 impl ApplicationHandler for App {
@@ -20,12 +21,14 @@ impl ApplicationHandler for App {
                 .unwrap(),
         );
 
-        let _core = Core::new(
-            self.window.as_ref().unwrap().inner_size().into(),
-            self.window.as_ref().unwrap().raw_window_handle(),
-            self.window.as_ref().unwrap().raw_display_handle(),
-        )
-        .unwrap();
+        self.core = Some(
+            Core::new(
+                self.window.as_ref().unwrap().inner_size().into(),
+                self.window.as_ref().unwrap().raw_window_handle(),
+                self.window.as_ref().unwrap().raw_display_handle(),
+            )
+            .unwrap()
+        );
     }
 
     fn window_event(
@@ -38,7 +41,9 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::RedrawRequested => {}
+            WindowEvent::RedrawRequested => {
+                self.core.as_mut().unwrap().render().unwrap();
+            }
             _ => (),
         }
     }
