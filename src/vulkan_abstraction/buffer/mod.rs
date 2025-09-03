@@ -222,7 +222,7 @@ impl Buffer {
         unsafe { device.device_wait_idle() }.to_sr_result()?;
 
         unsafe { device.free_command_buffers(*cmd_pool, &[bufcpy_cmd_buf]) };
-        // vk_core.get_queue().wait_idle()?;
+        // queue.wait_idle()?;
 
         Ok(())
     }
