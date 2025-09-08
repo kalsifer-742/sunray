@@ -23,7 +23,7 @@ impl ShaderBindingTable {
         physical_device_memory_properties: &PhysicalDeviceMemoryProperties,
     ) -> SrResult<Self> {
         const RAYGEN_COUNT: u32 = 1; //There is always one and only one raygen
-        let miss_count = 1;
+        let miss_count = 1; // TODO: be more flexible and allow the user to provide more than 1 hit/miss shader
         let hit_count = 1;
         let handle_count = RAYGEN_COUNT + miss_count + hit_count;
 
@@ -32,10 +32,10 @@ impl ShaderBindingTable {
         let base_alignment = physical_device_rt_pipeline_properties.shader_group_base_alignment;
         let handle_size_aligned = aligned_size(handle_size as u32, handle_alignment);
 
-        let raygen_stride = aligned_size(handle_size_aligned, base_alignment);
+        let raygen_size = aligned_size(RAYGEN_COUNT * handle_size_aligned, base_alignment);
         let mut raygen_region = StridedDeviceAddressRegionKHR::default()
-            .stride(raygen_stride as u64)
-            .size(raygen_stride as u64);
+            .stride(raygen_size as u64)
+            .size(raygen_size as u64);
 
         let mut miss_region = StridedDeviceAddressRegionKHR::default()
             .stride(handle_size_aligned as u64)
@@ -59,7 +59,7 @@ impl ShaderBindingTable {
         let mut sbt_buffer = vulkan_abstraction::Buffer::new::<u8>(
             device.clone(),
             sbt_buffer_size,
-            MemoryPropertyFlags::HOST_VISIBLE,
+            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
             MemoryAllocateFlags::DEVICE_ADDRESS,
             BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::SHADER_DEVICE_ADDRESS | BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
             physical_device_memory_properties
