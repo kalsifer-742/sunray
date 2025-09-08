@@ -384,10 +384,10 @@ impl Core {
 
             let verts = [
                 Vertex {
-                    pos: [-1.0, 0.0, 0.0],
+                    pos: [-1.0, -0.5, 0.0],
                 },
                 Vertex {
-                    pos: [1.0, 0.0, 0.0],
+                    pos: [1.0, -0.5, 0.0],
                 },
                 Vertex {
                     pos: [0.0, 1.0, 0.0],
@@ -606,12 +606,10 @@ impl Core {
         self.queue.wait_idle()?;
 
         self.queue.present(self.swapchain, img_index)?;
-
         self.queue.wait_idle()?;
 
         Ok(())
     }
-
 
 
     unsafe fn cmd_image_memory_barrier (device: &Device, cmd_buf: CommandBuffer, image: Image, old_layout: ImageLayout, new_layout: ImageLayout) {
@@ -632,11 +630,11 @@ impl Core {
         unsafe {
             device.cmd_pipeline_barrier(
                 cmd_buf,
-                PipelineStageFlags::ALL_COMMANDS,
-                PipelineStageFlags::ALL_COMMANDS,
+                PipelineStageFlags::ALL_COMMANDS, // wait for all commands from any pipeline stage unconditionally
+                PipelineStageFlags::ALL_COMMANDS, // block all commands from any pipeline stage unconditionally
                 DependencyFlags::empty(),
                 &[], // memory barriers
-                &[], // pipeline memory barriers
+                &[], // buffer memory barriers
                 &[image_memory_barrier]
             );
         }
@@ -664,9 +662,6 @@ impl Core {
             };
 
             unsafe {
-
-
-
                 device.begin_command_buffer(cmd_buf, &cmd_buf_begin_info).to_sr_result()?;
 
                 device.cmd_bind_pipeline(cmd_buf, PipelineBindPoint::RAY_TRACING_KHR, rt_pipeline.get_handle());
@@ -699,10 +694,10 @@ impl Core {
 
                 //now copy the image onto the swapchain image
                 let image_subresource_layers = ImageSubresourceLayers::default()
-                            .aspect_mask(ImageAspectFlags::COLOR)
-                            .mip_level(0)
-                            .base_array_layer(0)
-                            .layer_count(1);
+                    .aspect_mask(ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1);
                 let image_copy_info = ImageCopy::default()
                     .src_subresource(image_subresource_layers)
                     .src_offset(ash::vk::Offset3D { x: 0, y: 0, z: 0 })
@@ -716,7 +711,6 @@ impl Core {
 
                 device.end_command_buffer(cmd_buf).to_sr_result()?;
             }
-
         }
 
         Ok(())
