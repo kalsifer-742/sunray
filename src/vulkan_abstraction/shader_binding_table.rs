@@ -6,7 +6,7 @@ fn aligned_size(value : u32, alignment : u32) -> u32 {
 }
 
 pub struct ShaderBindingTable {
-    #[allow(unused)]
+    #[allow(unused)] // never read after construction, except from raygen/miss/hit_region attributes
     sbt_buffer: vulkan_abstraction::Buffer,
     raygen_region: StridedDeviceAddressRegionKHR,
     miss_region: StridedDeviceAddressRegionKHR,
@@ -70,7 +70,7 @@ impl ShaderBindingTable {
 
         //copying raygen handle in the sbt_buffer
         sbt_buffer_data[buffer_index..buffer_index+handle_size].copy_from_slice(&handles[handles_index..handles_index+handle_size]);
-        buffer_index += raygen_region.size as usize;
+        buffer_index = raygen_region.size as usize;
         handles_index += handle_size;
 
         //copying miss handles in the sbt_buffer
@@ -82,6 +82,7 @@ impl ShaderBindingTable {
         //align to next shader group start
         buffer_index = (raygen_region.size + miss_region.size) as usize;
 
+        //copying hit handles in the sbt buffer
         for _ in 0..hit_count {
         sbt_buffer_data[buffer_index..buffer_index+handle_size].copy_from_slice(&handles[handles_index..handles_index+handle_size]);
             buffer_index += hit_region.stride as usize;

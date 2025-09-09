@@ -69,13 +69,11 @@ impl RayTracingPipeline {
 
             unsafe { device.create_shader_module(&create_info, None) }.to_sr_result()?
         };
-
         let ray_gen_create_info = vk::PipelineShaderStageCreateInfo::default()
             .name(SHADER_ENTRY_POINT)
             .module(ray_gen_module)
             .stage(vk::ShaderStageFlags::RAYGEN_KHR);
 
-        stages.push(ray_gen_create_info);
 
         let ray_miss_module = {
             let spirv =
@@ -87,13 +85,11 @@ impl RayTracingPipeline {
 
             unsafe { device.create_shader_module(&create_info, None) }.to_sr_result()?
         };
-
         let ray_miss_create_info = vk::PipelineShaderStageCreateInfo::default()
             .name(SHADER_ENTRY_POINT)
             .module(ray_miss_module)
             .stage(vk::ShaderStageFlags::MISS_KHR);
 
-        stages.push(ray_miss_create_info);
 
         let closest_hit_module = {
             let spirv =
@@ -105,22 +101,29 @@ impl RayTracingPipeline {
 
             unsafe { device.create_shader_module(&create_info, None) }.to_sr_result()?
         };
-
         let closest_hit_create_info = vk::PipelineShaderStageCreateInfo::default()
             .name(SHADER_ENTRY_POINT)
             .module(closest_hit_module)
             .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR);
 
+        let ray_gen_stage_index = stages.len();
+        stages.push(ray_gen_create_info);
+        let ray_miss_stage_index = stages.len();
+        stages.push(ray_miss_create_info);
+        let closest_hit_stage_index = stages.len();
         stages.push(closest_hit_create_info);
 
         let mut shader_groups = Vec::new();
+        assert_eq!(ray_gen_stage_index, 0);
+        assert_eq!(ray_miss_stage_index, 1);
+        assert_eq!(closest_hit_stage_index, 2);
 
         let ray_gen_shader_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR::default()
             .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
             .closest_hit_shader(vk::SHADER_UNUSED_KHR)
             .any_hit_shader(vk::SHADER_UNUSED_KHR)
             .intersection_shader(vk::SHADER_UNUSED_KHR)
-            .general_shader(0); // TODO: bad
+            .general_shader(ray_gen_stage_index as u32);
 
         shader_groups.push(ray_gen_shader_group_create_info);
 
@@ -129,7 +132,7 @@ impl RayTracingPipeline {
             .closest_hit_shader(vk::SHADER_UNUSED_KHR)
             .any_hit_shader(vk::SHADER_UNUSED_KHR)
             .intersection_shader(vk::SHADER_UNUSED_KHR)
-            .general_shader(1); // TODO: bad
+            .general_shader(ray_miss_stage_index as u32);
 
         shader_groups.push(ray_miss_shader_group_create_info);
 
@@ -137,15 +140,15 @@ impl RayTracingPipeline {
             .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
             .intersection_shader(vk::SHADER_UNUSED_KHR)
             .any_hit_shader(vk::SHADER_UNUSED_KHR)
-            .closest_hit_shader(2); // TODO: bad
+            .closest_hit_shader(closest_hit_stage_index as u32);
 
         shader_groups.push(closest_hit_shader_group_create_info);
 
         let push_constants = [vk::PushConstantRange::default()
             .stage_flags(
                 vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                    | vk::ShaderStageFlags::MISS_KHR,
+                | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                | vk::ShaderStageFlags::MISS_KHR,
             )
             .offset(0)
             .size(std::mem::size_of::<PushConstant>() as u32)];
