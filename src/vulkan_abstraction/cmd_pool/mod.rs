@@ -38,6 +38,7 @@ impl CmdPool {
 }
 impl Drop for CmdPool {
     fn drop(&mut self) {
+        unsafe { self.device.device_wait_idle() }.to_sr_result().unwrap();
         if self.cmd_bufs.len() != 0 {
             // cmd_bufs must be destroyed before cmd_pool
             unsafe { self.device.free_command_buffers(self.cmd_pool, &self.cmd_bufs) };

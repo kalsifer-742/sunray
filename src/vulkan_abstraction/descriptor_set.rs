@@ -7,7 +7,9 @@ use crate::error::*;
 use super::TLAS;
 
 pub struct DescriptorSets {
+    device: ash::Device,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_pool: vk::DescriptorPool,
     descriptor_set_layouts: Vec<vk::DescriptorSetLayout>,
 }
 
@@ -16,7 +18,7 @@ impl DescriptorSets {
     const IMAGE_BINDING: u32 = 1;
 
     pub fn new(
-        device: &ash::Device,
+        device: ash::Device,
         tlas: &TLAS,
         output_image_view: &vk::ImageView,
     ) -> SrResult<Self> {
@@ -104,7 +106,9 @@ impl DescriptorSets {
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
 
         Ok(Self {
+            device,
             descriptor_sets,
+            descriptor_pool,
             descriptor_set_layouts,
         })
     }
@@ -114,5 +118,18 @@ impl DescriptorSets {
     }
     pub fn get_handles(&self) -> &[vk::DescriptorSet] {
         &self.descriptor_sets
+    }
+}
+
+impl Drop for DescriptorSets {
+    fn drop(&mut self) {
+        //only do this if you set VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
+        //unsafe { self.device.free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets) }.to_sr_result().unwrap();
+
+        unsafe { self.device.destroy_descriptor_pool(self.descriptor_pool, None) };
+
+        for layout in self.descriptor_set_layouts.iter() {
+            unsafe { self.device.destroy_descriptor_set_layout(*layout, None) };
+        }
     }
 }

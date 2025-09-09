@@ -1,20 +1,9 @@
 use std::ops::Deref;
 
 use ash::{
-    Device,
-    khr::acceleration_structure,
-    vk::{
-        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR,
-        AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR,
-        AccelerationStructureCreateInfoKHR, AccelerationStructureDeviceAddressInfoKHR,
-        AccelerationStructureGeometryDataKHR, AccelerationStructureGeometryInstancesDataKHR,
-        AccelerationStructureGeometryKHR, AccelerationStructureInstanceKHR,
-        AccelerationStructureKHR, AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR,
-        BufferUsageFlags, BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR,
-        CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR,
-        GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags, MemoryPropertyFlags,
-        Packed24_8, PhysicalDeviceMemoryProperties, TransformMatrixKHR,
-    },
+    khr::acceleration_structure, vk::{
+        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR, AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR, AccelerationStructureCreateInfoKHR, AccelerationStructureDeviceAddressInfoKHR, AccelerationStructureGeometryDataKHR, AccelerationStructureGeometryInstancesDataKHR, AccelerationStructureGeometryKHR, AccelerationStructureInstanceKHR, AccelerationStructureKHR, AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR, BufferUsageFlags, BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags, MemoryPropertyFlags, Packed24_8, PhysicalDeviceMemoryProperties, TransformMatrixKHR
+    }, Device
 };
 
 use super::BLAS;
@@ -28,13 +17,8 @@ use crate::{
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
 // - https://github.com/SaschaWillems/Vulkan
 
-// in the needed structs the s_type usually never appears as a method to modify it but only as a public property
-// in c++ it is always assigned meanwhile in the rust examples it si never assigned
-// i think beacuse ::default() takes care of it or some other reason
-// if some problems arise this is something to look into
-
 // in general i assigned only the parameters assigned in the NV tutorial
-// the other examples assingn a lot more stuff
+// the other examples assign a lot more stuff
 // if something doesn't work look at the parameters in the other examples
 
 // TODO: implement drop
@@ -55,7 +39,11 @@ impl TLAS {
         // this is the transformation for positioning individual BLASes
         // for now it's an Identity Matrix
         let transform_matrix = TransformMatrixKHR {
-            matrix: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            matrix: [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+            ],
         };
 
         let blas_instances: Vec<AccelerationStructureInstanceKHR> = blas

@@ -524,7 +524,7 @@ impl Core {
                     device.begin_command_buffer(image_barrier_cmd_buf, &begin_info)
                         .to_sr_result()?;
 
-                    Self::cmd_image_memory_barrier(&device, image_barrier_cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL);
+                    Self::cmd_image_memory_barrier(&device, image_barrier_cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS);
 
                     device.end_command_buffer(image_barrier_cmd_buf).to_sr_result()?;
                 }
@@ -539,7 +539,7 @@ impl Core {
             (image, image_device_memory, image_view)
         };
 
-        let descriptor_sets = vulkan_abstraction::DescriptorSets::new(&device, &tlas, &image_view)?;
+        let descriptor_sets = vulkan_abstraction::DescriptorSets::new(device.clone(), &tlas, &image_view)?;
 
         let ray_tracing_pipeline_device =
             khr::ray_tracing_pipeline::Device::new(&instance, &device);
@@ -612,7 +612,7 @@ impl Core {
     }
 
 
-    unsafe fn cmd_image_memory_barrier (device: &Device, cmd_buf: CommandBuffer, image: Image, old_layout: ImageLayout, new_layout: ImageLayout) {
+    unsafe fn cmd_image_memory_barrier (device: &Device, cmd_buf: CommandBuffer, image: Image, old_layout: ImageLayout, new_layout: ImageLayout, src_stage: PipelineStageFlags, dst_stage: PipelineStageFlags) {
         let image_memory_barrier = ImageMemoryBarrier::default()
             .src_access_mask(AccessFlags::empty())
             .dst_access_mask(AccessFlags::empty())
@@ -630,8 +630,8 @@ impl Core {
         unsafe {
             device.cmd_pipeline_barrier(
                 cmd_buf,
-                PipelineStageFlags::ALL_COMMANDS, // wait for all commands from any pipeline stage unconditionally
-                PipelineStageFlags::ALL_COMMANDS, // block all commands from any pipeline stage unconditionally
+                src_stage,
+                dst_stage,
                 DependencyFlags::empty(),
                 &[], // memory barriers
                 &[], // buffer memory barriers
@@ -676,7 +676,7 @@ impl Core {
                     cmd_buf,
                     rt_pipeline.get_layout(),
                     ShaderStageFlags::RAYGEN_KHR | ShaderStageFlags::CLOSEST_HIT_KHR | ShaderStageFlags::MISS_KHR,
-                    0, &std::mem::transmute::<vulkan_abstraction::PushConstant, [u8;16]>(push_constants)
+                    0, &std::mem::transmute::<vulkan_abstraction::PushConstant, [u8;std::mem::size_of::<vulkan_abstraction::PushConstant>()]>(push_constants)
                 );
                 rt_pipeline_device.cmd_trace_rays(
                     cmd_buf,
@@ -689,8 +689,11 @@ impl Core {
                     1
                 );
 
-                Self::cmd_image_memory_barrier(device, cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::TRANSFER_SRC_OPTIMAL);
-                Self::cmd_image_memory_barrier(device, cmd_buf, swapchain_images[i], ImageLayout::UNDEFINED, ImageLayout::TRANSFER_DST_OPTIMAL);
+                let rt_stage = PipelineStageFlags::RAY_TRACING_SHADER_KHR;
+                let transfer_stage = PipelineStageFlags::TRANSFER;
+                let pipe_bottom = PipelineStageFlags::BOTTOM_OF_PIPE;
+                Self::cmd_image_memory_barrier(device, cmd_buf, image, ImageLayout::GENERAL, ImageLayout::TRANSFER_SRC_OPTIMAL, rt_stage, transfer_stage);
+                Self::cmd_image_memory_barrier(device, cmd_buf, swapchain_images[i], ImageLayout::UNDEFINED, ImageLayout::TRANSFER_DST_OPTIMAL, rt_stage, transfer_stage);
 
                 //now copy the image onto the swapchain image
                 let image_subresource_layers = ImageSubresourceLayers::default()
@@ -706,8 +709,8 @@ impl Core {
                     .extent(swapchain_image_extent.into());
                 device.cmd_copy_image(cmd_buf, image, ImageLayout::TRANSFER_SRC_OPTIMAL, swapchain_images[i], ImageLayout::TRANSFER_DST_OPTIMAL, &[image_copy_info]);
 
-                Self::cmd_image_memory_barrier(device, cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL);
-                Self::cmd_image_memory_barrier(device, cmd_buf, swapchain_images[i], ImageLayout::UNDEFINED, ImageLayout::PRESENT_SRC_KHR);
+                Self::cmd_image_memory_barrier(device, cmd_buf, image, ImageLayout::TRANSFER_SRC_OPTIMAL, ImageLayout::GENERAL, transfer_stage, pipe_bottom);
+                Self::cmd_image_memory_barrier(device, cmd_buf, swapchain_images[i], ImageLayout::TRANSFER_DST_OPTIMAL, ImageLayout::PRESENT_SRC_KHR, transfer_stage, pipe_bottom);
 
                 device.end_command_buffer(cmd_buf).to_sr_result()?;
             }

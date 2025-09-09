@@ -42,7 +42,10 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                self.core.as_mut().unwrap().render().unwrap();
+                match self.core.as_mut().unwrap().render() {
+                    Ok(()) => {}
+                    Err(error) => panic!("Sunray error: {}", error)
+                }
             }
             _ => (),
         }
