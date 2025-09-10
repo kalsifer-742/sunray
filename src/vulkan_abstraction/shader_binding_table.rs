@@ -1,4 +1,4 @@
-use crate::{error::{SrResult, ToSrResult}, vulkan_abstraction};
+use crate::{error::SrResult, vulkan_abstraction};
 use ash::{khr, vk::{BufferUsageFlags, MemoryAllocateFlags, MemoryPropertyFlags, PhysicalDeviceMemoryProperties, PhysicalDeviceRayTracingPipelinePropertiesKHR, StridedDeviceAddressRegionKHR}, Device};
 
 fn aligned_size(value : u32, alignment : u32) -> u32 {
@@ -52,7 +52,7 @@ impl ShaderBindingTable {
         // get the shader handles
         let handles = unsafe {
             rt_pipeline_device.get_ray_tracing_shader_group_handles(rt_pipeline.get_handle(), 0, handle_count, data_size)
-        }.to_sr_result()?;
+        }?;
 
         // Allocate a buffer for storing the SBT.
         let sbt_buffer_size = (raygen_region.size + miss_region.size + hit_region.size + callable_region.size) as usize;

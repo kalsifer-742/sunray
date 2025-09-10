@@ -44,7 +44,11 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 match self.core.as_mut().unwrap().render() {
                     Ok(()) => {}
-                    Err(error) => panic!("Sunray error: {}", error)
+                    Err(error) => {
+                        //no need to panic, sunray already takes care of the backtrace
+                        eprintln!("Sunray error: {}", error);
+                        event_loop.exit();
+                    }
                 }
             }
             _ => (),
