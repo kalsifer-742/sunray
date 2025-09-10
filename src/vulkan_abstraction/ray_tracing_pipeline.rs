@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 
-use crate::error::{SrResult, ToSrResult};
+use crate::error::SrResult;
 use crate::vulkan_abstraction;
 
 use ash::{khr, vk};
@@ -42,6 +42,7 @@ macro_rules! compile_shader {
 }
 
 #[allow(dead_code)] // read by the gpu
+// for now push constants are never used, but it is enough to specify a value in this struct, to instantiate it in lib.rs and to add in the shader a uniform block with "layout(push_constant)" for it to work
 pub struct PushConstant {
     pub clear_color: [f32; 4],
 }
@@ -67,7 +68,7 @@ impl RayTracingPipeline {
                 .code(spirv.as_binary())
                 .flags(vk::ShaderModuleCreateFlags::empty());
 
-            unsafe { device.create_shader_module(&create_info, None) }.to_sr_result()?
+            unsafe { device.create_shader_module(&create_info, None) }?
         };
         let ray_gen_create_info = vk::PipelineShaderStageCreateInfo::default()
             .name(SHADER_ENTRY_POINT)
@@ -83,7 +84,7 @@ impl RayTracingPipeline {
                 .code(spirv.as_binary())
                 .flags(vk::ShaderModuleCreateFlags::empty());
 
-            unsafe { device.create_shader_module(&create_info, None) }.to_sr_result()?
+            unsafe { device.create_shader_module(&create_info, None) }?
         };
         let ray_miss_create_info = vk::PipelineShaderStageCreateInfo::default()
             .name(SHADER_ENTRY_POINT)
@@ -99,7 +100,7 @@ impl RayTracingPipeline {
                 .code(spirv.as_binary())
                 .flags(vk::ShaderModuleCreateFlags::empty());
 
-            unsafe { device.create_shader_module(&create_info, None) }.to_sr_result()?
+            unsafe { device.create_shader_module(&create_info, None) }?
         };
         let closest_hit_create_info = vk::PipelineShaderStageCreateInfo::default()
             .name(SHADER_ENTRY_POINT)
@@ -158,8 +159,7 @@ impl RayTracingPipeline {
             .set_layouts(descriptor_sets.get_layouts());
 
         let pipeline_layout =
-            unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }
-                .to_sr_result()?;
+            unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }?;
 
         let pipeline_create_info = vk::RayTracingPipelineCreateInfoKHR::default()
             .stages(&stages)
@@ -175,8 +175,7 @@ impl RayTracingPipeline {
                 None,
             )
         }
-        .map_err(|(_, e)| e)
-        .to_sr_result()?;
+        .map_err(|(_, e)| e)?;
 
         let pipeline = pipelines[0];
 

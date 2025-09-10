@@ -63,7 +63,9 @@ pub fn enumerate_required_extensions(
             &METAL_EXTS
         }
 
-        _ => return Err(SrError::from(vk::Result::ERROR_EXTENSION_NOT_PRESENT)),
+        _ => {
+            return Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT).map_err(SrError::from)
+        },
     };
 
     Ok(extensions)
@@ -181,6 +183,5 @@ pub unsafe fn create_surface(
         }
 
         _ => Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT),
-    }
-    .to_sr_result()
+    }.map_err(SrError::from)
 }

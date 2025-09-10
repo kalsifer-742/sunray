@@ -1,35 +1,43 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
-layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
-layout(binding = 1, set = 0, rgba8) uniform image2D image;
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+layout(set = 0, binding = 1, rgba8) uniform image2D image;
+layout(set = 0, binding = 2) uniform uniform_buffer_t {
+    mat4 view_inverse, proj_inverse;
+} uniform_buffer;
 
 struct ray_payload_t {
     vec3 color;
 };
 layout(location = 0) rayPayloadEXT ray_payload_t prd;
 
+
 void main() {
     const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
     const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
     vec2 d = inUV * 2.0 - 1.0;
 
-    uint  rayFlags = gl_RayFlagsOpaqueEXT;
+    uint  ray_flags = gl_RayFlagsOpaqueEXT;
     float tMin     = 0.001;
     float tMax     = 10000.0;
+
+    vec4 origin    = uniform_buffer.view_inverse * vec4(0, 0, 0, 1);
+    vec4 target    = uniform_buffer.proj_inverse * vec4(d.x, d.y, 1, 1);
+    vec4 direction = uniform_buffer.view_inverse * vec4(normalize(target.xyz), 0);
 
     prd.color = vec3(.3, 0, 0);
 
     traceRayEXT(
-        topLevelAS,             // acceleration structure
-        rayFlags,               // rayFlags
+        tlas,                   // acceleration structure
+        ray_flags,              // rayFlags
         0xFF,                   // cullMask
         0,                      // sbtRecordOffset
         0,                      // sbtRecordStride
         0,                      // missIndex
-        vec3(0,0,1),            // ray origin
+        origin.xyz,             // ray origin
         tMin,                   // ray min range
-        normalize(vec3(d,-1)),  // ray direction
+        direction.xyz,          // ray direction
         tMax,                   // ray max range
         0                       // payload (location = 0)
     );
