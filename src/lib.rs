@@ -4,11 +4,12 @@ use std::{collections::HashSet, ffi::CStr};
 
 use crate::error::*;
 use ash::vk::{
-    AccessFlags, CommandBuffer, CommandBufferBeginInfo, CommandBufferUsageFlags, DependencyFlags, Image, ImageCopy, ImageCreateFlags, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR, PipelineBindPoint, PipelineStageFlags, ShaderStageFlags
+    AccessFlags, BufferUsageFlags, CommandBuffer, CommandBufferBeginInfo, CommandBufferUsageFlags, DependencyFlags, Image, ImageCopy, ImageCreateFlags, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, LayerSettingEXT, LayerSettingTypeEXT, LayerSettingsCreateInfoEXT, MemoryAllocateFlags, MemoryPropertyFlags, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR, PipelineBindPoint, PipelineStageFlags, ShaderStageFlags,
 };
 use ash::{
     Device, Entry, Instance,
     khr::{self, acceleration_structure, surface, swapchain},
+    ext,
     vk::{
         ApplicationInfo, ColorSpaceKHR, CommandPoolCreateFlags, ComponentMapping, ComponentSwizzle,
         CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format,
@@ -46,18 +47,15 @@ impl SwapchainSupportDetails {
     ) -> SrResult<Self> {
         let surface_capabilities = unsafe {
             surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
-        }
-        .to_sr_result()?;
+        }?;
 
         let surface_formats = unsafe {
             surface_instance.get_physical_device_surface_formats(physical_device, surface)
-        }
-        .to_sr_result()?;
+        }?;
 
         let surface_present_modes = unsafe {
             surface_instance.get_physical_device_surface_present_modes(physical_device, surface)
-        }
-        .to_sr_result()?;
+        }?;
 
         Ok(Self {
             surface_capabilities,
@@ -71,8 +69,35 @@ impl SwapchainSupportDetails {
     }
 }
 
-//TODO: impl Drop
+#[allow(dead_code)]
+struct UniformBufferContents {
+    pub view_inverse: nalgebra::Matrix4<f32>,
+    pub proj_inverse: nalgebra::Matrix4<f32>,
+}
 
+fn make_view_inverse_matrix() -> nalgebra::Matrix4<f32> {
+    let eye = nalgebra::geometry::Point3::new(0.0, 0.0, 1.0);
+    let target = nalgebra::geometry::Point3::new(0.0, 0.0, 0.0);
+    let up = nalgebra::Vector3::new(0.0, 1.0, 0.0);
+    let view = nalgebra::Isometry3::look_at_lh(&eye, &target, &up);
+
+
+    let view_matrix : nalgebra::Matrix4<f32> = view.to_homogeneous();
+
+    view_matrix.try_inverse().unwrap()
+}
+
+fn make_proj_inverse_matrix(dimensions: (u32, u32)) -> nalgebra::Matrix4<f32> {
+    let proj = nalgebra::geometry::Perspective3::new(dimensions.0 as f32 / dimensions.1 as f32, 3.14 / 2.0, 0.1, 1000.0);
+
+    let proj = proj.to_homogeneous();
+
+    proj.try_inverse().unwrap()
+}
+
+
+
+//TODO: impl Drop
 #[allow(dead_code)]
 pub struct Core {
     entry: Entry,
@@ -83,18 +108,19 @@ pub struct Core {
     acceleration_structure_device: khr::acceleration_structure::Device,
 
     queue: vulkan_abstraction::Queue,
+    cmd_pool: vulkan_abstraction::CmdPool,
     surface: SurfaceKHR,
     swapchain_image_extent: Extent2D,
     swapchain: SwapchainKHR,
     swapchain_images: Vec<Image>,
     swapchain_image_views: Vec<ImageView>,
     physical_device_rt_pipeline_properties: PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>, // 'static because pNext is null
-    cmd_pool: vulkan_abstraction::CmdPool,
     vertex_buffer: vulkan_abstraction::VertexBuffer,
     index_buffer: vulkan_abstraction::IndexBuffer,
-    // blas: vulkan_abstraction::BLAS,
+    blas: vulkan_abstraction::BLAS,
     tlas: vulkan_abstraction::TLAS,
     image: Image,
+    uniform_buffer: vulkan_abstraction::Buffer,
     descriptor_sets: vulkan_abstraction::DescriptorSets,
     ray_tracing_pipeline_device: khr::ray_tracing_pipeline::Device,
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
@@ -110,21 +136,69 @@ impl Core {
         let application_info = ApplicationInfo::default().api_version(make_api_version(0, 1, 4, 0));
 
         let enabled_layer_names =
-            if cfg!(debug_assertions) && Self::check_validation_layer_support(&entry)? {
-                &[Self::VALIDATION_LAYER_NAME.as_ptr()]
+            if cfg!(debug_assertions) {
+                if Self::check_validation_layer_support(&entry)? {
+                    &[ Self::VALIDATION_LAYER_NAME.as_ptr() ]
+                } else {
+                    eprintln!("No validation layer support; continuing without validation layer...");
+                    [].as_slice()
+                }
             } else {
                 [].as_slice()
             };
 
-        let required_extensions = crate::utils::enumerate_required_extensions(raw_display_handle)?;
-
         let instance = {
+            let instance_extensions = {
+                let required_extensions = crate::utils::enumerate_required_extensions(raw_display_handle)?;
+
+                // add VK_EXT_layer_settings for configuring the validation layer
+                let instance_extensions = required_extensions.iter()
+                    .chain(
+                        Some(ext::layer_settings::NAME.as_ptr()).iter()
+                    )
+                    .copied()
+                    .collect::<Vec<*const i8>>();
+
+                instance_extensions
+            };
+            // use VK_EXT_layer_settings to configure the validation layer
+            let settings = [
+                // Khronos Validation layer recommends not to enable both GPU Assisted Validation (gpuav_enable) and Normal Core Check Validation (validate_core), as it will be very slow.
+                // Once all errors in Core Check are solved it recommends to disable validate_core, then only use GPU-AV for best performance.
+                LayerSettingEXT::default()
+                    .layer_name(Self::VALIDATION_LAYER_NAME)
+                    .setting_name(c"validate_core")
+                    .ty(LayerSettingTypeEXT::BOOL32)
+                    .values(&[1, 0, 0, 0]),
+
+                LayerSettingEXT::default()
+                    .layer_name(Self::VALIDATION_LAYER_NAME)
+                    .setting_name(c"gpuav_enable") // gpu assisted validation
+                    .ty(LayerSettingTypeEXT::BOOL32)
+                    .values(&[0, 0, 0, 0]),
+
+                LayerSettingEXT::default()
+                    .layer_name(Self::VALIDATION_LAYER_NAME)
+                    .setting_name(c"validate_sync")
+                    .ty(LayerSettingTypeEXT::BOOL32)
+                    .values(&[1, 0, 0, 0]),
+
+                LayerSettingEXT::default()
+                    .layer_name(Self::VALIDATION_LAYER_NAME)
+                    .setting_name(c"validate_best_practices")
+                    .ty(LayerSettingTypeEXT::BOOL32)
+                    .values(&[1, 0, 0, 0]),
+            ];
+            let mut layer_settings_create_info = LayerSettingsCreateInfoEXT::default()
+                .settings(&settings);
+
             let instance_create_info = InstanceCreateInfo::default()
                 .application_info(&application_info)
                 .enabled_layer_names(enabled_layer_names)
-                .enabled_extension_names(required_extensions);
+                .enabled_extension_names(&instance_extensions)
+                .push_next(&mut layer_settings_create_info);
 
-            unsafe { entry.create_instance(&instance_create_info, None) }.to_sr_result()?
+            unsafe { entry.create_instance(&instance_create_info, None) }?
         };
 
         let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
@@ -149,7 +223,7 @@ impl Core {
         ]
         .map(CStr::as_ptr);
 
-        let physical_devices = unsafe { instance.enumerate_physical_devices() }.to_sr_result()?;
+        let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
 
         let (physical_device, queue_family_index, swapchain_support_details) = physical_devices
             .into_iter()
@@ -222,9 +296,10 @@ impl Core {
                 .push_next(&mut physical_device_acceleration_structure_features)
                 .queue_create_infos(&queue_create_infos);
 
-            unsafe { instance.create_device(physical_device, &device_create_info, None) }
-                .to_sr_result()?
+            unsafe { instance.create_device(physical_device, &device_create_info, None) }?
         };
+
+
 
         let swapchain_device = swapchain::Device::new(&instance, &device);
         let acceleration_structure_device = acceleration_structure::Device::new(&instance, &device);
@@ -310,11 +385,10 @@ impl Core {
                 .clipped(true)
                 .old_swapchain(SwapchainKHR::null());
 
-            unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }
-                .to_sr_result()?
+            unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }?
         };
 
-        let swapchain_images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.to_sr_result()?;
+        let swapchain_images = unsafe { swapchain_device.get_swapchain_images(swapchain) }?;
 
         let swapchain_image_views = swapchain_images
             .iter()
@@ -338,7 +412,7 @@ impl Core {
                             .layer_count(1),
                     );
 
-                unsafe { device.create_image_view(&image_view_create_info, None) }.to_sr_result()
+                unsafe { device.create_image_view(&image_view_create_info, None) }
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -378,7 +452,7 @@ impl Core {
         let vertex_buffer = {
             #[derive(Clone, Copy)]
             struct Vertex {
-                #[allow(dead_code)]
+                #[allow(unused)]
                 pos: [f32; 3],
             }
 
@@ -446,7 +520,7 @@ impl Core {
             &index_buffer,
         )?;
 
-        let blases = vec![blas];
+        let blases = [blas];
 
         let tlas = vulkan_abstraction::TLAS::new(
             &device,
@@ -460,7 +534,7 @@ impl Core {
         const OUT_IMAGE_FORMAT: Format = Format::R8G8B8A8_UNORM;
 
         // the image we will do the rendering on; before every frame it will be copied to the swapchain
-        // TODO: dispose of these respources in drop(), maybe even abstract them into a struct
+        // TODO: dispose of these resources in drop(), maybe even abstract them into a struct
         let (image, _image_device_memory, image_view) = {
             let image = {
                 let image_create_info = ash::vk::ImageCreateInfo::default()
@@ -521,17 +595,16 @@ impl Core {
 
                 //record command buffer
                 unsafe {
-                    device.begin_command_buffer(image_barrier_cmd_buf, &begin_info)
-                        .to_sr_result()?;
+                    device.begin_command_buffer(image_barrier_cmd_buf, &begin_info)?;
 
-                    Self::cmd_image_memory_barrier(&device, image_barrier_cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS);
+                    Self::cmd_image_memory_barrier(&device, image_barrier_cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS, AccessFlags::empty(), AccessFlags::empty());
 
-                    device.end_command_buffer(image_barrier_cmd_buf).to_sr_result()?;
+                    device.end_command_buffer(image_barrier_cmd_buf)?;
                 }
 
                 queue.submit_sync(image_barrier_cmd_buf)?;
 
-                unsafe { device.device_wait_idle() }.to_sr_result()?;
+                unsafe { device.device_wait_idle() }?;
 
                 unsafe { device.free_command_buffers(*cmd_pool, &[image_barrier_cmd_buf]) };
             }
@@ -539,7 +612,27 @@ impl Core {
             (image, image_device_memory, image_view)
         };
 
-        let descriptor_sets = vulkan_abstraction::DescriptorSets::new(device.clone(), &tlas, &image_view)?;
+        let uniform_buffer = {
+            let mut uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
+                device.clone(),
+                std::mem::size_of::<UniformBufferContents>(),
+                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                MemoryAllocateFlags::empty(),
+                BufferUsageFlags::UNIFORM_BUFFER,
+                &physical_device_memory_properties
+            )?;
+
+            let mem = uniform_buffer.map::<UniformBufferContents>()?;
+            mem[0].proj_inverse = make_proj_inverse_matrix((swapchain_image_extent.width, swapchain_image_extent.height));
+            mem[0].view_inverse = make_view_inverse_matrix();
+            uniform_buffer.unmap();
+
+            unsafe { device.device_wait_idle() }?;
+
+            uniform_buffer
+        };
+
+        let descriptor_sets = vulkan_abstraction::DescriptorSets::new(device.clone(), &tlas, &image_view, &uniform_buffer)?;
 
         let ray_tracing_pipeline_device =
             khr::ray_tracing_pipeline::Device::new(&instance, &device);
@@ -579,17 +672,19 @@ impl Core {
             swapchain_device,
             acceleration_structure_device,
             queue,
+            cmd_pool,
             surface,
             swapchain_image_extent,
             swapchain,
             swapchain_images,
             swapchain_image_views,
             physical_device_rt_pipeline_properties,
-            cmd_pool,
             vertex_buffer,
             index_buffer,
+            blas: blases.into_iter().next().unwrap(),
             tlas,
             image,
+            uniform_buffer,
             descriptor_sets,
             ray_tracing_pipeline_device,
             ray_tracing_pipeline,
@@ -612,10 +707,10 @@ impl Core {
     }
 
 
-    unsafe fn cmd_image_memory_barrier (device: &Device, cmd_buf: CommandBuffer, image: Image, old_layout: ImageLayout, new_layout: ImageLayout, src_stage: PipelineStageFlags, dst_stage: PipelineStageFlags) {
+    unsafe fn cmd_image_memory_barrier (device: &Device, cmd_buf: CommandBuffer, image: Image, old_layout: ImageLayout, new_layout: ImageLayout, src_stage: PipelineStageFlags, dst_stage: PipelineStageFlags, src_access_mask: AccessFlags, dst_access_mask: AccessFlags) {
         let image_memory_barrier = ImageMemoryBarrier::default()
-            .src_access_mask(AccessFlags::empty())
-            .dst_access_mask(AccessFlags::empty())
+            .src_access_mask(src_access_mask)
+            .dst_access_mask(dst_access_mask)
             .old_layout(old_layout)
             .new_layout(new_layout)
             .image(image)
@@ -648,7 +743,7 @@ impl Core {
         descriptor_sets: &vulkan_abstraction::DescriptorSets,
         shader_binding_table: &vulkan_abstraction::ShaderBindingTable,
         swapchain_image_extent: Extent2D,
-        swapchain_images: &[Image],
+        sc_images: &[Image],
         image: Image,
     ) -> SrResult<()> {
         let cmd_buf_usage_flags = CommandBufferUsageFlags::SIMULTANEOUS_USE;
@@ -656,13 +751,14 @@ impl Core {
         .flags(cmd_buf_usage_flags);
 
         for (i, cmd_buf) in cmd_bufs.iter().cloned().enumerate() {
+            let sc_image = sc_images[i];
             // Initializing push constant values
             let push_constants = vulkan_abstraction::PushConstant {
                 clear_color: [1.0, 0.0, 0.0, 1.0],
             };
 
             unsafe {
-                device.begin_command_buffer(cmd_buf, &cmd_buf_begin_info).to_sr_result()?;
+                device.begin_command_buffer(cmd_buf, &cmd_buf_begin_info)?;
 
                 device.cmd_bind_pipeline(cmd_buf, PipelineBindPoint::RAY_TRACING_KHR, rt_pipeline.get_handle());
                 device.cmd_bind_descriptor_sets(
@@ -689,11 +785,19 @@ impl Core {
                     1
                 );
 
-                let rt_stage = PipelineStageFlags::RAY_TRACING_SHADER_KHR;
-                let transfer_stage = PipelineStageFlags::TRANSFER;
-                let pipe_bottom = PipelineStageFlags::BOTTOM_OF_PIPE;
-                Self::cmd_image_memory_barrier(device, cmd_buf, image, ImageLayout::GENERAL, ImageLayout::TRANSFER_SRC_OPTIMAL, rt_stage, transfer_stage);
-                Self::cmd_image_memory_barrier(device, cmd_buf, swapchain_images[i], ImageLayout::UNDEFINED, ImageLayout::TRANSFER_DST_OPTIMAL, rt_stage, transfer_stage);
+                let stage_rt = PipelineStageFlags::ALL_COMMANDS;//PipelineStageFlags::RAY_TRACING_SHADER_KHR;
+                let stage_tx = PipelineStageFlags::ALL_COMMANDS;//PipelineStageFlags::TRANSFER;
+                let stage_pipebtm = PipelineStageFlags::ALL_COMMANDS;//PipelineStageFlags::BOTTOM_OF_PIPE;
+
+                let layout_undef = ImageLayout::UNDEFINED;
+                let layout_general = ImageLayout::GENERAL;
+                let layout_tx_src = ImageLayout::TRANSFER_SRC_OPTIMAL;
+                let layout_tx_dst = ImageLayout::TRANSFER_DST_OPTIMAL;
+                let layout_present = ImageLayout::PRESENT_SRC_KHR;
+
+                Self::cmd_image_memory_barrier(device, cmd_buf, image, layout_general, layout_tx_src, stage_rt, stage_tx, AccessFlags::COLOR_ATTACHMENT_WRITE, AccessFlags::TRANSFER_READ);
+                Self::cmd_image_memory_barrier(device, cmd_buf, sc_image, layout_undef, layout_tx_dst, stage_rt, stage_tx, AccessFlags::COLOR_ATTACHMENT_READ, AccessFlags::TRANSFER_WRITE);
+
 
                 //now copy the image onto the swapchain image
                 let image_subresource_layers = ImageSubresourceLayers::default()
@@ -707,12 +811,12 @@ impl Core {
                     .dst_subresource(image_subresource_layers)
                     .dst_offset(ash::vk::Offset3D { x: 0, y: 0, z: 0 })
                     .extent(swapchain_image_extent.into());
-                device.cmd_copy_image(cmd_buf, image, ImageLayout::TRANSFER_SRC_OPTIMAL, swapchain_images[i], ImageLayout::TRANSFER_DST_OPTIMAL, &[image_copy_info]);
+                device.cmd_copy_image(cmd_buf, image, ImageLayout::TRANSFER_SRC_OPTIMAL, sc_images[i], ImageLayout::TRANSFER_DST_OPTIMAL, &[image_copy_info]);
 
-                Self::cmd_image_memory_barrier(device, cmd_buf, image, ImageLayout::TRANSFER_SRC_OPTIMAL, ImageLayout::GENERAL, transfer_stage, pipe_bottom);
-                Self::cmd_image_memory_barrier(device, cmd_buf, swapchain_images[i], ImageLayout::TRANSFER_DST_OPTIMAL, ImageLayout::PRESENT_SRC_KHR, transfer_stage, pipe_bottom);
+                Self::cmd_image_memory_barrier(device, cmd_buf, image, layout_tx_src, layout_general, stage_tx, stage_pipebtm, AccessFlags::TRANSFER_READ, AccessFlags::COLOR_ATTACHMENT_WRITE);
+                Self::cmd_image_memory_barrier(device, cmd_buf, sc_image, layout_tx_dst, layout_present, stage_tx, stage_pipebtm, AccessFlags::TRANSFER_WRITE, AccessFlags::empty());
 
-                device.end_command_buffer(cmd_buf).to_sr_result()?;
+                device.end_command_buffer(cmd_buf)?;
             }
         }
 
@@ -720,7 +824,7 @@ impl Core {
     }
 
     fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
-        let layers_props = unsafe { entry.enumerate_instance_layer_properties() }.to_sr_result()?;
+        let layers_props = unsafe { entry.enumerate_instance_layer_properties() }?;
 
         let supports_validation_layer = layers_props
             .iter()
@@ -769,7 +873,7 @@ impl Core {
             .collect();
 
         let available_exts =
-            unsafe { instance.enumerate_device_extension_properties(physical_device) }.to_sr_result()?;
+            unsafe { instance.enumerate_device_extension_properties(physical_device) }?;
 
         let available_exts_set: HashSet<&CStr> = available_exts
             .iter()

@@ -187,8 +187,7 @@ impl TLAS {
                     command_buffer,
                     &CommandBufferBeginInfo::default()
                         .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                )
-                .to_sr_result()?;
+                )?;
 
             acceleration_structure_device.cmd_build_acceleration_structures(
                 command_buffer,
@@ -196,7 +195,7 @@ impl TLAS {
                 &[&[acceleration_structure_build_range_info]],
             );
 
-            device.end_command_buffer(command_buffer).to_sr_result()?
+            device.end_command_buffer(command_buffer)?
         }
 
         queue.submit_sync(command_buffer)?;

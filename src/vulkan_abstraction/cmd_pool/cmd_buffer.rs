@@ -25,7 +25,7 @@ fn new_vec_impl(cmd_pool: &vk::CommandPool, device: &Device, level: vk::CommandB
         .level(level)
         .command_buffer_count(len as u32);
 
-    let ret = unsafe { device.allocate_command_buffers(&info)  }.to_sr_result()?;
+    let ret = unsafe { device.allocate_command_buffers(&info) }?;
 
     Ok(ret)
 }

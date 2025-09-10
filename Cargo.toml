@@ -13,5 +13,6 @@ categories = ["graphics", "hardware-support", "game-development"]
 ash = { version = "0.38.0", features = ["linked"] }
 winit = { version = "0.30.9", features = ["rwh_05"] } #make it a feature
 shaderc = "0.9"
+nalgebra = "0.34"
 
 [dev-dependencies]
