@@ -1,9 +1,20 @@
 use std::ops::Deref;
 
 use ash::{
-    khr::acceleration_structure, vk::{
-        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR, AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR, AccelerationStructureCreateInfoKHR, AccelerationStructureDeviceAddressInfoKHR, AccelerationStructureGeometryDataKHR, AccelerationStructureGeometryInstancesDataKHR, AccelerationStructureGeometryKHR, AccelerationStructureInstanceKHR, AccelerationStructureKHR, AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR, BufferUsageFlags, BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags, MemoryPropertyFlags, Packed24_8, PhysicalDeviceMemoryProperties, TransformMatrixKHR
-    }, Device
+    Device,
+    khr::acceleration_structure,
+    vk::{
+        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR,
+        AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR,
+        AccelerationStructureCreateInfoKHR, AccelerationStructureDeviceAddressInfoKHR,
+        AccelerationStructureGeometryDataKHR, AccelerationStructureGeometryInstancesDataKHR,
+        AccelerationStructureGeometryKHR, AccelerationStructureInstanceKHR,
+        AccelerationStructureKHR, AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR,
+        BufferUsageFlags, BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR,
+        CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR,
+        GeometryFlagsKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags,
+        MemoryPropertyFlags, Packed24_8, PhysicalDeviceMemoryProperties, TransformMatrixKHR,
+    },
 };
 
 use super::BLAS;
@@ -16,10 +27,6 @@ use crate::{
 // - https://github.com/adrien-ben/vulkan-examples-rs
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
 // - https://github.com/SaschaWillems/Vulkan
-
-// in general i assigned only the parameters assigned in the NV tutorial
-// the other examples assign a lot more stuff
-// if something doesn't work look at the parameters in the other examples
 
 // TODO: implement drop
 pub struct TLAS {
@@ -38,11 +45,12 @@ impl TLAS {
     ) -> SrResult<Self> {
         // this is the transformation for positioning individual BLASes
         // for now it's an Identity Matrix
+        #[rustfmt::skip]
         let transform_matrix = TransformMatrixKHR {
             matrix: [
                 1.0, 0.0, 0.0, 0.0,
                 0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0, 0.0
             ],
         };
 
@@ -51,7 +59,7 @@ impl TLAS {
             .map(|blas| {
                 AccelerationStructureInstanceKHR {
                     transform: transform_matrix,
-                    instance_custom_index_and_mask: Packed24_8::new(0, 0), // gl_InstanceCustomIndex = 0, mask = 0 (don't know what actually does, NV tutorial writes "Only be hit if rayMask & instance.mask != 0")
+                    instance_custom_index_and_mask: Packed24_8::new(0, 0xFF), // gl_InstanceCustomIndex = 0, mask = 0 (don't know what actually does, NV tutorial writes "Only be hit if rayMask & instance.mask != 0")
                     instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(
                         0, // hit_group_offset = 0, same hit group for the whole scene
                         GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8, // disable face culling for semplicity
@@ -98,12 +106,13 @@ impl TLAS {
 
         let acceleration_structure_geometry = AccelerationStructureGeometryKHR::default()
             .geometry_type(GeometryTypeKHR::INSTANCES)
+            .flags(GeometryFlagsKHR::OPAQUE)
             .geometry(AccelerationStructureGeometryDataKHR {
-                instances: AccelerationStructureGeometryInstancesDataKHR::default().data(
-                    DeviceOrHostAddressConstKHR {
+                instances: AccelerationStructureGeometryInstancesDataKHR::default()
+                    .array_of_pointers(false)
+                    .data(DeviceOrHostAddressConstKHR {
                         device_address: instances_buffer.get_device_address(),
-                    },
-                ),
+                    }),
             });
 
         let binding = [acceleration_structure_geometry]; //look further into thix fix to the error "temporary value dropped while borrowed"
@@ -132,7 +141,8 @@ impl TLAS {
             MemoryPropertyFlags::DEVICE_LOCAL,
             MemoryAllocateFlags::DEVICE_ADDRESS,
             BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                | BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                | BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | BufferUsageFlags::STORAGE_BUFFER,
             device_memory_props,
         )?;
 

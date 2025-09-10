@@ -10,9 +10,9 @@ struct ray_payload_t {
 layout(location = 0) rayPayloadEXT ray_payload_t prd;
 
 void main() {
-    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
-    const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
-    vec2 d = inUV * 2.0 - 1.0;
+    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5); //the coordinates are of the corner, +0.5 gets the pixel center
+    const vec2 inUV = pixelCenter / vec2(gl_LaunchSizeEXT.xy); //normalize value in [0, 1]
+    vec2 d = inUV * 2.0 - 1.0; //map [0, 1] to [-1, 1]
 
     uint  rayFlags = gl_RayFlagsOpaqueEXT;
     float tMin     = 0.001;
