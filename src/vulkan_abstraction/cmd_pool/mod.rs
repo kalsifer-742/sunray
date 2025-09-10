@@ -19,7 +19,7 @@ impl CmdPool {
             .queue_family_index(queue_family)
             .flags(flags);
 
-        let cmd_pool = unsafe { device.create_command_pool(&info, None)  }.to_sr_result()?;
+        let cmd_pool = unsafe { device.create_command_pool(&info, None)  }?;
 
         Ok(Self { cmd_pool, device, cmd_bufs: vec![] })
     }
@@ -38,7 +38,20 @@ impl CmdPool {
 }
 impl Drop for CmdPool {
     fn drop(&mut self) {
-        unsafe { self.device.device_wait_idle() }.to_sr_result().unwrap();
+        match unsafe { self.device.device_wait_idle() } {
+            // do not panic: drop should not panic, since it is invoked for all objects after a panic; for example if the logical device
+            // is lost all CmdPool will be dropped on panic and they will all panic themselves and make the backtrace unreadable
+            Err(e) => {
+                eprintln!("Device::device_wait_idle (inside CmdPool::drop) returned {e}");
+                //if device was lost do not attempt to free/destroy objects
+                if e == ash::vk::Result::ERROR_DEVICE_LOST {
+                    return;
+                }
+            }
+            Ok(()) => {}
+
+        }
+
         if self.cmd_bufs.len() != 0 {
             // cmd_bufs must be destroyed before cmd_pool
             unsafe { self.device.free_command_buffers(self.cmd_pool, &self.cmd_bufs) };

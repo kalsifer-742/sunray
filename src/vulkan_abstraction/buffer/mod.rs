@@ -81,9 +81,8 @@ impl Buffer {
         device: Device,
         mem_props: &PhysicalDeviceMemoryProperties,
     ) -> SrResult<Self> {
-        let memory_property_flags =
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let memory_allocate_flags = MemoryAllocateFlags::empty();
+        let memory_property_flags = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let memory_allocate_flags = vk::MemoryAllocateFlags::empty();
         let buffer_usage_flags = vk::BufferUsageFlags::UNIFORM_BUFFER;
 
         Self::new::<T>(
@@ -131,7 +130,7 @@ impl Buffer {
                 .usage(buffer_usage_flags)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-            unsafe { device.create_buffer(&buf_info, None) }.to_sr_result()?
+            unsafe { device.create_buffer(&buf_info, None) }?
         };
 
         let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
@@ -152,9 +151,9 @@ impl Buffer {
             }
         };
         let memory =
-            unsafe { device.allocate_memory(&mem_alloc_info, None) }.to_sr_result()?;
+            unsafe { device.allocate_memory(&mem_alloc_info, None) }?;
 
-        unsafe { device.bind_buffer_memory(buffer, memory, 0) }.to_sr_result()?;
+        unsafe { device.bind_buffer_memory(buffer, memory, 0) }?;
 
         Ok(Self {
             usable_byte_size,
@@ -173,8 +172,7 @@ impl Buffer {
         let p = unsafe {
             self.device
                 .map_memory(self.memory, 0, self.usable_byte_size, flags)
-        }
-        .to_sr_result()?;
+        }?;
         let raw_mem = unsafe { RawMappedMemory::new(p, self.usable_byte_size as usize) };
         self.mapped_memory = Some(raw_mem);
         let ret = self.mapped_memory.as_mut().unwrap().borrow();
@@ -203,8 +201,7 @@ impl Buffer {
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-        unsafe { device.begin_command_buffer(bufcpy_cmd_buf, &begin_info) }
-            .to_sr_result()?;
+        unsafe { device.begin_command_buffer(bufcpy_cmd_buf, &begin_info) }?;
 
         debug_assert!(src.byte_size() <= dst.byte_size());
 
@@ -216,10 +213,10 @@ impl Buffer {
 
         unsafe { device.cmd_copy_buffer(bufcpy_cmd_buf, **src, **dst, &regions) };
 
-        unsafe { device.end_command_buffer(bufcpy_cmd_buf) }.to_sr_result()?;
+        unsafe { device.end_command_buffer(bufcpy_cmd_buf) }?;
 
         queue.submit_sync(bufcpy_cmd_buf)?;
-        unsafe { device.device_wait_idle() }.to_sr_result()?;
+        unsafe { device.device_wait_idle() }?;
 
         unsafe { device.free_command_buffers(*cmd_pool, &[bufcpy_cmd_buf]) };
         // queue.wait_idle()?;

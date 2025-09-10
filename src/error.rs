@@ -1,5 +1,5 @@
 use ash::vk;
-use std::fmt::Display;
+use std::{backtrace::BacktraceStatus, fmt::Display};
 
 pub type SrResult<T> = std::result::Result<T, SrError>;
 
@@ -16,15 +16,21 @@ impl SrError {
             description,
         }
     }
-}
-impl From<vk::Result> for SrError {
-    fn from(vk_result: vk::Result) -> Self {
+    pub fn from_vk_with_backtrace(vk_result: vk::Result, bt: std::backtrace::Backtrace) -> Self {
         let description = match vk_result {
             //TODO: provide description for some errors
-            e => format!("UNEXPECTED VULKAN ERROR: {}", e),
+            e => format!("UNEXPECTED VULKAN ERROR: {e}"),
         };
+        let description = if bt.status() == BacktraceStatus::Captured { format!("{description}\n{bt}") } else { format!("{description} (set RUST_BACKTRACE=1 to get a backtrace)") };
 
         SrError::new(Some(vk_result), description)
+    }
+    pub fn get_source(&self) -> Option<vk::Result> { self.source }
+}
+
+impl From<vk::Result> for SrError {
+    fn from(value: vk::Result) -> Self {
+        Self::from_vk_with_backtrace(value, std::backtrace::Backtrace::capture())
     }
 }
 
@@ -40,20 +46,5 @@ impl std::error::Error for SrError {
             Some(src) => Some(src),
             None => None,
         }
-    }
-}
-
-//trait for converting VkResult to SrResult
-pub trait ToSrResult {
-    type OkType;
-
-    fn to_sr_result(self) -> SrResult<Self::OkType>;
-}
-
-impl<T> ToSrResult for ash::prelude::VkResult<T> {
-    type OkType = T;
-
-    fn to_sr_result(self) -> SrResult<T> {
-        self.map_err(SrError::from)
     }
 }
