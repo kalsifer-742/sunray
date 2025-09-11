@@ -42,7 +42,7 @@ impl Drop for CmdPool {
             // do not panic: drop should not panic, since it is invoked for all objects after a panic; for example if the logical device
             // is lost all CmdPool will be dropped on panic and they will all panic themselves and make the backtrace unreadable
             Err(e) => {
-                eprintln!("Device::device_wait_idle (inside CmdPool::drop) returned {e}");
+                eprintln!("Device::device_wait_idle (inside CmdPool::drop) returned '{e}'");
                 //if device was lost do not attempt to free/destroy objects
                 if e == ash::vk::Result::ERROR_DEVICE_LOST {
                     return;

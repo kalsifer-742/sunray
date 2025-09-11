@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use ash::{ Device, vk, khr };
-use ash::vk::Fence;
+use ash::vk::{Fence, FenceCreateFlags};
 use crate::error::*;
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -59,7 +59,8 @@ impl Queue {
     }
 
     pub fn submit_async(&self, command_buffer: vk::CommandBuffer) -> SrResult<()> {
-        let wait_flags = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        // let wait_flags = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let wait_flags = [vk::PipelineStageFlags::ALL_COMMANDS];
         let wait_sem = &self.img_available_sem[self.current_frame..=self.current_frame];
         let command_buffers = [command_buffer];
         let signal_sem = &self.render_complete_sems[self.current_frame..=self.current_frame];
@@ -84,7 +85,17 @@ impl Queue {
             .command_buffers(&command_buffers)
             .signal_semaphores(&[]);
 
-        unsafe { self.device.queue_submit(self.queue, &[submit_info], Fence::null())  }?;
+        let fence = {
+            let fence_info = vk::FenceCreateInfo::default()
+                .flags(FenceCreateFlags::empty());
+
+            unsafe { self.device.create_fence(&fence_info, None)  }?
+        };
+
+        unsafe { self.device.queue_submit(self.queue, &[submit_info], fence)  }?;
+        unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX)  }?;
+
+
         Ok(())
     }
 
@@ -109,7 +120,7 @@ impl Drop for Queue {
             Ok(()) => {}
             // do not panic: drop should not panic, since it is invoked for all objects after a panic; for example
             // if the logical device is lost all queues will be dropped on panic and they will all panic themselves and make the backtrace unreadable
-            Err(e) => eprintln!("Queue::wait_idle (inside Queue::drop) returned {}", e.get_source().unwrap()),
+            Err(e) => eprintln!("Queue::wait_idle (inside Queue::drop) returned '{}'", e.get_source().unwrap()),
         }
 
         unsafe {
