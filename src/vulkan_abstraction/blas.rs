@@ -2,6 +2,8 @@ use std::ops::Deref;
 
 use crate::error::*;
 use crate::vulkan_abstraction;
+use ash::vk::DependencyFlags;
+use ash::vk::PipelineStageFlags;
 use ash::{
     Device,
     khr::acceleration_structure,
@@ -158,12 +160,11 @@ impl BLAS {
 
         //record build_command_buffer with the commands to build the BLAS
         unsafe {
-            device
-                .begin_command_buffer(
-                    build_command_buffer,
-                    &CommandBufferBeginInfo::default()
-                        .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                )?;
+            device.begin_command_buffer(
+                build_command_buffer,
+                &CommandBufferBeginInfo::default()
+                    .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
 
             acceleration_structure_device.cmd_build_acceleration_structures(
                 build_command_buffer,
@@ -171,8 +172,9 @@ impl BLAS {
                 &[&[build_range_info]],
             );
 
-            device
-                .end_command_buffer(build_command_buffer)?
+            // device.cmd_pipeline_barrier(build_command_buffer, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS, DependencyFlags::empty(), &[], &[], &[]);
+
+            device.end_command_buffer(build_command_buffer)?
         }
 
         queue.submit_sync(build_command_buffer)?;
