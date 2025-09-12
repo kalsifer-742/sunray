@@ -1,7 +1,6 @@
 use std::ops::Deref;
 
 use ash::{
-<<<<<<< Updated upstream
     Device,
     khr::acceleration_structure,
     vk::{
@@ -16,11 +15,6 @@ use ash::{
         GeometryFlagsKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags,
         MemoryPropertyFlags, Packed24_8, PhysicalDeviceMemoryProperties, TransformMatrixKHR,
     },
-=======
-    khr::acceleration_structure, vk::{
-        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR, AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR, AccelerationStructureCreateInfoKHR, AccelerationStructureDeviceAddressInfoKHR, AccelerationStructureGeometryDataKHR, AccelerationStructureGeometryInstancesDataKHR, AccelerationStructureGeometryKHR, AccelerationStructureInstanceKHR, AccelerationStructureKHR, AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR, BufferUsageFlags, BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR, CommandBufferBeginInfo, CommandBufferUsageFlags, DependencyFlags, DeviceOrHostAddressConstKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags, MemoryPropertyFlags, Packed24_8, PhysicalDeviceMemoryProperties, PipelineStageFlags, TransformMatrixKHR
-    }, Device
->>>>>>> Stashed changes
 };
 
 use super::BLAS;
