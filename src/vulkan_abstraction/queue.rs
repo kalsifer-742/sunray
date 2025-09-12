@@ -94,6 +94,7 @@ impl Queue {
 
         unsafe { self.device.queue_submit(self.queue, &[submit_info], fence)  }?;
         unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX)  }?;
+        unsafe { self.device.destroy_fence(fence, None) };
 
 
         Ok(())

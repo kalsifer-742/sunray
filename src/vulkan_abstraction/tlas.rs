@@ -195,6 +195,8 @@ impl TLAS {
                 &[&[acceleration_structure_build_range_info]],
             );
 
+            // device.cmd_pipeline_barrier(command_buffer, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS, DependencyFlags::empty(), &[], &[], &[]);
+
             device.end_command_buffer(command_buffer)?
         }
 

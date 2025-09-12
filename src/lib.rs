@@ -3,24 +3,10 @@ extern crate shaderc;
 use std::{collections::HashSet, ffi::CStr};
 
 use crate::error::*;
-use ash::vk::{
-    AccessFlags, BufferUsageFlags, CommandBuffer, CommandBufferBeginInfo, CommandBufferUsageFlags, DependencyFlags, Image, ImageCopy, ImageCreateFlags, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, LayerSettingEXT, LayerSettingTypeEXT, LayerSettingsCreateInfoEXT, MemoryAllocateFlags, MemoryPropertyFlags, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelinePropertiesKHR, PipelineBindPoint, PipelineStageFlags, ShaderStageFlags,
-};
 use ash::{
-    Device, Entry, Instance,
-    khr::{self, acceleration_structure, surface, swapchain},
-    ext,
-    vk::{
-        ApplicationInfo, ColorSpaceKHR, CommandPoolCreateFlags, ComponentMapping, ComponentSwizzle,
-        CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format,
-        ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
-        ImageViewType, InstanceCreateInfo, PhysicalDevice,
-        PhysicalDeviceAccelerationStructureFeaturesKHR,
-        PhysicalDeviceRayTracingPipelineFeaturesKHR, PhysicalDeviceType,
-        PhysicalDeviceVulkan12Features, PresentModeKHR, QueueFlags, SharingMode,
-        SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-        make_api_version,
-    },
+    ext, khr::{self, acceleration_structure, surface, swapchain}, vk::{
+        make_api_version, AccessFlags, ApplicationInfo, BufferUsageFlags, ColorSpaceKHR, CommandBuffer, CommandBufferBeginInfo, CommandBufferUsageFlags, CommandPoolCreateFlags, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DependencyFlags, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, Image, ImageAspectFlags, ImageCopy, ImageCreateFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, LayerSettingEXT, LayerSettingTypeEXT, LayerSettingsCreateInfoEXT, MemoryAllocateFlags, MemoryPropertyFlags, PhysicalDevice, PhysicalDeviceAccelerationStructureFeaturesKHR, PhysicalDeviceProperties2, PhysicalDeviceRayTracingPipelineFeaturesKHR, PhysicalDeviceRayTracingPipelinePropertiesKHR, PhysicalDeviceType, PhysicalDeviceVulkan12Features, PipelineBindPoint, PipelineStageFlags, PipelineStageFlags2, PresentModeKHR, QueueFlags, SampleCountFlags, ShaderStageFlags, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR
+    }, Device, Entry, Instance
 };
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
@@ -76,11 +62,10 @@ struct UniformBufferContents {
 }
 
 fn make_view_inverse_matrix() -> nalgebra::Matrix4<f32> {
-    let eye = nalgebra::geometry::Point3::new(0.0, 0.0, 1.0);
-    let target = nalgebra::geometry::Point3::new(0.0, 0.0, 0.0);
+    let eye = nalgebra::geometry::Point3::new(0.0, 0.0, 3.0);
+    let target = nalgebra::geometry::Point3::new(0.0, 0.0, 6.0);
     let up = nalgebra::Vector3::new(0.0, 1.0, 0.0);
     let view = nalgebra::Isometry3::look_at_lh(&eye, &target, &up);
-
 
     let view_matrix : nalgebra::Matrix4<f32> = view.to_homogeneous();
 
@@ -135,32 +120,47 @@ impl Core {
         let entry = Entry::linked();
         let application_info = ApplicationInfo::default().api_version(make_api_version(0, 1, 4, 0));
 
-        let enabled_layer_names =
+        let validation_layer_names = {
+            let disable_validation_layer_env_var = std::env::var("DISABLE_VALIDATION_LAYER").map_or(false, |s| s.parse::<i32>().unwrap_or(1) != 0);
+
             if cfg!(debug_assertions) {
-                if Self::check_validation_layer_support(&entry)? {
-                    &[ Self::VALIDATION_LAYER_NAME.as_ptr() ]
+                if !disable_validation_layer_env_var {
+                    if Self::check_validation_layer_support(&entry)? {
+                        eprintln!("Validation layer enabled");
+                        &[ Self::VALIDATION_LAYER_NAME.as_ptr() ]
+                    } else {
+                        eprintln!("No validation layer support; continuing without validation layer...");
+                        [].as_slice()
+                    }
                 } else {
-                    eprintln!("No validation layer support; continuing without validation layer...");
+                    eprintln!("Validation layer disabled via DISABLE_VALIDATION_LAYER environment variable");
                     [].as_slice()
                 }
             } else {
                 [].as_slice()
-            };
+            }
+        };
 
         let instance = {
             let instance_extensions = {
                 let required_extensions = crate::utils::enumerate_required_extensions(raw_display_handle)?;
 
+                if validation_layer_names.contains(&Self::VALIDATION_LAYER_NAME.as_ptr()) {
                 // add VK_EXT_layer_settings for configuring the validation layer
-                let instance_extensions = required_extensions.iter()
-                    .chain(
-                        Some(ext::layer_settings::NAME.as_ptr()).iter()
-                    )
-                    .copied()
-                    .collect::<Vec<*const i8>>();
-
-                instance_extensions
+                    required_extensions.iter()
+                        .chain(
+                            Some(ext::layer_settings::NAME.as_ptr()).iter()
+                        )
+                        .copied()
+                        .collect::<Vec<_>>()
+                } else {
+                    required_extensions.iter().copied().collect::<Vec<_>>()
+                }
             };
+
+            const TRUE_BOOL32 : [u8; 4] = 1_u32.to_le_bytes();
+            #[allow(unused)]
+            const FALSE_BOOL32 : [u8; 4] = 0_u32.to_le_bytes();
             // use VK_EXT_layer_settings to configure the validation layer
             let settings = [
                 // Khronos Validation layer recommends not to enable both GPU Assisted Validation (gpuav_enable) and Normal Core Check Validation (validate_core), as it will be very slow.
@@ -169,32 +169,32 @@ impl Core {
                     .layer_name(Self::VALIDATION_LAYER_NAME)
                     .setting_name(c"validate_core")
                     .ty(LayerSettingTypeEXT::BOOL32)
-                    .values(&[1, 0, 0, 0]),
+                    .values(&TRUE_BOOL32),
 
                 LayerSettingEXT::default()
                     .layer_name(Self::VALIDATION_LAYER_NAME)
                     .setting_name(c"gpuav_enable") // gpu assisted validation
                     .ty(LayerSettingTypeEXT::BOOL32)
-                    .values(&[0, 0, 0, 0]),
+                    .values(&FALSE_BOOL32),
 
                 LayerSettingEXT::default()
                     .layer_name(Self::VALIDATION_LAYER_NAME)
                     .setting_name(c"validate_sync")
                     .ty(LayerSettingTypeEXT::BOOL32)
-                    .values(&[1, 0, 0, 0]),
+                    .values(&TRUE_BOOL32),
 
                 LayerSettingEXT::default()
                     .layer_name(Self::VALIDATION_LAYER_NAME)
                     .setting_name(c"validate_best_practices")
                     .ty(LayerSettingTypeEXT::BOOL32)
-                    .values(&[1, 0, 0, 0]),
+                    .values(&TRUE_BOOL32),
             ];
             let mut layer_settings_create_info = LayerSettingsCreateInfoEXT::default()
                 .settings(&settings);
 
             let instance_create_info = InstanceCreateInfo::default()
                 .application_info(&application_info)
-                .enabled_layer_names(enabled_layer_names)
+                .enabled_layer_names(validation_layer_names)
                 .enabled_extension_names(&instance_extensions)
                 .push_next(&mut layer_settings_create_info);
 
@@ -417,8 +417,7 @@ impl Core {
             .collect::<Result<Vec<_>, _>>()?;
 
         //necessary for memory allocations
-        let physical_device_memory_properties =
-            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let physical_device_memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
         let physical_device_rt_pipeline_properties = {
             let mut physical_device_rt_pipeline_properties =
@@ -537,18 +536,18 @@ impl Core {
         // TODO: dispose of these resources in drop(), maybe even abstract them into a struct
         let (image, _image_device_memory, image_view) = {
             let image = {
-                let image_create_info = ash::vk::ImageCreateInfo::default()
-                    .image_type(ash::vk::ImageType::TYPE_2D)
+                let image_create_info = ImageCreateInfo::default()
+                    .image_type(ImageType::TYPE_2D)
                     .format(OUT_IMAGE_FORMAT)
                     .extent(swapchain_image_extent.into())
                     .flags(ImageCreateFlags::empty())
                     .mip_levels(1)
                     .array_layers(1)
-                    .samples(ash::vk::SampleCountFlags::TYPE_1)
-                    .tiling(ash::vk::ImageTiling::OPTIMAL)
+                    .samples(SampleCountFlags::TYPE_1)
+                    .tiling(ImageTiling::OPTIMAL)
                     .usage(
-                        ash::vk::ImageUsageFlags::STORAGE
-                        | ash::vk::ImageUsageFlags::TRANSFER_SRC,
+                        ImageUsageFlags::STORAGE
+                        | ImageUsageFlags::TRANSFER_SRC,
                     )
                     .initial_layout(ImageLayout::UNDEFINED);
 
@@ -597,7 +596,8 @@ impl Core {
                 unsafe {
                     device.begin_command_buffer(image_barrier_cmd_buf, &begin_info)?;
 
-                    Self::cmd_image_memory_barrier(&device, image_barrier_cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS, AccessFlags::empty(), AccessFlags::empty());
+                    let stage_all = PipelineStageFlags::ALL_COMMANDS;
+                    Self::cmd_image_memory_barrier(&device, image_barrier_cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL, stage_all, stage_all, AccessFlags::empty(), AccessFlags::empty());
 
                     device.end_command_buffer(image_barrier_cmd_buf)?;
                 }
@@ -785,9 +785,12 @@ impl Core {
                     1
                 );
 
-                let stage_rt = PipelineStageFlags::ALL_COMMANDS;//PipelineStageFlags::RAY_TRACING_SHADER_KHR;
-                let stage_tx = PipelineStageFlags::ALL_COMMANDS;//PipelineStageFlags::TRANSFER;
-                let stage_pipebtm = PipelineStageFlags::ALL_COMMANDS;//PipelineStageFlags::BOTTOM_OF_PIPE;
+                let stage_all = PipelineStageFlags::ALL_COMMANDS;
+
+                let stage_rt = PipelineStageFlags::RAY_TRACING_SHADER_KHR;
+                let stage_tx = PipelineStageFlags::TRANSFER;
+                let stage_pipetop = PipelineStageFlags::TOP_OF_PIPE;
+                let stage_color_att_output = PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
 
                 let layout_undef = ImageLayout::UNDEFINED;
                 let layout_general = ImageLayout::GENERAL;
@@ -795,8 +798,8 @@ impl Core {
                 let layout_tx_dst = ImageLayout::TRANSFER_DST_OPTIMAL;
                 let layout_present = ImageLayout::PRESENT_SRC_KHR;
 
-                Self::cmd_image_memory_barrier(device, cmd_buf, image, layout_general, layout_tx_src, stage_rt, stage_tx, AccessFlags::COLOR_ATTACHMENT_WRITE, AccessFlags::TRANSFER_READ);
-                Self::cmd_image_memory_barrier(device, cmd_buf, sc_image, layout_undef, layout_tx_dst, stage_rt, stage_tx, AccessFlags::COLOR_ATTACHMENT_READ, AccessFlags::TRANSFER_WRITE);
+                Self::cmd_image_memory_barrier(device, cmd_buf, image, layout_general, layout_tx_src, stage_rt, stage_tx, AccessFlags::SHADER_WRITE, AccessFlags::TRANSFER_READ);
+                Self::cmd_image_memory_barrier(device, cmd_buf, sc_image, layout_undef, layout_tx_dst, stage_pipetop, stage_tx, AccessFlags::empty(), AccessFlags::TRANSFER_WRITE);
 
 
                 //now copy the image onto the swapchain image
@@ -813,8 +816,10 @@ impl Core {
                     .extent(swapchain_image_extent.into());
                 device.cmd_copy_image(cmd_buf, image, ImageLayout::TRANSFER_SRC_OPTIMAL, sc_images[i], ImageLayout::TRANSFER_DST_OPTIMAL, &[image_copy_info]);
 
-                Self::cmd_image_memory_barrier(device, cmd_buf, image, layout_tx_src, layout_general, stage_tx, stage_pipebtm, AccessFlags::TRANSFER_READ, AccessFlags::COLOR_ATTACHMENT_WRITE);
-                Self::cmd_image_memory_barrier(device, cmd_buf, sc_image, layout_tx_dst, layout_present, stage_tx, stage_pipebtm, AccessFlags::TRANSFER_WRITE, AccessFlags::empty());
+                // Self::cmd_image_memory_barrier(device, cmd_buf, image, layout_tx_src, layout_general, stage_tx, stage_pipebtm, AccessFlags::TRANSFER_READ, AccessFlags::empty());
+                Self::cmd_image_memory_barrier(device, cmd_buf, image, layout_tx_src, layout_general, stage_all, stage_all, AccessFlags::TRANSFER_READ, AccessFlags::empty());
+                // Self::cmd_image_memory_barrier(device, cmd_buf, sc_image, layout_tx_dst, layout_present, stage_tx, stage_pipebtm, AccessFlags::TRANSFER_WRITE, AccessFlags::empty());
+                Self::cmd_image_memory_barrier(device, cmd_buf, sc_image, layout_tx_dst, layout_present, stage_all, stage_all, AccessFlags::TRANSFER_WRITE, AccessFlags::empty());
 
                 device.end_command_buffer(cmd_buf)?;
             }
