@@ -42,5 +42,5 @@ void main() {
         0                       // payload (location = 0)
     );
 
-    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(prd.color.bgr, 1.0));
+    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(prd.color, 1.0));
 }
