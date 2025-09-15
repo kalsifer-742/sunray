@@ -1,12 +1,9 @@
 use std::ops::Deref;
+use std::rc::Rc;
 
 use crate::error::*;
 use crate::vulkan_abstraction;
-use ash::vk::DependencyFlags;
-use ash::vk::PipelineStageFlags;
 use ash::{
-    Device,
-    khr::acceleration_structure,
     vk::{
         AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR,
         AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR,
@@ -16,24 +13,21 @@ use ash::{
         BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR,
         CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR,
         DeviceOrHostAddressKHR, Format, GeometryFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags,
-        MemoryPropertyFlags, PhysicalDeviceMemoryProperties,
+        MemoryPropertyFlags,
     },
 };
 
 // Bottom-Level Acceleration Structure
 pub struct BLAS {
+    core: Rc<vulkan_abstraction::Core>,
     blas: AccelerationStructureKHR,
+    #[allow(dead_code)]
     blas_buffer: vulkan_abstraction::Buffer,
-    acceleration_structure_device: ash::khr::acceleration_structure::Device,
 }
 
 impl BLAS {
     pub fn new(
-        device: &Device,
-        acceleration_structure_device: acceleration_structure::Device,
-        device_memory_props: &PhysicalDeviceMemoryProperties,
-        cmd_pool: &vulkan_abstraction::CmdPool,
-        queue: &vulkan_abstraction::Queue,
+        core: Rc<vulkan_abstraction::Core>,
         vertex_buffer: &vulkan_abstraction::VertexBuffer,
         index_buffer: &vulkan_abstraction::IndexBuffer,
     ) -> SrResult<Self> {
@@ -101,7 +95,7 @@ impl BLAS {
         let acceleration_structure_size_info = unsafe {
             let mut size_info = AccelerationStructureBuildSizesInfoKHR::default();
 
-            acceleration_structure_device.get_acceleration_structure_build_sizes(
+            core.acceleration_structure_device().get_acceleration_structure_build_sizes(
                 AccelerationStructureBuildTypeKHR::DEVICE,
                 &incomplete_build_info,
                 &[index_buffer.len() as u32 / 3],
@@ -113,36 +107,34 @@ impl BLAS {
 
         // the vulkan buffer on which the BLAS will live
         let blas_buffer = vulkan_abstraction::Buffer::new::<u8>(
-            device.clone(),
+            Rc::clone(&core),
             acceleration_structure_size_info.acceleration_structure_size as usize,
             MemoryPropertyFlags::DEVICE_LOCAL,
             MemoryAllocateFlags::DEVICE_ADDRESS,
             BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                 | BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | BufferUsageFlags::STORAGE_BUFFER,
-            device_memory_props,
         )?;
 
         // information as to how to instantiate (but not "build") the BLAS in blas_buffer.
         let blas_create_info = AccelerationStructureCreateInfoKHR::default()
             .ty(incomplete_build_info.ty)
             .size(acceleration_structure_size_info.acceleration_structure_size)
-            .buffer(*blas_buffer)
+            .buffer(blas_buffer.inner())
             .offset(0);
 
         // the actual BLAS object which lives on the blas_buffer, but has not been "built" yet
         let blas = unsafe {
-            acceleration_structure_device.create_acceleration_structure(&blas_create_info, None)
+            core.acceleration_structure_device().create_acceleration_structure(&blas_create_info, None)
         }?;
 
         // the scratch buffer that will be used for building the BLAS (and can be dropped afterwards)
         let scratch_buffer = vulkan_abstraction::Buffer::new::<u8>(
-            device.clone(),
+            Rc::clone(&core),
             acceleration_structure_size_info.build_scratch_size as usize,
             MemoryPropertyFlags::DEVICE_LOCAL,
             MemoryAllocateFlags::DEVICE_ADDRESS,
             BufferUsageFlags::SHADER_DEVICE_ADDRESS | BufferUsageFlags::STORAGE_BUFFER,
-            device_memory_props,
         )?;
 
         // info for building the BLAS
@@ -156,53 +148,50 @@ impl BLAS {
         // - fill with the commands to build the BLAS
         // - pass to the queue to be executed (thus building the BLAS)
         // - free
-        let build_command_buffer = vulkan_abstraction::cmd_buffer::new(cmd_pool, device)?;
+        let build_command_buffer = vulkan_abstraction::cmd_buffer::new(core.cmd_pool(), core.device())?;
 
         //record build_command_buffer with the commands to build the BLAS
         unsafe {
-            device.begin_command_buffer(
+            core.device().inner().begin_command_buffer(
                 build_command_buffer,
                 &CommandBufferBeginInfo::default()
                     .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            acceleration_structure_device.cmd_build_acceleration_structures(
+            core.acceleration_structure_device().cmd_build_acceleration_structures(
                 build_command_buffer,
                 &[build_info],
                 &[&[build_range_info]],
             );
 
-            // device.cmd_pipeline_barrier(build_command_buffer, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS, DependencyFlags::empty(), &[], &[], &[]);
+            // core.device().cmd_pipeline_barrier(build_command_buffer, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS, DependencyFlags::empty(), &[], &[], &[]);
 
-            device.end_command_buffer(build_command_buffer)?
+            core.device().inner().end_command_buffer(build_command_buffer)?
         }
 
-        queue.submit_sync(build_command_buffer)?;
+        core.queue().submit_sync(build_command_buffer)?;
 
         // build_command_buffer must not be in a pending state when
         // free_command_buffers is called on it
-        queue.wait_idle()?;
+        core.queue().wait_idle()?;
 
         unsafe {
-            device.free_command_buffers(**cmd_pool, &[build_command_buffer]);
+            core.device().inner().free_command_buffers(**core.cmd_pool(), &[build_command_buffer]);
         }
 
         Ok(Self {
+            core,
             blas,
             blas_buffer,
-            acceleration_structure_device,
         })
     }
 
-    #[allow(dead_code)]
-    pub fn buffer(&self) -> &vulkan_abstraction::Buffer {
-        &self.blas_buffer
-    }
+    pub fn inner(&self) -> AccelerationStructureKHR { self.blas }
 }
 impl Drop for BLAS {
     fn drop(&mut self) {
         unsafe {
-            self.acceleration_structure_device
+            self.core.acceleration_structure_device()
                 .destroy_acceleration_structure(self.blas, None);
         }
     }
