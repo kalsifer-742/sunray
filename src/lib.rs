@@ -72,7 +72,8 @@ impl Renderer {
     // useful environment variables, set to 1 or 0
     // TODO: switch to program arguments (safeguards against typos, and allows for a short explanation in --help)
     const ENABLE_VALIDATION_LAYER_ENV_VAR: &'static str = "ENABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
-    const ENABLE_GPUAV_ENV_VAR_NAME: &'static str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled
+    const ENABLE_GPUAV_ENV_VAR_NAME: &'static str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled, defaults to 0
+    const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &'static str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
     const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 
     // TODO: currently take for granted that the user has a window, no support for offline rendering
@@ -251,7 +252,7 @@ impl Renderer {
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
             Rc::clone(&core),
             &descriptor_sets,
-            Self::IS_DEBUG_BUILD,
+            get_env_var_as_bool(Self::ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR).unwrap_or(Self::IS_DEBUG_BUILD),
         )?;
 
         let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
