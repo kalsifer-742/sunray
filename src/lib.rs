@@ -349,7 +349,7 @@ impl Core {
 
             //find the BGRA8 SRGB nonlinear surface format
             let bgra8_srgb_nonlinear = formats.iter().find(|surface_format| {
-                surface_format.format == Format::B8G8R8A8_SRGB
+                surface_format.format == Format::R8G8B8A8_SRGB //Format::B8G8R8A8_SRGB
                     && surface_format.color_space == ColorSpaceKHR::SRGB_NONLINEAR
             });
 
