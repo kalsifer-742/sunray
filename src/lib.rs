@@ -63,7 +63,7 @@ struct UniformBufferContents {
 
 fn make_view_inverse_matrix() -> nalgebra::Matrix4<f32> {
     let eye = nalgebra::geometry::Point3::new(0.0, 0.0, 3.0);
-    let target = nalgebra::geometry::Point3::new(0.0, 0.0, 6.0);
+    let target = nalgebra::geometry::Point3::new(0.0, 0.0, 0.0);
     let up = nalgebra::Vector3::new(0.0, 1.0, 0.0);
     let view = nalgebra::Isometry3::look_at_lh(&eye, &target, &up);
 
@@ -112,8 +112,24 @@ pub struct Core {
     shader_binding_table: vulkan_abstraction::ShaderBindingTable,
 }
 
+fn get_env_var_as_bool(name: &str) -> Option<bool> {
+    match std::env::var(name) {
+        Ok(s) => {
+            match s.parse::<i32>() {
+                Ok(v) => Some(v != 0),
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    }
+}
+
 impl Core {
     const VALIDATION_LAYER_NAME: &'static CStr = c"VK_LAYER_KHRONOS_validation";
+    // useful environment variables, set to 1 or 0
+    // TODO: switch to program arguments (safeguards against typos, and allows for a short explanation in --help)
+    const DISABLE_VALIDATION_LAYER_ENV_VAR: &'static str = "DISABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
+    const ENABLE_GPUAV_ENV_VAR_NAME: &'static str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled
 
     // TODO: currently take for granted that the user has a window, no support for offline rendering
     pub fn new(window_extent: [u32; 2], raw_window_handle: RawWindowHandle, raw_display_handle: RawDisplayHandle) -> SrResult<Self> {
@@ -121,25 +137,32 @@ impl Core {
         let application_info = ApplicationInfo::default().api_version(make_api_version(0, 1, 4, 0));
 
         let validation_layer_names = {
-            let disable_validation_layer_env_var = std::env::var("DISABLE_VALIDATION_LAYER").map_or(false, |s| s.parse::<i32>().unwrap_or(1) != 0);
+            let debug_build = cfg!(debug_assertions);
+            let wants_validation_layer_disabled = get_env_var_as_bool(Self::DISABLE_VALIDATION_LAYER_ENV_VAR).unwrap_or(!debug_build);
+            let validation_layer_supported = Self::check_validation_layer_support(&entry)?;
 
-            if cfg!(debug_assertions) {
-                if !disable_validation_layer_env_var {
-                    if Self::check_validation_layer_support(&entry)? {
-                        eprintln!("Validation layer enabled");
-                        &[ Self::VALIDATION_LAYER_NAME.as_ptr() ]
-                    } else {
-                        eprintln!("No validation layer support; continuing without validation layer...");
-                        [].as_slice()
-                    }
+            let enable_validation_layer = if wants_validation_layer_disabled {
+                    //TODO: use a logging library
+                    println!("validation layer disabled");
+                    false
+            } else {
+                if validation_layer_supported {
+                    println!("Validation layer enabled");
+                    true
                 } else {
-                    eprintln!("Validation layer disabled via DISABLE_VALIDATION_LAYER environment variable");
-                    [].as_slice()
+                    println!("No validation layer support; continuing without validation layer...");
+                    false
                 }
+            };
+
+            if enable_validation_layer {
+                &[ Self::VALIDATION_LAYER_NAME.as_ptr() ]
             } else {
                 [].as_slice()
             }
         };
+
+
 
         let instance = {
             let instance_extensions = {
@@ -158,9 +181,12 @@ impl Core {
                 }
             };
 
-            const TRUE_BOOL32 : [u8; 4] = 1_u32.to_le_bytes();
+            const TRUE_BYTES : [u8; 4] = 1_u32.to_le_bytes();
             #[allow(unused)]
-            const FALSE_BOOL32 : [u8; 4] = 0_u32.to_le_bytes();
+            const FALSE_BYTES : [u8; 4] = 0_u32.to_le_bytes();
+
+            let as_bytes = |b| if b {&TRUE_BYTES} else {&FALSE_BYTES};
+            let enable_gpuav = get_env_var_as_bool(Self::ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
             // use VK_EXT_layer_settings to configure the validation layer
             let settings = [
                 // Khronos Validation layer recommends not to enable both GPU Assisted Validation (gpuav_enable) and Normal Core Check Validation (validate_core), as it will be very slow.
@@ -169,25 +195,31 @@ impl Core {
                     .layer_name(Self::VALIDATION_LAYER_NAME)
                     .setting_name(c"validate_core")
                     .ty(LayerSettingTypeEXT::BOOL32)
-                    .values(&TRUE_BOOL32),
+                    .values(as_bytes(!enable_gpuav)),
 
                 LayerSettingEXT::default()
                     .layer_name(Self::VALIDATION_LAYER_NAME)
                     .setting_name(c"gpuav_enable") // gpu assisted validation
                     .ty(LayerSettingTypeEXT::BOOL32)
-                    .values(&FALSE_BOOL32),
+                    .values(as_bytes(enable_gpuav)),
+
+                LayerSettingEXT::default()
+                    .layer_name(Self::VALIDATION_LAYER_NAME)
+                    .setting_name(c"gpuav_shader_instrumentation") // instrument shaders to validate descriptors
+                    .ty(LayerSettingTypeEXT::BOOL32)
+                    .values(as_bytes(enable_gpuav)),
 
                 LayerSettingEXT::default()
                     .layer_name(Self::VALIDATION_LAYER_NAME)
                     .setting_name(c"validate_sync")
                     .ty(LayerSettingTypeEXT::BOOL32)
-                    .values(&TRUE_BOOL32),
+                    .values(&TRUE_BYTES),
 
                 LayerSettingEXT::default()
                     .layer_name(Self::VALIDATION_LAYER_NAME)
                     .setting_name(c"validate_best_practices")
                     .ty(LayerSettingTypeEXT::BOOL32)
-                    .values(&TRUE_BOOL32),
+                    .values(&TRUE_BYTES),
             ];
             let mut layer_settings_create_info = LayerSettingsCreateInfoEXT::default()
                 .settings(&settings);
