@@ -14,8 +14,6 @@ pub mod error;
 pub mod utils;
 mod vulkan_abstraction;
 
-
-
 #[allow(dead_code)]
 struct UniformBufferContents {
     pub view_inverse: nalgebra::Matrix4<f32>,
@@ -253,6 +251,7 @@ impl Renderer {
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
             Rc::clone(&core),
             &descriptor_sets,
+            Self::IS_DEBUG_BUILD,
         )?;
 
         let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
