@@ -11,10 +11,14 @@ fn compile_shader_internal(
     src: &str,
     file_name: &str,
     shader_type: shaderc::ShaderKind,
+    generate_debug_info: bool,
 ) -> shaderc::CompilationArtifact {
     //TODO: unwrap
     let compiler = shaderc::Compiler::new().unwrap();
     let mut options = shaderc::CompileOptions::new().unwrap();
+    if generate_debug_info {
+        options.set_generate_debug_info();
+    }
     options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
 
 
@@ -32,11 +36,12 @@ fn compile_shader_internal(
 }
 
 macro_rules! compile_shader {
-    ($file_name : expr, $shader_type : expr) => {
+    ($file_name : expr, $shader_type : expr, $generate_debug_info: expr) => {
         compile_shader_internal(
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file_name)),
             $file_name,
             $shader_type,
+            $generate_debug_info
         )
     };
 }
@@ -57,12 +62,16 @@ impl RayTracingPipeline {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         descriptor_sets: &vulkan_abstraction::DescriptorSets,
+        generate_shader_debug_info: bool
     ) -> SrResult<Self> {
+        if generate_shader_debug_info {
+            println!("Building shaders with debug symbols");
+        }
         let mut stages = Vec::new();
         let device = core.device().inner();
 
         let ray_gen_module = {
-            let spirv = compile_shader!("shaders/ray_gen.glsl", shaderc::ShaderKind::RayGeneration);
+            let spirv = compile_shader!("shaders/ray_gen.glsl", shaderc::ShaderKind::RayGeneration, generate_shader_debug_info);
 
             let create_info = vk::ShaderModuleCreateInfo::default()
                 .code(spirv.as_binary())
@@ -78,7 +87,7 @@ impl RayTracingPipeline {
 
         let ray_miss_module = {
             let spirv =
-                compile_shader!("shaders/ray_miss.glsl", shaderc::ShaderKind::Miss);
+                compile_shader!("shaders/ray_miss.glsl", shaderc::ShaderKind::Miss, generate_shader_debug_info);
 
             let create_info = vk::ShaderModuleCreateInfo::default()
                 .code(spirv.as_binary())
@@ -94,7 +103,7 @@ impl RayTracingPipeline {
 
         let closest_hit_module = {
             let spirv =
-                compile_shader!("shaders/closest_hit.glsl", shaderc::ShaderKind::ClosestHit);
+                compile_shader!("shaders/closest_hit.glsl", shaderc::ShaderKind::ClosestHit, generate_shader_debug_info);
 
             let create_info = vk::ShaderModuleCreateInfo::default()
                 .code(spirv.as_binary())
