@@ -1,9 +1,9 @@
-use std::ffi::CStr;
+use std::{ffi::CStr, rc::Rc};
 
 use crate::error::SrResult;
 use crate::vulkan_abstraction;
 
-use ash::{khr, vk};
+use ash::{vk};
 
 const SHADER_ENTRY_POINT: &CStr = c"main";
 
@@ -48,18 +48,18 @@ pub struct PushConstant {
 }
 
 pub struct RayTracingPipeline {
-    device: ash::Device,
+    core: Rc<vulkan_abstraction::Core>,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
 }
 
 impl RayTracingPipeline {
     pub fn new(
-        device: ash::Device,
-        ray_tracing_pipeline_device: &khr::ray_tracing_pipeline::Device,
+        core: Rc<vulkan_abstraction::Core>,
         descriptor_sets: &vulkan_abstraction::DescriptorSets,
     ) -> SrResult<Self> {
         let mut stages = Vec::new();
+        let device = core.device().inner();
 
         let ray_gen_module = {
             let spirv = compile_shader!("shaders/ray_gen.glsl", shaderc::ShaderKind::RayGeneration);
@@ -168,7 +168,7 @@ impl RayTracingPipeline {
             .layout(pipeline_layout);
 
         let pipelines = unsafe {
-            ray_tracing_pipeline_device.create_ray_tracing_pipelines(
+            core.rt_pipeline_device().create_ray_tracing_pipelines(
                 vk::DeferredOperationKHR::null(),
                 vk::PipelineCache::null(),
                 &[pipeline_create_info],
@@ -184,7 +184,7 @@ impl RayTracingPipeline {
         });
 
         Ok(Self {
-            device,
+            core,
             pipeline,
             pipeline_layout,
         })
@@ -197,9 +197,8 @@ impl RayTracingPipeline {
 impl Drop for RayTracingPipeline {
     fn drop(&mut self) {
         unsafe {
-            self.device.destroy_pipeline(self.pipeline, None);
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.core.device().inner().destroy_pipeline(self.pipeline, None);
+            self.core.device().inner().destroy_pipeline_layout(self.pipeline_layout, None);
         }
     }
 }

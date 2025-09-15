@@ -1,8 +1,8 @@
-use std::{any::TypeId, ops::Deref};
+use std::{any::TypeId, ops::Deref, rc::Rc};
 
-use ash::{vk::{BufferUsageFlags, IndexType, MemoryAllocateFlags, MemoryPropertyFlags, PhysicalDeviceMemoryProperties}, Device};
+use ash::{vk::{BufferUsageFlags, IndexType, MemoryAllocateFlags, MemoryPropertyFlags}};
 
-use crate::error::*;
+use crate::{error::*, vulkan_abstraction};
 use crate::vulkan_abstraction::buffer::Buffer;
 
 pub struct IndexBuffer {
@@ -12,7 +12,7 @@ pub struct IndexBuffer {
 }
 impl IndexBuffer {
     //build an index buffer with flags for usage in a blas
-    pub fn new_for_blas<T : 'static>(device: Device, len: usize, mem_props : &PhysicalDeviceMemoryProperties) -> SrResult<Self> {
+    pub fn new_for_blas<T : 'static>(core: Rc<vulkan_abstraction::Core>, len: usize) -> SrResult<Self> {
         let mem_flags = MemoryPropertyFlags::DEVICE_LOCAL;
         let alloc_flags = MemoryAllocateFlags::DEVICE_ADDRESS;
         let usage_flags = 
@@ -28,7 +28,7 @@ impl IndexBuffer {
             },
         };
 
-        let buffer = Buffer::new::<T>(device, len, mem_flags, alloc_flags, usage_flags, mem_props)?;
+        let buffer = Buffer::new::<T>(core, len, mem_flags, alloc_flags, usage_flags)?;
 
         Ok(Self { buffer, len, idx_type })
     }

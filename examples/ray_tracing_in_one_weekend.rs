@@ -1,4 +1,3 @@
-use sunray::Core;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -10,7 +9,7 @@ use winit::{
 #[derive(Default)]
 struct App {
     window: Option<Window>,
-    core: Option<Core>,
+    renderer: Option<sunray::Renderer>,
 }
 
 impl ApplicationHandler for App {
@@ -21,8 +20,8 @@ impl ApplicationHandler for App {
                 .unwrap(),
         );
 
-        self.core = Some(
-            Core::new(
+        self.renderer = Some(
+            sunray::Renderer::new(
                 self.window.as_ref().unwrap().inner_size().into(),
                 self.window.as_ref().unwrap().raw_window_handle(),
                 self.window.as_ref().unwrap().raw_display_handle(),
@@ -42,7 +41,7 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                match self.core.as_mut().unwrap().render() {
+                match self.renderer.as_mut().unwrap().render() {
                     Ok(()) => {}
                     Err(error) => {
                         //no need to panic, sunray already takes care of the backtrace

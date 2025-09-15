@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{rc::Rc};
 
 use ash::vk;
 
@@ -7,7 +7,7 @@ use crate::{error::*, vulkan_abstraction};
 use super::TLAS;
 
 pub struct DescriptorSets {
-    device: ash::Device,
+    core: Rc<vulkan_abstraction::Core>,
     descriptor_sets: Vec<vk::DescriptorSet>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layouts: Vec<vk::DescriptorSetLayout>,
@@ -19,11 +19,12 @@ impl DescriptorSets {
     const UNIFORM_BUFFER_BINDING: u32 = 2;
 
     pub fn new(
-        device: ash::Device,
+        core: Rc<vulkan_abstraction::Core>,
         tlas: &TLAS,
         output_image_view: &vk::ImageView,
         uniform_buffer: &vulkan_abstraction::Buffer,
     ) -> SrResult<Self> {
+        let device = core.device().inner();
         let descriptor_pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
@@ -83,7 +84,7 @@ impl DescriptorSets {
         let mut descriptor_writes = Vec::new();
 
         // write TLAS to descriptor set
-        let tlases = [*tlas.deref()];
+        let tlases = [tlas.inner()];
         let mut write_descriptor_set_acceleration_structure =
             vk::WriteDescriptorSetAccelerationStructureKHR::default()
                 .acceleration_structures(&tlases);
@@ -114,7 +115,7 @@ impl DescriptorSets {
         // write uniform buffer to descriptor set
         let descriptor_buffer_infos = [
             vk::DescriptorBufferInfo::default()
-                .buffer(**uniform_buffer)
+                .buffer(uniform_buffer.inner())
                 .range(vk::WHOLE_SIZE)
         ];
         descriptor_writes.push(
@@ -132,7 +133,7 @@ impl DescriptorSets {
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
 
         Ok(Self {
-            device,
+            core,
             descriptor_sets,
             descriptor_pool,
             descriptor_set_layouts,
@@ -150,12 +151,12 @@ impl DescriptorSets {
 impl Drop for DescriptorSets {
     fn drop(&mut self) {
         //only do this if you set VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
-        //unsafe { self.device.free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets) }.unwrap();
+        //unsafe { self.core.device().free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets) }.unwrap();
 
-        unsafe { self.device.destroy_descriptor_pool(self.descriptor_pool, None) };
+        unsafe { self.core.device().inner().destroy_descriptor_pool(self.descriptor_pool, None) };
 
         for layout in self.descriptor_set_layouts.iter() {
-            unsafe { self.device.destroy_descriptor_set_layout(*layout, None) };
+            unsafe { self.core.device().inner().destroy_descriptor_set_layout(*layout, None) };
         }
     }
 }

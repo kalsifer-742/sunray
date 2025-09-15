@@ -1,7 +1,9 @@
 #![allow(dead_code)]
-use ash::{ Device, vk, khr };
+use std::rc::Rc;
+
+use ash::{ vk, khr };
 use ash::vk::{Fence, FenceCreateFlags};
-use crate::error::*;
+use crate::{error::*, vulkan_abstraction};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -11,16 +13,16 @@ pub struct Queue {
     render_complete_sems: Vec<vk::Semaphore>,
     img_available_sem: Vec<vk::Semaphore>,
     render_complete_fences: Vec<vk::Fence>,
-    device: Device,
+    device: Rc<vulkan_abstraction::Device>,
     swapchain_device: khr::swapchain::Device,
 
     current_frame: usize,
 }
 impl Queue {
-    pub fn new(device: Device, swapchain_device: khr::swapchain::Device, q_family: u32, q_index: u32) -> SrResult<Self> {
-        let queue = unsafe { device.get_device_queue(q_family, q_index) };
+    pub fn new(device: Rc<vulkan_abstraction::Device>, swapchain_device: khr::swapchain::Device, q_index: u32) -> SrResult<Self> {
+        let queue = unsafe { device.inner().get_device_queue(device.queue_family_index(), q_index) };
 
-        let create_semaphore =  || unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)  };
+        let create_semaphore =  || unsafe { device.inner().create_semaphore(&vk::SemaphoreCreateInfo::default(), None)  };
         let render_complete_sems = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_semaphore()).collect::<Result<_, _>>()?;
         let img_available_sem = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_semaphore()).collect::<Result<_, _>>()?;
 
@@ -29,7 +31,7 @@ impl Queue {
             let fence_info = vk::FenceCreateInfo::default()
                 .flags(fence_flags);
 
-            unsafe { device.create_fence(&fence_info, None)  }
+            unsafe { device.inner().create_fence(&fence_info, None)  }
         };
         let render_complete_fences = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_fence()).collect::<Result<_,_>>()?;
 
@@ -41,14 +43,14 @@ impl Queue {
 
     #[allow(dead_code)]
     pub fn wait_idle(&self) -> SrResult<()> {
-        unsafe { self.device.queue_wait_idle(self.queue)  }?;
+        unsafe { self.device.inner().queue_wait_idle(self.queue) }?;
         Ok(())
     }
 
     pub fn acquire_next_image(&self, swapchain: vk::SwapchainKHR) -> SrResult<u32> {
         let wait_fence = &self.render_complete_fences[self.current_frame..=self.current_frame];
-        unsafe { self.device.wait_for_fences(wait_fence, true, u64::MAX)  }?;
-        unsafe { self.device.reset_fences(wait_fence)  }?;
+        unsafe { self.device.inner().wait_for_fences(wait_fence, true, u64::MAX)  }?;
+        unsafe { self.device.inner().reset_fences(wait_fence)  }?;
         
 
         let image_available_sem = self.img_available_sem[self.current_frame];
@@ -71,7 +73,7 @@ impl Queue {
             .signal_semaphores(signal_sem);
         let signal_fence = self.render_complete_fences[self.current_frame];
 
-        unsafe { self.device.queue_submit(self.queue, &[submit_info], signal_fence)  }?;
+        unsafe { self.device.inner().queue_submit(self.queue, &[submit_info], signal_fence)  }?;
 
         Ok(())
     }
@@ -89,12 +91,12 @@ impl Queue {
             let fence_info = vk::FenceCreateInfo::default()
                 .flags(FenceCreateFlags::empty());
 
-            unsafe { self.device.create_fence(&fence_info, None)  }?
+            unsafe { self.device.inner().create_fence(&fence_info, None)  }?
         };
 
-        unsafe { self.device.queue_submit(self.queue, &[submit_info], fence)  }?;
-        unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX)  }?;
-        unsafe { self.device.destroy_fence(fence, None) };
+        unsafe { self.device.inner().queue_submit(self.queue, &[submit_info], fence)  }?;
+        unsafe { self.device.inner().wait_for_fences(&[fence], true, u64::MAX)  }?;
+        unsafe { self.device.inner().destroy_fence(fence, None) };
 
 
         Ok(())
@@ -126,13 +128,13 @@ impl Drop for Queue {
 
         unsafe {
             for s in self.render_complete_sems.iter() {
-                self.device.destroy_semaphore(*s, None);
+                self.device.inner().destroy_semaphore(*s, None);
             }
             for s in self.img_available_sem.iter() {
-                self.device.destroy_semaphore(*s, None);
+                self.device.inner().destroy_semaphore(*s, None);
             }
             for f in self.render_complete_fences.iter() {
-                self.device.destroy_fence(*f, None);
+                self.device.inner().destroy_fence(*f, None);
             }
         }
     }
