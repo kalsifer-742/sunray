@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 
-use ash::{ext, vk, Entry};
+use ash::{ext, vk};
 
 use crate::error::SrResult;
 
@@ -11,7 +11,7 @@ pub struct Instance {
 impl Instance {
     pub const VALIDATION_LAYER_NAME: &'static CStr = c"VK_LAYER_KHRONOS_validation";
 
-    fn check_validation_layer_support(entry: &Entry) -> SrResult<bool> {
+    fn check_validation_layer_support(entry: &ash::Entry) -> SrResult<bool> {
         let layers_props = unsafe { entry.enumerate_instance_layer_properties() }?;
 
         let supports_validation_layer = layers_props
@@ -80,6 +80,7 @@ impl Instance {
             validation_setting(c"validate_core", !with_gpuav),
             validation_setting(c"gpuav_enable", with_gpuav), // gpu assisted validation
             validation_setting(c"gpuav_shader_instrumentation", with_gpuav), // instrument shaders to validate descriptors (aka shader instrumentality project)
+            validation_setting(c"gpuav_validate_ray_query", false), // ignore gpuav warning that rayQuery feature is not supported
             validation_setting(c"validate_sync", true),
             validation_setting(c"validate_best_practices", true),
         ];

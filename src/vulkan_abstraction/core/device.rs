@@ -81,7 +81,12 @@ impl Device {
 
             // enable some device features necessary for ray-tracing
             let mut vk12_features =
-                vk::PhysicalDeviceVulkan12Features::default().buffer_device_address(true);
+                vk::PhysicalDeviceVulkan12Features::default()
+                .buffer_device_address(true) // necessary for ray-tracing
+                .timeline_semaphore(true)
+                .vulkan_memory_model(true)
+                .vulkan_memory_model_device_scope(true)
+                .storage_buffer8_bit_access(true);
             let mut physical_device_rt_pipeline_features =
                 vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
             let mut physical_device_acceleration_structure_features =

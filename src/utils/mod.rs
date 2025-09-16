@@ -1,11 +1,6 @@
 use std::ffi::c_char;
 
-use ash::{
-    Entry, Instance,
-    ext::metal_surface,
-    khr::{android_surface, surface, wayland_surface, win32_surface, xcb_surface, xlib_surface},
-    vk,
-};
+use ash::{ ext, khr, vk };
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 use crate::error::*;
@@ -23,42 +18,42 @@ pub fn enumerate_required_extensions(
     let extensions = match display_handle {
         RawDisplayHandle::Windows(_) => {
             const WINDOWS_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), win32_surface::NAME.as_ptr()];
+                [khr::surface::NAME.as_ptr(), khr::win32_surface::NAME.as_ptr()];
 
             &WINDOWS_EXTS
         }
 
         RawDisplayHandle::Wayland(_) => {
             const WAYLAND_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), wayland_surface::NAME.as_ptr()];
+                [khr::surface::NAME.as_ptr(), khr::wayland_surface::NAME.as_ptr()];
 
             &WAYLAND_EXTS
         }
 
         RawDisplayHandle::Xlib(_) => {
             const XLIB_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), xlib_surface::NAME.as_ptr()];
+                [khr::surface::NAME.as_ptr(), khr::xlib_surface::NAME.as_ptr()];
 
             &XLIB_EXTS
         }
 
         RawDisplayHandle::Xcb(_) => {
             const XCB_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), xcb_surface::NAME.as_ptr()];
+                [khr::surface::NAME.as_ptr(), khr::xcb_surface::NAME.as_ptr()];
 
             &XCB_EXTS
         }
 
         RawDisplayHandle::Android(_) => {
             const ANDROID_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), android_surface::NAME.as_ptr()];
+                [khr::surface::NAME.as_ptr(), khr::android_surface::NAME.as_ptr()];
 
             &ANDROID_EXTS
         }
 
         RawDisplayHandle::AppKit(_) | RawDisplayHandle::UiKit(_) => {
             const METAL_EXTS: [*const c_char; 2] =
-                [surface::NAME.as_ptr(), metal_surface::NAME.as_ptr()];
+                [khr::surface::NAME.as_ptr(), ext::metal_surface::NAME.as_ptr()];
 
             &METAL_EXTS
         }
@@ -96,8 +91,8 @@ pub fn enumerate_required_extensions(
 /// [parent/child relation]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#fundamentals-objectmodel-lifetime
 
 pub unsafe fn create_surface(
-    entry: &Entry,
-    instance: &Instance,
+    entry: &ash::Entry,
+    instance: &ash::Instance,
     display_handle: RawDisplayHandle,
     window_handle: RawWindowHandle,
     allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
@@ -108,7 +103,7 @@ pub unsafe fn create_surface(
                 .hwnd(window.hwnd as isize)
                 .hinstance(window.hinstance as isize);
 
-            let surface_fn = win32_surface::Instance::new(entry, instance);
+            let surface_fn = khr::win32_surface::Instance::new(entry, instance);
 
             unsafe { surface_fn.create_win32_surface(&surface_desc, allocation_callbacks) }
         }
@@ -118,7 +113,7 @@ pub unsafe fn create_surface(
                 .display(display.display)
                 .surface(window.surface);
 
-            let surface_fn = wayland_surface::Instance::new(entry, instance);
+            let surface_fn = khr::wayland_surface::Instance::new(entry, instance);
 
             unsafe { surface_fn.create_wayland_surface(&surface_desc, allocation_callbacks) }
         }
@@ -128,7 +123,7 @@ pub unsafe fn create_surface(
                 .dpy(display.display)
                 .window(window.window);
 
-            let surface_fn = xlib_surface::Instance::new(entry, instance);
+            let surface_fn = khr::xlib_surface::Instance::new(entry, instance);
 
             unsafe { surface_fn.create_xlib_surface(&surface_desc, allocation_callbacks) }
         }
@@ -138,7 +133,7 @@ pub unsafe fn create_surface(
                 .connection(display.connection)
                 .window(window.window);
 
-            let surface_fn = xcb_surface::Instance::new(entry, instance);
+            let surface_fn = khr::xcb_surface::Instance::new(entry, instance);
 
             unsafe { surface_fn.create_xcb_surface(&surface_desc, allocation_callbacks) }
         }
@@ -147,14 +142,14 @@ pub unsafe fn create_surface(
             let surface_desc =
                 vk::AndroidSurfaceCreateInfoKHR::default().window(window.a_native_window);
 
-            let surface_fn = android_surface::Instance::new(entry, instance);
+            let surface_fn = khr::android_surface::Instance::new(entry, instance);
 
             unsafe { surface_fn.create_android_surface(&surface_desc, allocation_callbacks) }
         }
 
         #[cfg(target_os = "macos")]
         (RawDisplayHandle::AppKit(_), RawWindowHandle::AppKit(window)) => {
-            use raw_window_metal::{Layer, appkit};
+            use raw_window_metal::{appkit, Layer};
 
             let layer = match appkit::metal_layer_from_handle(window) {
                 Layer::Existing(layer) | Layer::Allocated(layer) => layer.cast(),

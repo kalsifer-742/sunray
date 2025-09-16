@@ -12,7 +12,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::ffi::CStr;
 use std::rc::Rc;
 
-use ash::{ khr, vk, Entry };
+use ash::{khr, vk};
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 use crate::error::*;
 use crate::vulkan_abstraction;
@@ -70,7 +70,7 @@ pub struct Core {
 
 impl Core {
     pub fn new(create_info: CoreCreateInfo) -> SrResult<Self> {
-        let entry = Entry::linked();
+        let entry = ash::Entry::linked();
 
         let instance = vulkan_abstraction::Instance::new(&entry, create_info.instance_exts, create_info.with_validation_layer, create_info.with_gpu_assisted_validation)?;
 

@@ -1,6 +1,5 @@
 #![allow(dead_code)]
-use ash::{ vk };
-use ash::vk::CommandBufferAllocateInfo;
+use ash::vk;
 use crate::{error::*, vulkan_abstraction};
 
 // Device::free_command_buffers must be called on vk::CommandBuffer before it is dropped
@@ -20,7 +19,7 @@ pub fn new_secondary(cmd_pool: &vulkan_abstraction::CmdPool, device: &vulkan_abs
 }
 
 fn new_vec_impl(cmd_pool: &vulkan_abstraction::CmdPool, device: &vulkan_abstraction::Device, level: vk::CommandBufferLevel, len: usize) -> SrResult<Vec<vk::CommandBuffer>> {
-    let info = CommandBufferAllocateInfo::default()
+    let info = vk::CommandBufferAllocateInfo::default()
         .command_pool(cmd_pool.inner())
         .level(level)
         .command_buffer_count(len as u32);

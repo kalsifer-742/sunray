@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
 use ash::{ vk, khr };
-use ash::vk::{Fence, FenceCreateFlags};
 use crate::{error::*, vulkan_abstraction};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -54,7 +53,7 @@ impl Queue {
 
         let image_available_sem = self.img_available_sem[self.current_frame];
         let (index, _suboptimal_surface) = unsafe {
-            self.swapchain_device.acquire_next_image(swapchain, u64::MAX, image_available_sem, Fence::null())
+            self.swapchain_device.acquire_next_image(swapchain, u64::MAX, image_available_sem, vk::Fence::null())
         }?;
         Ok(index)
     }
@@ -88,7 +87,7 @@ impl Queue {
 
         let fence = {
             let fence_info = vk::FenceCreateInfo::default()
-                .flags(FenceCreateFlags::empty());
+                .flags(vk::FenceCreateFlags::empty());
 
             unsafe { self.device.inner().create_fence(&fence_info, None)  }?
         };
@@ -115,6 +114,7 @@ impl Queue {
         Ok(())
     }
 }
+
 impl Drop for Queue {
     fn drop(&mut self) {
         match self.wait_idle() {

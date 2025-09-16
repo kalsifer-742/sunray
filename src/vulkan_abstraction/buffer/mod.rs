@@ -8,7 +8,7 @@ use mapped_memory::*;
 pub use vertex_buffer::*;
 
 use crate::{error::*, vulkan_abstraction};
-use ash::{vk};
+use ash::vk;
 use std::rc::Rc;
 
 pub fn get_memory_type_index(core: &vulkan_abstraction::Core, mem_prop_flags: vk::MemoryPropertyFlags, mem_requirements: &vk::MemoryRequirements) -> SrResult<u32> {
@@ -213,10 +213,8 @@ impl Buffer {
         unsafe { device.end_command_buffer(bufcpy_cmd_buf) }?;
 
         core.queue().submit_sync(bufcpy_cmd_buf)?;
-        unsafe { device.device_wait_idle() }?;
 
         unsafe { device.free_command_buffers(**core.cmd_pool(), &[bufcpy_cmd_buf]) };
-        // queue.wait_idle()?;
 
         Ok(())
     }
@@ -230,6 +228,7 @@ impl Buffer {
 
     pub fn inner(&self) -> vk::Buffer { self.buffer }
 }
+
 impl Drop for Buffer {
     fn drop(&mut self) {
         //unmap() must be called before the buffer is dropped
