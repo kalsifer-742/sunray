@@ -98,6 +98,20 @@ impl Buffer {
         Ok(staging_buffer)
     }
 
+    pub fn new_from_data<T: Copy>(
+        core: Rc<vulkan_abstraction::Core>,
+        data: &[T],
+        memory_property_flags: vk::MemoryPropertyFlags,
+        alloc_flags: vk::MemoryAllocateFlags,
+        buffer_usage_flags: vk::BufferUsageFlags,
+    ) -> SrResult<Self> {
+        let staging_buffer = Self::new_staging_from_data(Rc::clone(&core), data)?;
+        let buffer = Self::new::<T>(Rc::clone(&core), data.len(), memory_property_flags, alloc_flags, buffer_usage_flags)?;
+        Self::clone_buffer(&core, &staging_buffer, &buffer)?;
+
+        Ok(buffer)
+    }
+
     /// # Create a new Buffer
     ///
     /// ## Arguments:

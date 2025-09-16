@@ -1,19 +1,8 @@
 use std::{rc::Rc};
 
-use ash::{
-    vk::{
-        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR,
-        AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR,
-        AccelerationStructureCreateInfoKHR, AccelerationStructureDeviceAddressInfoKHR,
-        AccelerationStructureGeometryDataKHR, AccelerationStructureGeometryInstancesDataKHR,
-        AccelerationStructureGeometryKHR, AccelerationStructureInstanceKHR,
-        AccelerationStructureKHR, AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR,
-        BufferUsageFlags, BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR,
-        CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR,
-        GeometryFlagsKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags,
-        MemoryPropertyFlags, Packed24_8, TransformMatrixKHR,
-    },
-};
+use ash::vk::{
+        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR, AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR, AccelerationStructureCreateInfoKHR, AccelerationStructureDeviceAddressInfoKHR, AccelerationStructureGeometryDataKHR, AccelerationStructureGeometryInstancesDataKHR, AccelerationStructureGeometryKHR, AccelerationStructureInstanceKHR, AccelerationStructureKHR, AccelerationStructureReferenceKHR, AccelerationStructureTypeKHR, BufferUsageFlags, BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR, GeometryFlagsKHR, GeometryInstanceFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags, MemoryPropertyFlags, Packed24_8, TransformMatrixKHR
+    };
 
 use super::BLAS;
 use crate::{
@@ -181,8 +170,6 @@ impl TLAS {
                 &[acceleration_structure_build_geometry_info],
                 &[&[acceleration_structure_build_range_info]],
             );
-
-            // device.cmd_pipeline_barrier(command_buffer, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS, DependencyFlags::empty(), &[], &[], &[]);
 
             device.end_command_buffer(command_buffer)?
         }

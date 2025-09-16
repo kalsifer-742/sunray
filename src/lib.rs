@@ -23,8 +23,9 @@ struct UniformBufferContents {
 fn make_view_inverse_matrix() -> nalgebra::Matrix4<f32> {
     let eye = nalgebra::geometry::Point3::new(0.0, 0.0, 3.0);
     let target = nalgebra::geometry::Point3::new(0.0, 0.0, 0.0);
-    let up = nalgebra::Vector3::new(0.0, 1.0, 0.0);
-    let view = nalgebra::Isometry3::look_at_lh(&eye, &target, &up);
+    let up = nalgebra::Vector3::new(0.0, -1.0, 0.0);
+    //apparently vulkan uses right-handed coordinates
+    let view = nalgebra::Isometry3::look_at_rh(&eye, &target, &up);
 
     let view_matrix : nalgebra::Matrix4<f32> = view.to_homogeneous();
 
@@ -239,6 +240,20 @@ impl Renderer {
             let mem = uniform_buffer.map::<UniformBufferContents>()?;
             mem[0].proj_inverse = make_proj_inverse_matrix((core.swapchain().image_extent().width, core.swapchain().image_extent().height));
             mem[0].view_inverse = make_view_inverse_matrix();
+
+            {
+                let origin    = mem[0].view_inverse * nalgebra::Vector4::new(0.0, 0.0, 0.0, 1.0);
+                let target    = mem[0].proj_inverse * nalgebra::Vector4::new(0.0, 0.0, 1.0, 1.0);
+                let target_normalized = target.normalize();
+                let direction = mem[0].view_inverse * nalgebra::Vector4::new(target_normalized.x, target_normalized.y, target_normalized.z, 0.0);
+
+                let origin = origin.xyz();
+                let direction = direction.xyz();
+
+                let fmt_vec = |v: nalgebra::Vector3<f32>| format!("({}, {}, {})", v.x, v.y, v.z);
+                println!("for screen center, ray origin={}, direction={}", fmt_vec(origin), fmt_vec(direction));
+            }
+
             uniform_buffer.unmap();
 
             unsafe { device.device_wait_idle() }?;

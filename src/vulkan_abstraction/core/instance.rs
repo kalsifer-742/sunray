@@ -53,62 +53,55 @@ impl Instance {
             if enable_validation_layer {
             // add VK_EXT_layer_settings for configuring the validation layer
                 instance_exts.iter()
-                    .chain(
-                        Some(ext::layer_settings::NAME.as_ptr()).iter()
-                    )
                     .copied()
+                    .chain(
+                        std::iter::once(ext::layer_settings::NAME.as_ptr())
+                    )
                     .collect::<Vec<_>>()
             } else {
                 instance_exts.iter().copied().collect::<Vec<_>>()
             }
         };
 
-        const TRUE_BYTES : [u8; 4] = 1_u32.to_le_bytes();
-        const FALSE_BYTES : [u8; 4] = 0_u32.to_le_bytes();
 
-        let as_bytes = |b| if b {&TRUE_BYTES} else {&FALSE_BYTES};
         // use VK_EXT_layer_settings to configure the validation layer
+        let validation_setting = |name: &'static CStr, v: bool| {
+            const TRUE_BYTES : [u8; 4] = 1_u32.to_le_bytes();
+            const FALSE_BYTES : [u8; 4] = 0_u32.to_le_bytes();
+            vk::LayerSettingEXT::default()
+                .layer_name(Self::VALIDATION_LAYER_NAME)
+                .setting_name(name)
+                .ty(vk::LayerSettingTypeEXT::BOOL32)
+                .values(if v {&TRUE_BYTES} else {&FALSE_BYTES})
+        };
         let settings = [
             // Khronos Validation layer recommends not to enable both GPU Assisted Validation (gpuav_enable) and Normal Core Check Validation (validate_core), as it will be very slow.
             // Once all errors in Core Check are solved it recommends to disable validate_core, then only use GPU-AV for best performance.
-            vk::LayerSettingEXT::default()
-                .layer_name(Self::VALIDATION_LAYER_NAME)
-                .setting_name(c"validate_core")
-                .ty(vk::LayerSettingTypeEXT::BOOL32)
-                .values(as_bytes(!with_gpuav)),
-
-            vk::LayerSettingEXT::default()
-                .layer_name(Self::VALIDATION_LAYER_NAME)
-                .setting_name(c"gpuav_enable") // gpu assisted validation
-                .ty(vk::LayerSettingTypeEXT::BOOL32)
-                .values(as_bytes(with_gpuav)),
-
-            vk::LayerSettingEXT::default()
-                .layer_name(Self::VALIDATION_LAYER_NAME)
-                .setting_name(c"gpuav_shader_instrumentation") // instrument shaders to validate descriptors
-                .ty(vk::LayerSettingTypeEXT::BOOL32)
-                .values(as_bytes(with_gpuav)),
-
-            vk::LayerSettingEXT::default()
-                .layer_name(Self::VALIDATION_LAYER_NAME)
-                .setting_name(c"validate_sync")
-                .ty(vk::LayerSettingTypeEXT::BOOL32)
-                .values(&TRUE_BYTES),
-
-            vk::LayerSettingEXT::default()
-                .layer_name(Self::VALIDATION_LAYER_NAME)
-                .setting_name(c"validate_best_practices")
-                .ty(vk::LayerSettingTypeEXT::BOOL32)
-                .values(&TRUE_BYTES),
+            validation_setting(c"validate_core", !with_gpuav),
+            validation_setting(c"gpuav_enable", with_gpuav), // gpu assisted validation
+            validation_setting(c"gpuav_shader_instrumentation", with_gpuav), // instrument shaders to validate descriptors (aka shader instrumentality project)
+            validation_setting(c"validate_sync", true),
+            validation_setting(c"validate_best_practices", true),
         ];
-        let mut layer_settings_create_info = vk::LayerSettingsCreateInfoEXT::default()
-            .settings(&settings);
+        let mut layer_settings_create_info = if enable_validation_layer {
+            Some(
+                vk::LayerSettingsCreateInfoEXT::default()
+                    .settings(&settings)
+            )
+        } else {
+            None
+        };
 
         let instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&application_info)
             .enabled_layer_names(&layer_names)
-            .enabled_extension_names(&instance_extensions)
-            .push_next(&mut layer_settings_create_info);
+            .enabled_extension_names(&instance_extensions);
+
+        let instance_create_info = if enable_validation_layer {
+            instance_create_info.push_next(layer_settings_create_info.as_mut().unwrap())
+        } else {
+            instance_create_info
+        };
 
         let instance = unsafe { entry.create_instance(&instance_create_info, None) }?;
         Ok(Self { instance })
