@@ -45,9 +45,9 @@ impl Drop for CmdPool {
             Err(e) => {
                 eprintln!("Device::device_wait_idle (inside CmdPool::drop) returned '{e}'");
                 //if device was lost do not attempt to free/destroy objects
-                if e == ash::vk::Result::ERROR_DEVICE_LOST {
-                    return;
-                }
+                // if e == ash::vk::Result::ERROR_DEVICE_LOST {
+                //     return;
+                // }
             }
             Ok(()) => {}
 

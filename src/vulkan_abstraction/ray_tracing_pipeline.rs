@@ -67,61 +67,46 @@ impl RayTracingPipeline {
         if generate_shader_debug_info {
             println!("Building shaders with debug symbols");
         }
-        let mut stages = Vec::new();
         let device = core.device().inner();
 
-        let ray_gen_module = {
-            let spirv = compile_shader!("shaders/ray_gen.glsl", shaderc::ShaderKind::RayGeneration, generate_shader_debug_info);
-
-            let create_info = vk::ShaderModuleCreateInfo::default()
+        let make_shader_stage_create_info = |stage: vk::ShaderStageFlags, spirv: shaderc::CompilationArtifact| -> SrResult<vk::PipelineShaderStageCreateInfo>{
+            let module_create_info = vk::ShaderModuleCreateInfo::default()
                 .code(spirv.as_binary())
                 .flags(vk::ShaderModuleCreateFlags::empty());
 
-            unsafe { device.create_shader_module(&create_info, None) }?
+            let module = unsafe{ device.create_shader_module(&module_create_info, None) }?;
+
+            let stage_create_info = vk::PipelineShaderStageCreateInfo::default()
+                .name(SHADER_ENTRY_POINT)
+                .module(module)
+                .stage(stage);
+
+            Ok(stage_create_info)
         };
-        let ray_gen_create_info = vk::PipelineShaderStageCreateInfo::default()
-            .name(SHADER_ENTRY_POINT)
-            .module(ray_gen_module)
-            .stage(vk::ShaderStageFlags::RAYGEN_KHR);
+
+        let ray_gen_stage_create_info = make_shader_stage_create_info(
+            vk::ShaderStageFlags::RAYGEN_KHR,
+            compile_shader!("shaders/ray_gen.glsl", shaderc::ShaderKind::RayGeneration, generate_shader_debug_info)
+        )?;
+
+        let ray_miss_stage_create_info = make_shader_stage_create_info(
+            vk::ShaderStageFlags::MISS_KHR,
+            compile_shader!("shaders/ray_miss.glsl", shaderc::ShaderKind::Miss, generate_shader_debug_info)
+        )?;
+
+        let closest_hit_stage_create_info = make_shader_stage_create_info(
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            compile_shader!("shaders/closest_hit.glsl", shaderc::ShaderKind::ClosestHit, generate_shader_debug_info)
+        )?;
 
 
-        let ray_miss_module = {
-            let spirv =
-                compile_shader!("shaders/ray_miss.glsl", shaderc::ShaderKind::Miss, generate_shader_debug_info);
-
-            let create_info = vk::ShaderModuleCreateInfo::default()
-                .code(spirv.as_binary())
-                .flags(vk::ShaderModuleCreateFlags::empty());
-
-            unsafe { device.create_shader_module(&create_info, None) }?
-        };
-        let ray_miss_create_info = vk::PipelineShaderStageCreateInfo::default()
-            .name(SHADER_ENTRY_POINT)
-            .module(ray_miss_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR);
-
-
-        let closest_hit_module = {
-            let spirv =
-                compile_shader!("shaders/closest_hit.glsl", shaderc::ShaderKind::ClosestHit, generate_shader_debug_info);
-
-            let create_info = vk::ShaderModuleCreateInfo::default()
-                .code(spirv.as_binary())
-                .flags(vk::ShaderModuleCreateFlags::empty());
-
-            unsafe { device.create_shader_module(&create_info, None) }?
-        };
-        let closest_hit_create_info = vk::PipelineShaderStageCreateInfo::default()
-            .name(SHADER_ENTRY_POINT)
-            .module(closest_hit_module)
-            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR);
-
+        let mut stages = Vec::new();
         let ray_gen_stage_index = stages.len();
-        stages.push(ray_gen_create_info);
+        stages.push(ray_gen_stage_create_info);
         let ray_miss_stage_index = stages.len();
-        stages.push(ray_miss_create_info);
+        stages.push(ray_miss_stage_create_info);
         let closest_hit_stage_index = stages.len();
-        stages.push(closest_hit_create_info);
+        stages.push(closest_hit_stage_create_info);
 
         let mut shader_groups = Vec::new();
         assert_eq!(ray_gen_stage_index, 0);
@@ -150,9 +135,11 @@ impl RayTracingPipeline {
             .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
             .intersection_shader(vk::SHADER_UNUSED_KHR)
             .any_hit_shader(vk::SHADER_UNUSED_KHR)
-            .closest_hit_shader(closest_hit_stage_index as u32);
+            .closest_hit_shader(closest_hit_stage_index as u32)
+            .general_shader(vk::SHADER_UNUSED_KHR);
 
         shader_groups.push(closest_hit_shader_group_create_info);
+
 
         let push_constants = [vk::PushConstantRange::default()
             .stage_flags(

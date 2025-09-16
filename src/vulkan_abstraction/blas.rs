@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use crate::error::*;
 use crate::vulkan_abstraction;
+use ash::vk;
 use ash::{
     vk::{
         AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR,
@@ -21,8 +22,10 @@ use ash::{
 pub struct BLAS {
     core: Rc<vulkan_abstraction::Core>,
     blas: AccelerationStructureKHR,
-    #[allow(dead_code)]
+    #[allow(unused)]
     blas_buffer: vulkan_abstraction::Buffer,
+    #[allow(unused)]
+    transform_matrix_buffer: vulkan_abstraction::Buffer,
 }
 
 impl BLAS {
@@ -39,6 +42,23 @@ impl BLAS {
          * 3.  Build the actual BLAS data structure
          */
 
+        #[rustfmt::skip]
+        let transform_matrix = vk::TransformMatrixKHR {
+            matrix: [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0
+            ],
+        };
+
+        let transform_matrix_buffer = vulkan_abstraction::Buffer::new_from_data(
+            Rc::clone(&core),
+            &[transform_matrix],
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::TRANSFER_DST
+        )?;
+
         // specify what the BLAS's geometry (vbo, ibo) is
         let geometry = {
             let geometry_data = AccelerationStructureGeometryDataKHR {
@@ -53,8 +73,9 @@ impl BLAS {
                         device_address: index_buffer.get_device_address(),
                     })
                     .index_type(index_buffer.index_type())
-                    // no transform data
-                    .transform_data(DeviceOrHostAddressConstKHR::default()),
+                    .transform_data(DeviceOrHostAddressConstKHR {
+                        device_address: transform_matrix_buffer.get_device_address(),
+                    }),
             };
 
             AccelerationStructureGeometryKHR::default()
@@ -121,7 +142,8 @@ impl BLAS {
             .ty(incomplete_build_info.ty)
             .size(acceleration_structure_size_info.acceleration_structure_size)
             .buffer(blas_buffer.inner())
-            .offset(0);
+            .offset(0)
+            .create_flags(vk::AccelerationStructureCreateFlagsKHR::empty());
 
         // the actual BLAS object which lives on the blas_buffer, but has not been "built" yet
         let blas = unsafe {
@@ -164,8 +186,6 @@ impl BLAS {
                 &[&[build_range_info]],
             );
 
-            // core.device().cmd_pipeline_barrier(build_command_buffer, PipelineStageFlags::ALL_COMMANDS, PipelineStageFlags::ALL_COMMANDS, DependencyFlags::empty(), &[], &[], &[]);
-
             core.device().inner().end_command_buffer(build_command_buffer)?
         }
 
@@ -183,6 +203,7 @@ impl BLAS {
             core,
             blas,
             blas_buffer,
+            transform_matrix_buffer,
         })
     }
 

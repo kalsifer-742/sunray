@@ -77,10 +77,11 @@ impl ShaderBindingTable {
             buffer_index += miss_region.stride as usize;
             handles_index += handle_size;
         }
+
         //align to next shader group start
         buffer_index = (raygen_region.size + miss_region.size) as usize;
 
-        //copying hit handles in the sbt buffer
+        //copying hit handles in the sbt_buffer
         for _ in 0..hit_count {
         sbt_buffer_data[buffer_index..buffer_index+handle_size].copy_from_slice(&handles[handles_index..handles_index+handle_size]);
             buffer_index += hit_region.stride as usize;

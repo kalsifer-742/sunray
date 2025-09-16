@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::rc::Rc;
 
 use ash::{ vk, khr };
@@ -48,7 +47,7 @@ impl Queue {
     }
 
     pub fn acquire_next_image(&self, swapchain: vk::SwapchainKHR) -> SrResult<u32> {
-        let wait_fence = &self.render_complete_fences[self.current_frame..=self.current_frame];
+        let wait_fence = &[self.render_complete_fences[self.current_frame]];
         unsafe { self.device.inner().wait_for_fences(wait_fence, true, u64::MAX)  }?;
         unsafe { self.device.inner().reset_fences(wait_fence)  }?;
         
@@ -63,9 +62,9 @@ impl Queue {
     pub fn submit_async(&self, command_buffer: vk::CommandBuffer) -> SrResult<()> {
         // let wait_flags = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let wait_flags = [vk::PipelineStageFlags::ALL_COMMANDS];
-        let wait_sem = &self.img_available_sem[self.current_frame..=self.current_frame];
+        let wait_sem = &[self.img_available_sem[self.current_frame]];
         let command_buffers = [command_buffer];
-        let signal_sem = &self.render_complete_sems[self.current_frame..=self.current_frame];
+        let signal_sem = &[self.render_complete_sems[self.current_frame]];
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(wait_sem)
             .wait_dst_stage_mask(&wait_flags)
@@ -98,12 +97,11 @@ impl Queue {
         unsafe { self.device.inner().wait_for_fences(&[fence], true, u64::MAX)  }?;
         unsafe { self.device.inner().destroy_fence(fence, None) };
 
-
         Ok(())
     }
 
     pub fn present(&mut self, swapchain: vk::SwapchainKHR, img_idx: u32) -> SrResult<()> {
-        let wait_semaphores = &self.render_complete_sems[self.current_frame..=self.current_frame];
+        let wait_semaphores = &[self.render_complete_sems[self.current_frame]];
         let swapchains = [swapchain];
         let image_indices = [img_idx];
         let present_info = vk::PresentInfoKHR::default()
@@ -123,7 +121,7 @@ impl Drop for Queue {
             Ok(()) => {}
             // do not panic: drop should not panic, since it is invoked for all objects after a panic; for example
             // if the logical device is lost all queues will be dropped on panic and they will all panic themselves and make the backtrace unreadable
-            Err(e) => eprintln!("Queue::wait_idle (inside Queue::drop) returned '{}'", e.get_source().unwrap()),
+            Err(e) => println!("Queue::wait_idle (inside Queue::drop) returned '{}'", e.get_source().unwrap()),
         }
 
         unsafe {
