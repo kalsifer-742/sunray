@@ -1,27 +1,13 @@
-use std::ops::Deref;
 use std::rc::Rc;
 
 use crate::error::*;
 use crate::vulkan_abstraction;
 use ash::vk;
-use ash::{
-    vk::{
-        AccelerationStructureBuildGeometryInfoKHR, AccelerationStructureBuildRangeInfoKHR,
-        AccelerationStructureBuildSizesInfoKHR, AccelerationStructureBuildTypeKHR,
-        AccelerationStructureCreateInfoKHR, AccelerationStructureGeometryDataKHR,
-        AccelerationStructureGeometryKHR, AccelerationStructureGeometryTrianglesDataKHR,
-        AccelerationStructureKHR, AccelerationStructureTypeKHR, BufferUsageFlags,
-        BuildAccelerationStructureFlagsKHR, BuildAccelerationStructureModeKHR,
-        CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceOrHostAddressConstKHR,
-        DeviceOrHostAddressKHR, Format, GeometryFlagsKHR, GeometryTypeKHR, MemoryAllocateFlags,
-        MemoryPropertyFlags,
-    },
-};
 
 // Bottom-Level Acceleration Structure
 pub struct BLAS {
     core: Rc<vulkan_abstraction::Core>,
-    blas: AccelerationStructureKHR,
+    blas: vk::AccelerationStructureKHR,
     #[allow(unused)]
     blas_buffer: vulkan_abstraction::Buffer,
     #[allow(unused)]
@@ -61,34 +47,34 @@ impl BLAS {
 
         // specify what the BLAS's geometry (vbo, ibo) is
         let geometry = {
-            let geometry_data = AccelerationStructureGeometryDataKHR {
-                triangles: AccelerationStructureGeometryTrianglesDataKHR::default()
-                    .vertex_data(DeviceOrHostAddressConstKHR {
+            let geometry_data = vk::AccelerationStructureGeometryDataKHR {
+                triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                    .vertex_data(vk::DeviceOrHostAddressConstKHR {
                         device_address: vertex_buffer.get_device_address(),
                     })
                     .max_vertex(vertex_buffer.len() as u32 - 1)
                     .vertex_stride(vertex_buffer.stride() as u64)
-                    .vertex_format(Format::R32G32B32_SFLOAT)
-                    .index_data(DeviceOrHostAddressConstKHR {
+                    .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                    .index_data(vk::DeviceOrHostAddressConstKHR {
                         device_address: index_buffer.get_device_address(),
                     })
                     .index_type(index_buffer.index_type())
-                    .transform_data(DeviceOrHostAddressConstKHR {
+                    .transform_data(vk::DeviceOrHostAddressConstKHR {
                         device_address: transform_matrix_buffer.get_device_address(),
                     }),
             };
 
-            AccelerationStructureGeometryKHR::default()
-                .geometry_type(GeometryTypeKHR::TRIANGLES)
+            vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
                 .geometry(geometry_data)
-                .flags(GeometryFlagsKHR::OPAQUE)
+                .flags(vk::GeometryFlagsKHR::OPAQUE)
         };
         let geometries = [geometry];
 
         // specify the range of values to read from the ibo, vbo and transform data of a geometry.
         // there must be one build_range_info for each geometry
         let build_range_info = {
-            AccelerationStructureBuildRangeInfoKHR::default()
+            vk::AccelerationStructureBuildRangeInfoKHR::default()
                 // the number of triangles to read (3 * the number of indices to read)
                 .primitive_count(index_buffer.len() as u32 / 3)
                 // an offset (in bytes) into geometry.geometry_data.index_data from which to start reading
@@ -103,21 +89,21 @@ impl BLAS {
         // this temporary version is used to calculate how much memory to allocate for it,
         // and the final version which is used to really build the blas will be based on it,
         // with some additional args based on the allocations that were performed.
-        let incomplete_build_info = AccelerationStructureBuildGeometryInfoKHR::default()
+        let incomplete_build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .geometries(&geometries)
             // PREFER_FAST_TRACE -> prioritize trace performance over build time
-            .flags(BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
             // BUILD as opposed to UPDATE
-            .mode(BuildAccelerationStructureModeKHR::BUILD)
-            .ty(AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+            .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
 
         // based on incomplete_build_info get the sizes of the blas buffer to allocate and
         // of the scratch buffer that will be used for building the BLAS (and can then be discarded)
         let acceleration_structure_size_info = unsafe {
-            let mut size_info = AccelerationStructureBuildSizesInfoKHR::default();
+            let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
             core.acceleration_structure_device().get_acceleration_structure_build_sizes(
-                AccelerationStructureBuildTypeKHR::DEVICE,
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
                 &incomplete_build_info,
                 &[index_buffer.len() as u32 / 3],
                 &mut size_info,
@@ -130,15 +116,15 @@ impl BLAS {
         let blas_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(&core),
             acceleration_structure_size_info.acceleration_structure_size as usize,
-            MemoryPropertyFlags::DEVICE_LOCAL,
-            MemoryAllocateFlags::DEVICE_ADDRESS,
-            BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                | BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | BufferUsageFlags::STORAGE_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::STORAGE_BUFFER,
         )?;
 
         // information as to how to instantiate (but not "build") the BLAS in blas_buffer.
-        let blas_create_info = AccelerationStructureCreateInfoKHR::default()
+        let blas_create_info = vk::AccelerationStructureCreateInfoKHR::default()
             .ty(incomplete_build_info.ty)
             .size(acceleration_structure_size_info.acceleration_structure_size)
             .buffer(blas_buffer.inner())
@@ -154,15 +140,15 @@ impl BLAS {
         let scratch_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(&core),
             acceleration_structure_size_info.build_scratch_size as usize,
-            MemoryPropertyFlags::DEVICE_LOCAL,
-            MemoryAllocateFlags::DEVICE_ADDRESS,
-            BufferUsageFlags::SHADER_DEVICE_ADDRESS | BufferUsageFlags::STORAGE_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
         )?;
 
         // info for building the BLAS
         let build_info = incomplete_build_info
             .dst_acceleration_structure(blas)
-            .scratch_data(DeviceOrHostAddressKHR {
+            .scratch_data(vk::DeviceOrHostAddressKHR {
                 device_address: scratch_buffer.get_device_address(),
             });
 
@@ -176,8 +162,8 @@ impl BLAS {
         unsafe {
             core.device().inner().begin_command_buffer(
                 build_command_buffer,
-                &CommandBufferBeginInfo::default()
-                    .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
             core.acceleration_structure_device().cmd_build_acceleration_structures(
@@ -207,7 +193,7 @@ impl BLAS {
         })
     }
 
-    pub fn inner(&self) -> AccelerationStructureKHR { self.blas }
+    pub fn inner(&self) -> vk::AccelerationStructureKHR { self.blas }
 }
 impl Drop for BLAS {
     fn drop(&mut self) {
@@ -215,12 +201,5 @@ impl Drop for BLAS {
             self.core.acceleration_structure_device()
                 .destroy_acceleration_structure(self.blas, None);
         }
-    }
-}
-impl Deref for BLAS {
-    type Target = AccelerationStructureKHR;
-
-    fn deref(&self) -> &Self::Target {
-        &self.blas
     }
 }

@@ -3,11 +3,7 @@ extern crate shaderc;
 use std::{rc::Rc};
 
 use crate::error::*;
-use ash::{
-    khr::{self}, vk::{
-        self, AccessFlags, BufferUsageFlags, CommandBuffer, CommandBufferBeginInfo, CommandBufferUsageFlags, DependencyFlags, DeviceMemory, Format, Image, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageView, MemoryAllocateFlags, MemoryPropertyFlags, PipelineBindPoint, PipelineStageFlags, SampleCountFlags, ShaderStageFlags
-    }
-};
+use ash::{ khr, vk };
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 pub mod error;
@@ -48,9 +44,9 @@ pub struct Renderer {
     index_buffer: vulkan_abstraction::IndexBuffer,
     blas: vulkan_abstraction::BLAS,
     tlas: vulkan_abstraction::TLAS,
-    image: Image,
-    image_device_memory: DeviceMemory,
-    image_view: ImageView,
+    image: vk::Image,
+    image_device_memory: vk::DeviceMemory,
+    image_view: vk::ImageView,
     uniform_buffer: vulkan_abstraction::Buffer,
     descriptor_sets: vulkan_abstraction::DescriptorSets,
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
@@ -93,7 +89,6 @@ impl Renderer {
             with_gpu_assisted_validation: get_env_var_as_bool(Self::ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false),
         })?);
         let device = core.device().inner();
-
 
 
         let vertex_buffer = {
@@ -147,25 +142,25 @@ impl Renderer {
             &[&blas],
         )?;
 
-        const OUT_IMAGE_FORMAT: Format = Format::R8G8B8A8_UNORM;
+        const OUT_IMAGE_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
 
         // the image we will do the rendering on; before every frame it will be copied to the swapchain
         let (image, image_device_memory, image_view) = {
             let image = {
-                let image_create_info = ImageCreateInfo::default()
-                    .image_type(ImageType::TYPE_2D)
+                let image_create_info = vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
                     .format(OUT_IMAGE_FORMAT)
                     .extent(core.swapchain().image_extent().into())
-                    .flags(ImageCreateFlags::empty())
+                    .flags(vk::ImageCreateFlags::empty())
                     .mip_levels(1)
                     .array_layers(1)
-                    .samples(SampleCountFlags::TYPE_1)
-                    .tiling(ImageTiling::OPTIMAL)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
                     .usage(
-                        ImageUsageFlags::STORAGE
-                        | ImageUsageFlags::TRANSFER_SRC,
+                        vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::TRANSFER_SRC,
                     )
-                    .initial_layout(ImageLayout::UNDEFINED);
+                    .initial_layout(vk::ImageLayout::UNDEFINED);
 
                 unsafe { device.create_image(&image_create_info, None) }.unwrap()
             };
@@ -205,22 +200,20 @@ impl Renderer {
             {
                 let image_barrier_cmd_buf = vulkan_abstraction::cmd_buffer::new(&*core.cmd_pool(), core.device())?;
 
-                let begin_info = CommandBufferBeginInfo::default()
-                    .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                let begin_info = vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
                 //record command buffer
                 unsafe {
                     device.begin_command_buffer(image_barrier_cmd_buf, &begin_info)?;
 
-                    let stage_all = PipelineStageFlags::ALL_COMMANDS;
-                    Self::cmd_image_memory_barrier(&core, image_barrier_cmd_buf, image, ImageLayout::UNDEFINED, ImageLayout::GENERAL, stage_all, stage_all, AccessFlags::empty(), AccessFlags::empty());
+                    let stage_all = vk::PipelineStageFlags::ALL_COMMANDS;
+                    Self::cmd_image_memory_barrier(&core, image_barrier_cmd_buf, image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, stage_all, stage_all, vk::AccessFlags::empty(), vk::AccessFlags::empty());
 
                     device.end_command_buffer(image_barrier_cmd_buf)?;
                 }
 
                 core.queue().submit_sync(image_barrier_cmd_buf)?;
-
-                unsafe { device.device_wait_idle() }?;
 
                 unsafe { device.free_command_buffers(**core.cmd_pool(), &[image_barrier_cmd_buf]) };
             }
@@ -232,9 +225,9 @@ impl Renderer {
             let mut uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
                 Rc::clone(&core),
                 std::mem::size_of::<UniformBufferContents>(),
-                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-                MemoryAllocateFlags::empty(),
-                BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                vk::MemoryAllocateFlags::empty(),
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
             )?;
 
             let mem = uniform_buffer.map::<UniformBufferContents>()?;
@@ -248,15 +241,13 @@ impl Renderer {
                 let direction = mem[0].view_inverse * nalgebra::Vector4::new(target_normalized.x, target_normalized.y, target_normalized.z, 0.0);
 
                 let origin = origin.xyz();
-                let direction = direction.xyz();
+                let direction = direction.xyz().normalize();
 
                 let fmt_vec = |v: nalgebra::Vector3<f32>| format!("({}, {}, {})", v.x, v.y, v.z);
                 println!("for screen center, ray origin={}, direction={}", fmt_vec(origin), fmt_vec(direction));
             }
 
             uniform_buffer.unmap();
-
-            unsafe { device.device_wait_idle() }?;
 
             uniform_buffer
         };
@@ -313,16 +304,16 @@ impl Renderer {
     }
 
 
-    unsafe fn cmd_image_memory_barrier (core: &vulkan_abstraction::Core, cmd_buf: CommandBuffer, image: Image, old_layout: ImageLayout, new_layout: ImageLayout, src_stage: PipelineStageFlags, dst_stage: PipelineStageFlags, src_access_mask: AccessFlags, dst_access_mask: AccessFlags) {
-        let image_memory_barrier = ImageMemoryBarrier::default()
+    unsafe fn cmd_image_memory_barrier (core: &vulkan_abstraction::Core, cmd_buf: vk::CommandBuffer, image: vk::Image, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, src_stage: vk::PipelineStageFlags, dst_stage: vk::PipelineStageFlags, src_access_mask: vk::AccessFlags, dst_access_mask: vk::AccessFlags) {
+        let image_memory_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(src_access_mask)
             .dst_access_mask(dst_access_mask)
             .old_layout(old_layout)
             .new_layout(new_layout)
             .image(image)
             .subresource_range(
-                ImageSubresourceRange::default()
-                    .aspect_mask(ImageAspectFlags::COLOR)
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
                     .base_mip_level(0)
                     .level_count(1)
                     .base_array_layer(0)
@@ -333,7 +324,7 @@ impl Renderer {
                 cmd_buf,
                 src_stage,
                 dst_stage,
-                DependencyFlags::empty(),
+                vk::DependencyFlags::empty(),
                 &[], // memory barriers
                 &[], // buffer memory barriers
                 &[image_memory_barrier]
@@ -343,15 +334,15 @@ impl Renderer {
 
     fn record_render_command_buffers(
         core: &vulkan_abstraction::Core,
-        cmd_bufs: &[CommandBuffer],
+        cmd_bufs: &[vk::CommandBuffer],
         rt_pipeline: &vulkan_abstraction::RayTracingPipeline,
         descriptor_sets: &vulkan_abstraction::DescriptorSets,
         shader_binding_table: &vulkan_abstraction::ShaderBindingTable,
-        image: Image,
+        image: vk::Image,
     ) -> SrResult<()> {
         let device = core.device().inner();
-        let cmd_buf_usage_flags = CommandBufferUsageFlags::SIMULTANEOUS_USE;
-        let cmd_buf_begin_info = CommandBufferBeginInfo::default()
+        let cmd_buf_usage_flags = vk::CommandBufferUsageFlags::SIMULTANEOUS_USE;
+        let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
         .flags(cmd_buf_usage_flags);
 
         for (i, cmd_buf) in cmd_bufs.iter().cloned().enumerate() {
@@ -364,10 +355,10 @@ impl Renderer {
             unsafe {
                 device.begin_command_buffer(cmd_buf, &cmd_buf_begin_info)?;
 
-                device.cmd_bind_pipeline(cmd_buf, PipelineBindPoint::RAY_TRACING_KHR, rt_pipeline.get_handle());
+                device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::RAY_TRACING_KHR, rt_pipeline.get_handle());
                 device.cmd_bind_descriptor_sets(
                     cmd_buf,
-                    PipelineBindPoint::RAY_TRACING_KHR,
+                    vk::PipelineBindPoint::RAY_TRACING_KHR,
                     rt_pipeline.get_layout(),
                     0,
                     descriptor_sets.get_handles(), &[]
@@ -375,7 +366,7 @@ impl Renderer {
                 device.cmd_push_constants(
                     cmd_buf,
                     rt_pipeline.get_layout(),
-                    ShaderStageFlags::RAYGEN_KHR | ShaderStageFlags::CLOSEST_HIT_KHR | ShaderStageFlags::MISS_KHR,
+                    vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::MISS_KHR,
                     0, &std::mem::transmute::<vulkan_abstraction::PushConstant, [u8;std::mem::size_of::<vulkan_abstraction::PushConstant>()]>(push_constants)
                 );
                 core.rt_pipeline_device().cmd_trace_rays(
@@ -389,26 +380,25 @@ impl Renderer {
                     1
                 );
 
-                let stage_all = PipelineStageFlags::ALL_COMMANDS;
+                let stage_rt = vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR;
+                let stage_tx = vk::PipelineStageFlags::TRANSFER;
+                let stage_pipetop = vk::PipelineStageFlags::TOP_OF_PIPE;
+                let stage_pipebtm = vk::PipelineStageFlags::BOTTOM_OF_PIPE;
 
-                let stage_rt = PipelineStageFlags::RAY_TRACING_SHADER_KHR;
-                let stage_tx = PipelineStageFlags::TRANSFER;
-                let stage_pipetop = PipelineStageFlags::TOP_OF_PIPE;
+                let layout_undef = vk::ImageLayout::UNDEFINED;
+                let layout_general = vk::ImageLayout::GENERAL;
+                let layout_tx_src = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+                let layout_tx_dst = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+                let layout_present = vk::ImageLayout::PRESENT_SRC_KHR;
 
-                let layout_undef = ImageLayout::UNDEFINED;
-                let layout_general = ImageLayout::GENERAL;
-                let layout_tx_src = ImageLayout::TRANSFER_SRC_OPTIMAL;
-                let layout_tx_dst = ImageLayout::TRANSFER_DST_OPTIMAL;
-                let layout_present = ImageLayout::PRESENT_SRC_KHR;
-
-                Self::cmd_image_memory_barrier(&core, cmd_buf, image, layout_general, layout_tx_src, stage_rt, stage_tx, AccessFlags::SHADER_WRITE, AccessFlags::TRANSFER_READ);
-                Self::cmd_image_memory_barrier(&core, cmd_buf, sc_image, layout_undef, layout_tx_dst, stage_pipetop, stage_tx, AccessFlags::empty(), AccessFlags::TRANSFER_WRITE);
+                Self::cmd_image_memory_barrier(&core, cmd_buf, image, layout_general, layout_tx_src, stage_rt, stage_tx, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ);
+                Self::cmd_image_memory_barrier(&core, cmd_buf, sc_image, layout_undef, layout_tx_dst, stage_pipetop, stage_tx, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE);
 
 
                 //now blit the image onto the swapchain image
                 let image_extent = core.swapchain().image_extent();
-                let image_subresource_layers = ImageSubresourceLayers::default()
-                    .aspect_mask(ImageAspectFlags::COLOR)
+                let image_subresource_layers = vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
                     .mip_level(0)
                     .base_array_layer(0)
                     .layer_count(1);
@@ -423,12 +413,10 @@ impl Renderer {
                     .dst_offsets(whole_img_offsets);
                 let filter = vk::Filter::NEAREST;
 
-                device.cmd_blit_image(cmd_buf, image, ImageLayout::TRANSFER_SRC_OPTIMAL, core.swapchain().images()[i], ImageLayout::TRANSFER_DST_OPTIMAL, &[image_blit], filter);
+                device.cmd_blit_image(cmd_buf, image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, core.swapchain().images()[i], vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[image_blit], filter);
 
-                // Self::cmd_image_memory_barrier(&core, cmd_buf, image, layout_tx_src, layout_general, stage_tx, stage_pipebtm, AccessFlags::TRANSFER_READ, AccessFlags::empty());
-                Self::cmd_image_memory_barrier(&core, cmd_buf, image, layout_tx_src, layout_general, stage_all, stage_all, AccessFlags::TRANSFER_READ, AccessFlags::empty());
-                // Self::cmd_image_memory_barrier(&core, cmd_buf, sc_image, layout_tx_dst, layout_present, stage_tx, stage_pipebtm, AccessFlags::TRANSFER_WRITE, AccessFlags::empty());
-                Self::cmd_image_memory_barrier(&core, cmd_buf, sc_image, layout_tx_dst, layout_present, stage_all, stage_all, AccessFlags::TRANSFER_WRITE, AccessFlags::empty());
+                Self::cmd_image_memory_barrier(&core, cmd_buf, image, layout_tx_src, layout_general, stage_tx, stage_pipebtm, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::empty());
+                Self::cmd_image_memory_barrier(&core, cmd_buf, sc_image, layout_tx_dst, layout_present, stage_tx, stage_pipebtm, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::empty());
 
                 device.end_command_buffer(cmd_buf)?;
             }

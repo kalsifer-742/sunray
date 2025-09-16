@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::{error::SrResult, vulkan_abstraction};
-use ash::{vk::{BufferUsageFlags, MemoryAllocateFlags, MemoryPropertyFlags, StridedDeviceAddressRegionKHR}};
+use ash::vk;
 
 fn aligned_size(value : u32, alignment : u32) -> u32 {
     (value + alignment - 1) & !(alignment - 1)
@@ -10,10 +10,10 @@ fn aligned_size(value : u32, alignment : u32) -> u32 {
 pub struct ShaderBindingTable {
     #[allow(unused)] // never read after construction, except from raygen/miss/hit_region attributes
     sbt_buffer: vulkan_abstraction::Buffer,
-    raygen_region: StridedDeviceAddressRegionKHR,
-    miss_region: StridedDeviceAddressRegionKHR,
-    hit_region: StridedDeviceAddressRegionKHR,
-    callable_region: StridedDeviceAddressRegionKHR,
+    raygen_region: vk::StridedDeviceAddressRegionKHR,
+    miss_region: vk::StridedDeviceAddressRegionKHR,
+    hit_region: vk::StridedDeviceAddressRegionKHR,
+    callable_region: vk::StridedDeviceAddressRegionKHR,
 }
 
 impl ShaderBindingTable {
@@ -32,19 +32,19 @@ impl ShaderBindingTable {
         let handle_size_aligned = aligned_size(handle_size as u32, handle_alignment);
 
         let raygen_size = aligned_size(RAYGEN_COUNT * handle_size_aligned, base_alignment);
-        let mut raygen_region = StridedDeviceAddressRegionKHR::default()
+        let mut raygen_region = vk::StridedDeviceAddressRegionKHR::default()
             .stride(raygen_size as u64)
             .size(raygen_size as u64);
 
-        let mut miss_region = StridedDeviceAddressRegionKHR::default()
+        let mut miss_region = vk::StridedDeviceAddressRegionKHR::default()
             .stride(handle_size_aligned as u64)
             .size(aligned_size(miss_count * handle_size_aligned, base_alignment) as u64);
 
-        let mut hit_region = StridedDeviceAddressRegionKHR::default()
+        let mut hit_region = vk::StridedDeviceAddressRegionKHR::default()
             .stride(handle_size_aligned as u64)
             .size(aligned_size(hit_count * handle_size_aligned, base_alignment) as u64);
 
-        let callable_region = StridedDeviceAddressRegionKHR::default();
+        let callable_region = vk::StridedDeviceAddressRegionKHR::default();
 
         let data_size = handle_count as usize * handle_size;
 
@@ -58,9 +58,9 @@ impl ShaderBindingTable {
         let mut sbt_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(core),
             sbt_buffer_size,
-            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-            MemoryAllocateFlags::DEVICE_ADDRESS,
-            BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::SHADER_DEVICE_ADDRESS | BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
         )?;
         let sbt_buffer_data = sbt_buffer.map()?;
         let mut buffer_index = 0;
@@ -104,8 +104,8 @@ impl ShaderBindingTable {
             callable_region,
         })
     }
-    pub fn get_raygen_region(&self) -> &StridedDeviceAddressRegionKHR { return &self.raygen_region; }
-    pub fn get_miss_region(&self) -> &StridedDeviceAddressRegionKHR { return &self.miss_region; }
-    pub fn get_hit_region(&self) -> &StridedDeviceAddressRegionKHR { return &self.hit_region; }
-    pub fn get_callable_region(&self) -> &StridedDeviceAddressRegionKHR { return &self.callable_region; }
+    pub fn get_raygen_region(&self) -> &vk::StridedDeviceAddressRegionKHR { return &self.raygen_region; }
+    pub fn get_miss_region(&self) -> &vk::StridedDeviceAddressRegionKHR { return &self.miss_region; }
+    pub fn get_hit_region(&self) -> &vk::StridedDeviceAddressRegionKHR { return &self.hit_region; }
+    pub fn get_callable_region(&self) -> &vk::StridedDeviceAddressRegionKHR { return &self.callable_region; }
 }

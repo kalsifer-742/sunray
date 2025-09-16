@@ -3,7 +3,7 @@ use std::{ffi::CStr, rc::Rc};
 use crate::error::SrResult;
 use crate::vulkan_abstraction;
 
-use ash::{vk};
+use ash::vk;
 
 const SHADER_ENTRY_POINT: &CStr = c"main";
 

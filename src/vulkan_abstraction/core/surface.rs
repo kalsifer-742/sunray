@@ -1,4 +1,4 @@
-use ash::{khr, vk, Entry};
+use ash::{khr, vk};
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 use crate::{error::SrResult, vulkan_abstraction};
@@ -9,7 +9,7 @@ pub struct Surface {
 }
 
 impl Surface {
-    pub fn new(entry: &Entry, instance: &vulkan_abstraction::Instance, raw_display_handle: RawDisplayHandle, raw_window_handle: RawWindowHandle) -> SrResult<Self> {
+    pub fn new(entry: &ash::Entry, instance: &vulkan_abstraction::Instance, raw_display_handle: RawDisplayHandle, raw_window_handle: RawWindowHandle) -> SrResult<Self> {
         let surface_instance = ash::khr::surface::Instance::new(&entry, instance.inner());
 
         let surface = unsafe {

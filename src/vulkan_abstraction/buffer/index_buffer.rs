@@ -1,6 +1,6 @@
 use std::{any::TypeId, ops::Deref, rc::Rc};
 
-use ash::{vk::{BufferUsageFlags, IndexType, MemoryAllocateFlags, MemoryPropertyFlags}};
+use ash::vk;
 
 use crate::{error::*, vulkan_abstraction};
 use crate::vulkan_abstraction::buffer::Buffer;
@@ -8,18 +8,18 @@ use crate::vulkan_abstraction::buffer::Buffer;
 pub struct IndexBuffer {
     buffer: Buffer,
     len: usize,
-    idx_type: IndexType,
+    idx_type: vk::IndexType,
 }
 impl IndexBuffer {
     //build an index buffer with flags for usage in a blas
     pub fn new_for_blas<T : 'static>(core: Rc<vulkan_abstraction::Core>, len: usize) -> SrResult<Self> {
-        let mem_flags = MemoryPropertyFlags::DEVICE_LOCAL;
-        let alloc_flags = MemoryAllocateFlags::DEVICE_ADDRESS;
+        let mem_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
+        let alloc_flags = vk::MemoryAllocateFlags::DEVICE_ADDRESS;
         let usage_flags = 
-            BufferUsageFlags::TRANSFER_DST 
-            | BufferUsageFlags::INDEX_BUFFER
-            | BufferUsageFlags::SHADER_DEVICE_ADDRESS 
-            | BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
+            vk::BufferUsageFlags::TRANSFER_DST
+            | vk::BufferUsageFlags::INDEX_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
         
         let idx_type = match get_index_type::<T>() {
             Some(idx_type) => idx_type,
@@ -35,7 +35,7 @@ impl IndexBuffer {
     #[allow(dead_code)]
     pub fn buffer(&self) -> &Buffer { &self.buffer }
     pub fn len(&self) -> usize { self.len }
-    pub fn index_type(&self) -> IndexType { self.idx_type }
+    pub fn index_type(&self) -> vk::IndexType { self.idx_type }
 
 }
 impl Deref for IndexBuffer {
@@ -43,14 +43,14 @@ impl Deref for IndexBuffer {
     fn deref(&self) -> &Self::Target { &self.buffer }
 }
 
-fn get_index_type<T: 'static>() -> Option<IndexType> {
+fn get_index_type<T: 'static>() -> Option<vk::IndexType> {
     let idx_type = if TypeId::of::<T>() == TypeId::of::<u32>() {
-        IndexType::UINT32
+        vk::IndexType::UINT32
     } else if TypeId::of::<T>() == TypeId::of::<u16>() {
-        IndexType::UINT16
+        vk::IndexType::UINT16
     } else if TypeId::of::<T>() == TypeId::of::<u8>() {
-        assert_eq!(IndexType::UINT8_KHR, IndexType::UINT8_EXT);
-        IndexType::UINT8_KHR 
+        assert_eq!(vk::IndexType::UINT8_KHR, vk::IndexType::UINT8_EXT);
+        vk::IndexType::UINT8_KHR
     } else {
         return None;
     };
