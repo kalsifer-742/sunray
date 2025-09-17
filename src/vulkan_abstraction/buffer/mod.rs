@@ -11,7 +11,11 @@ use crate::{error::*, vulkan_abstraction};
 use ash::vk;
 use std::rc::Rc;
 
-pub fn get_memory_type_index(core: &vulkan_abstraction::Core, mem_prop_flags: vk::MemoryPropertyFlags, mem_requirements: &vk::MemoryRequirements) -> SrResult<u32> {
+pub fn get_memory_type_index(
+    core: &vulkan_abstraction::Core,
+    mem_prop_flags: vk::MemoryPropertyFlags,
+    mem_requirements: &vk::MemoryRequirements,
+) -> SrResult<u32> {
     type BitsType = u32;
     let bits: BitsType = mem_requirements.memory_type_bits;
     assert_ne!(bits, 0);
@@ -21,8 +25,7 @@ pub fn get_memory_type_index(core: &vulkan_abstraction::Core, mem_prop_flags: vk
     for i in 0..(8 * size_of::<BitsType>()) {
         let mem_type_is_supported = bits & (1 << i) != 0;
         if mem_type_is_supported {
-            if mem_types[i].property_flags & mem_prop_flags == mem_prop_flags
-            {
+            if mem_types[i].property_flags & mem_prop_flags == mem_prop_flags {
                 idx = i as isize;
                 break;
             }
@@ -47,11 +50,9 @@ pub struct Buffer {
     memory: vk::DeviceMemory,
     mapped_memory: Option<RawMappedMemory>,
 }
+
 impl Buffer {
-    pub fn new_staging<V>(
-        core: Rc<vulkan_abstraction::Core>,
-        size: usize,
-    ) -> SrResult<Self> {
+    pub fn new_staging<V>(core: Rc<vulkan_abstraction::Core>, size: usize) -> SrResult<Self> {
         let memory_property_flags =
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
         let memory_allocate_flags = vk::MemoryAllocateFlags::empty();
@@ -67,10 +68,9 @@ impl Buffer {
     }
 
     #[allow(dead_code)]
-    pub fn new_uniform<T>(
-        core: Rc<vulkan_abstraction::Core>,
-    ) -> SrResult<Self> {
-        let memory_property_flags = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+    pub fn new_uniform<T>(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
+        let memory_property_flags =
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
         let memory_allocate_flags = vk::MemoryAllocateFlags::empty();
         let buffer_usage_flags = vk::BufferUsageFlags::UNIFORM_BUFFER;
 
@@ -106,7 +106,13 @@ impl Buffer {
         buffer_usage_flags: vk::BufferUsageFlags,
     ) -> SrResult<Self> {
         let staging_buffer = Self::new_staging_from_data(Rc::clone(&core), data)?;
-        let buffer = Self::new::<T>(Rc::clone(&core), data.len(), memory_property_flags, alloc_flags, buffer_usage_flags)?;
+        let buffer = Self::new::<T>(
+            Rc::clone(&core),
+            data.len(),
+            memory_property_flags,
+            alloc_flags,
+            buffer_usage_flags,
+        )?;
         Self::clone_buffer(&core, &staging_buffer, &buffer)?;
 
         Ok(buffer)
@@ -138,7 +144,8 @@ impl Buffer {
         let allocation_byte_size = mem_requirements.size;
         let mem_type_idx = get_memory_type_index(&core, memory_property_flags, &mem_requirements)?;
 
-        let mut memory_allocate_flags_info = vk::MemoryAllocateFlagsInfo::default().flags(alloc_flags);
+        let mut memory_allocate_flags_info =
+            vk::MemoryAllocateFlagsInfo::default().flags(alloc_flags);
 
         let mem_alloc_info = {
             let mem_alloc_info = vk::MemoryAllocateInfo::default()
@@ -151,8 +158,7 @@ impl Buffer {
                 mem_alloc_info.push_next(&mut memory_allocate_flags_info)
             }
         };
-        let memory =
-            unsafe { device.allocate_memory(&mem_alloc_info, None) }?;
+        let memory = unsafe { device.allocate_memory(&mem_alloc_info, None) }?;
 
         unsafe { device.bind_buffer_memory(buffer, memory, 0) }?;
 
@@ -165,11 +171,16 @@ impl Buffer {
         })
     }
 
-    pub fn byte_size(&self) -> vk::DeviceSize { self.usable_byte_size }
+    pub fn byte_size(&self) -> vk::DeviceSize {
+        self.usable_byte_size
+    }
     pub fn map<V>(&mut self) -> SrResult<&mut [V]> {
         let flags = vk::MemoryMapFlags::empty();
         let p = unsafe {
-            self.core.device().inner().map_memory(self.memory, 0, self.usable_byte_size, flags)
+            self.core
+                .device()
+                .inner()
+                .map_memory(self.memory, 0, self.usable_byte_size, flags)
         }?;
         let raw_mem = unsafe { RawMappedMemory::new(p, self.usable_byte_size as usize) };
         self.mapped_memory = Some(raw_mem);
@@ -222,11 +233,16 @@ impl Buffer {
     pub fn get_device_address(&self) -> vk::DeviceAddress {
         let buffer_device_address_info = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
         unsafe {
-            self.core.device().inner().get_buffer_device_address(&buffer_device_address_info)
+            self.core
+                .device()
+                .inner()
+                .get_buffer_device_address(&buffer_device_address_info)
         }
     }
 
-    pub fn inner(&self) -> vk::Buffer { self.buffer }
+    pub fn inner(&self) -> vk::Buffer {
+        self.buffer
+    }
 }
 
 impl Drop for Buffer {

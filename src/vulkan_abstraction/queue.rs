@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
-use ash::{ vk, khr };
 use crate::{error::*, vulkan_abstraction};
+use ash::{khr, vk};
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -12,30 +12,46 @@ pub struct Queue {
     img_available_sem: Vec<vk::Semaphore>,
     render_complete_fences: Vec<vk::Fence>,
     device: Rc<vulkan_abstraction::Device>,
-    swapchain_device: khr::swapchain::Device,
 
     current_frame: usize,
 }
 impl Queue {
-    pub fn new(device: Rc<vulkan_abstraction::Device>, swapchain_device: khr::swapchain::Device, q_index: u32) -> SrResult<Self> {
-        let queue = unsafe { device.inner().get_device_queue(device.queue_family_index(), q_index) };
+    pub fn new(device: Rc<vulkan_abstraction::Device>, q_index: u32) -> SrResult<Self> {
+        let queue = unsafe {
+            device
+                .inner()
+                .get_device_queue(device.queue_family_index(), q_index)
+        };
 
-        let create_semaphore =  || unsafe { device.inner().create_semaphore(&vk::SemaphoreCreateInfo::default(), None)  };
-        let render_complete_sems = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_semaphore()).collect::<Result<_, _>>()?;
-        let img_available_sem = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_semaphore()).collect::<Result<_, _>>()?;
+        let create_semaphore = || unsafe {
+            device
+                .inner()
+                .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+        };
+        let render_complete_sems = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| create_semaphore())
+            .collect::<Result<_, _>>()?;
+        let img_available_sem = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| create_semaphore())
+            .collect::<Result<_, _>>()?;
 
         let create_fence = || {
             let fence_flags = vk::FenceCreateFlags::SIGNALED; // SIGNALED flag to start with a flag that's already signaled
-            let fence_info = vk::FenceCreateInfo::default()
-                .flags(fence_flags);
+            let fence_info = vk::FenceCreateInfo::default().flags(fence_flags);
 
-            unsafe { device.inner().create_fence(&fence_info, None)  }
+            unsafe { device.inner().create_fence(&fence_info, None) }
         };
-        let render_complete_fences = (0..MAX_FRAMES_IN_FLIGHT).map(|_| create_fence()).collect::<Result<_,_>>()?;
+        let render_complete_fences = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| create_fence())
+            .collect::<Result<_, _>>()?;
 
-        Ok(Self { 
-            queue, render_complete_sems, img_available_sem, device, swapchain_device,
-             render_complete_fences, current_frame: 0
+        Ok(Self {
+            queue,
+            render_complete_sems,
+            img_available_sem,
+            device,
+            render_complete_fences,
+            current_frame: 0,
         })
     }
 
@@ -43,19 +59,6 @@ impl Queue {
     pub fn wait_idle(&self) -> SrResult<()> {
         unsafe { self.device.inner().queue_wait_idle(self.queue) }?;
         Ok(())
-    }
-
-    pub fn acquire_next_image(&self, swapchain: vk::SwapchainKHR) -> SrResult<u32> {
-        let wait_fence = &[self.render_complete_fences[self.current_frame]];
-        unsafe { self.device.inner().wait_for_fences(wait_fence, true, u64::MAX)  }?;
-        unsafe { self.device.inner().reset_fences(wait_fence)  }?;
-        
-
-        let image_available_sem = self.img_available_sem[self.current_frame];
-        let (index, _suboptimal_surface) = unsafe {
-            self.swapchain_device.acquire_next_image(swapchain, u64::MAX, image_available_sem, vk::Fence::null())
-        }?;
-        Ok(index)
     }
 
     pub fn submit_async(&self, command_buffer: vk::CommandBuffer) -> SrResult<()> {
@@ -71,7 +74,11 @@ impl Queue {
             .signal_semaphores(signal_sem);
         let signal_fence = self.render_complete_fences[self.current_frame];
 
-        unsafe { self.device.inner().queue_submit(self.queue, &[submit_info], signal_fence)  }?;
+        unsafe {
+            self.device
+                .inner()
+                .queue_submit(self.queue, &[submit_info], signal_fence)
+        }?;
 
         Ok(())
     }
@@ -86,31 +93,23 @@ impl Queue {
             .signal_semaphores(&[]);
 
         let fence = {
-            let fence_info = vk::FenceCreateInfo::default()
-                .flags(vk::FenceCreateFlags::empty());
+            let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::empty());
 
-            unsafe { self.device.inner().create_fence(&fence_info, None)  }?
+            unsafe { self.device.inner().create_fence(&fence_info, None) }?
         };
 
-        unsafe { self.device.inner().queue_submit(self.queue, &[submit_info], fence)  }?;
-        unsafe { self.device.inner().wait_for_fences(&[fence], true, u64::MAX)  }?;
+        unsafe {
+            self.device
+                .inner()
+                .queue_submit(self.queue, &[submit_info], fence)
+        }?;
+        unsafe {
+            self.device
+                .inner()
+                .wait_for_fences(&[fence], true, u64::MAX)
+        }?;
         unsafe { self.device.inner().destroy_fence(fence, None) };
 
-        Ok(())
-    }
-
-    pub fn present(&mut self, swapchain: vk::SwapchainKHR, img_idx: u32) -> SrResult<()> {
-        let wait_semaphores = &[self.render_complete_sems[self.current_frame]];
-        let swapchains = [swapchain];
-        let image_indices = [img_idx];
-        let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(wait_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-
-        unsafe { self.swapchain_device.queue_present(self.queue, &present_info)  }?;
-
-        self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         Ok(())
     }
 }
@@ -121,7 +120,10 @@ impl Drop for Queue {
             Ok(()) => {}
             // do not panic: drop should not panic, since it is invoked for all objects after a panic; for example
             // if the logical device is lost all queues will be dropped on panic and they will all panic themselves and make the backtrace unreadable
-            Err(e) => println!("Queue::wait_idle (inside Queue::drop) returned '{}'", e.get_source().unwrap()),
+            Err(e) => println!(
+                "Queue::wait_idle (inside Queue::drop) returned '{}'",
+                e.get_source().unwrap()
+            ),
         }
 
         unsafe {
