@@ -1,8 +1,15 @@
 use std::path::Path;
 
 use ash::vk;
-use image::ImageFormat;
-use sunray::Renderer;
+use image::{ExtendedColorType, ImageFormat};
+use sunray::{Camera, Renderer};
+
+fn get_vk_format(image_format: ExtendedColorType) -> vk::Format {
+    match image_format {
+        ExtendedColorType::Rgba8 => vk::Format::R8G8B8A8_UNORM,
+        _ => vk::Format::UNDEFINED,
+    }
+}
 
 fn render_to_file(
     image: vk::Image,
@@ -13,35 +20,19 @@ fn render_to_file(
     let buf = image; //TODO: conversion
     let (width, height) = image_extent;
 
-    image::save_buffer_with_format(
-        path,
-        buf,
-        width,
-        height,
-        image::ExtendedColorType::Rgba8,
-        format,
-    );
+    image::save_buffer_with_format(path, buf, width, height, ExtendedColorType::Rgba8, format);
 }
 
 fn main() {
-    let verts = [
-        Vertex {
-            pos: [-1.0, -0.5, 0.0],
-        },
-        Vertex {
-            pos: [1.0, -0.5, 0.0],
-        },
-        Vertex {
-            pos: [0.0, 1.0, 0.0],
-        },
-    ];
-    let indices: [u32; 3] = [0, 1, 2];
-
     let image_extent = (800, 600);
-    let renderer = Renderer::new(image_extent).unwrap();
+    let image_format = get_vk_format(ExtendedColorType::Rgba8);
+    let mut renderer = Renderer::new(image_extent, image_format).unwrap();
 
-    renderer.load_file(verts, indices);
-    renderer.set_camera();
+    renderer.load_file();
+
+    let camera = Camera::new();
+
+    renderer.set_camera(camera);
 
     let image = renderer.render().unwrap();
     render_to_file(image, image_extent, "hello_triangle", ImageFormat::Png);

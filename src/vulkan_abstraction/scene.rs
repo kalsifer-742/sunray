@@ -13,20 +13,29 @@ pub struct Scene {
     index_buffer: vulkan_abstraction::IndexBuffer,
 }
 
-impl Default for Scene {
-    fn default() -> Self {
-        Self {
-            vertex_buffer: Default::default(),
-            index_buffer: Default::default(),
-        }
-    }
-}
-
 impl Scene {
+    /// This function exists for testing purposes during the refactor
+    pub fn new_default(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
+        let verts = [
+            Vertex {
+                pos: [-1.0, -0.5, 0.0],
+            },
+            Vertex {
+                pos: [1.0, -0.5, 0.0],
+            },
+            Vertex {
+                pos: [0.0, 1.0, 0.0],
+            },
+        ];
+        let indices: [u32; 3] = [0, 1, 2];
+
+        Self::new(core, &verts, &indices)
+    }
+
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
-        verts: Vec<Vertex>,
-        indices: Vec<u32>,
+        verts: &[Vertex],
+        indices: &[u32],
     ) -> SrResult<Self> {
         let vertex_buffer = {
             let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<Vertex>(

@@ -1,6 +1,5 @@
 pub mod blas;
 pub mod buffer;
-pub mod camera;
 pub mod cmd_pool;
 pub mod core;
 pub mod descriptor_set;
@@ -17,6 +16,6 @@ pub use core::*;
 pub use descriptor_set::*;
 pub use queue::*;
 pub use ray_tracing_pipeline::*;
-// pub use scene::*;
+pub use scene::*;
 pub use shader_binding_table::*;
 pub use tlas::*;

@@ -2,10 +2,12 @@ extern crate shaderc;
 
 use std::rc::Rc;
 
+use crate::camera::*;
 use crate::error::*;
-use ash::{khr, vk};
+use ash::vk;
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
+pub mod camera;
 pub mod error;
 mod vulkan_abstraction;
 
@@ -14,20 +16,22 @@ struct UniformBufferContents {
     pub proj_inverse: nalgebra::Matrix4<f32>,
 }
 
+/// A lot of fields are options because at the moment
+/// the code does not provide a way to update existing structure
+/// and so at every edit we have to recreate everything from scratch
 pub struct Renderer {
     core: Rc<vulkan_abstraction::Core>,
-
-    vertex_buffer: vulkan_abstraction::VertexBuffer,
-    index_buffer: vulkan_abstraction::IndexBuffer,
-    blas: vulkan_abstraction::BLAS,
-    tlas: vulkan_abstraction::TLAS,
+    image_extent: vk::Extent3D,
+    scene: Option<vulkan_abstraction::Scene>,
+    blas: Option<vulkan_abstraction::BLAS>,
+    tlas: Option<vulkan_abstraction::TLAS>,
     image: vk::Image,
     image_device_memory: vk::DeviceMemory,
     image_view: vk::ImageView,
     uniform_buffer: vulkan_abstraction::Buffer,
-    descriptor_sets: vulkan_abstraction::DescriptorSets,
-    ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
-    shader_binding_table: vulkan_abstraction::ShaderBindingTable,
+    descriptor_sets: Option<vulkan_abstraction::DescriptorSets>,
+    ray_tracing_pipeline: Option<vulkan_abstraction::RayTracingPipeline>,
+    shader_binding_table: Option<vulkan_abstraction::ShaderBindingTable>,
 }
 
 fn get_env_var_as_bool(name: &str) -> Option<bool> {
@@ -48,34 +52,27 @@ impl Renderer {
     const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &'static str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
     const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 
-    pub fn new(image_extent: (u32, u32)) -> SrResult<Self> {
+    pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
         let core = Rc::new(vulkan_abstraction::Core::new(
             get_env_var_as_bool(Self::ENABLE_VALIDATION_LAYER_ENV_VAR)
                 .unwrap_or(Self::IS_DEBUG_BUILD),
             get_env_var_as_bool(Self::ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false),
-            image_extent,
         )?);
         let device = core.device().inner();
 
-        let scene = vulkan_abstraction::Scene::default();
-
-        let blas = vulkan_abstraction::BLAS::new(
-            Rc::clone(&core),
-            scene.vertex_buffer(),
-            scene.index_buffer(),
-        )?;
-
-        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[&blas])?;
-
-        const OUT_IMAGE_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
+        let image_extent = vk::Extent2D {
+            width: image_extent.0,
+            height: image_extent.1,
+        }
+        .into();
 
         // the image we will do the rendering on
         let (image, image_device_memory, image_view) = {
             let image = {
                 let image_create_info = vk::ImageCreateInfo::default()
                     .image_type(vk::ImageType::TYPE_2D)
-                    .format(OUT_IMAGE_FORMAT)
-                    .extent(*core.image_extent())
+                    .format(image_format)
+                    .extent(image_extent)
                     .flags(vk::ImageCreateFlags::empty())
                     .mip_levels(1)
                     .array_layers(1)
@@ -105,7 +102,7 @@ impl Renderer {
             let image_view = {
                 let image_view_create_info = vk::ImageViewCreateInfo::default()
                     .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(OUT_IMAGE_FORMAT)
+                    .format(image_format)
                     .subresource_range(vk::ImageSubresourceRange {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                         base_mip_level: 0,
@@ -154,58 +151,27 @@ impl Renderer {
             (image, image_device_memory, image_view)
         };
 
-        let uniform_buffer = {
-            let mut uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
-                Rc::clone(&core),
-                std::mem::size_of::<UniformBufferContents>(),
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                vk::MemoryAllocateFlags::empty(),
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            )?;
-
-            //update camera
-
-            uniform_buffer
-        };
-
-        let descriptor_sets = vulkan_abstraction::DescriptorSets::new(
+        let uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(&core),
-            &tlas,
-            &image_view,
-            &uniform_buffer,
-        )?;
-
-        let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
-            Rc::clone(&core),
-            &descriptor_sets,
-            get_env_var_as_bool(Self::ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR)
-                .unwrap_or(Self::IS_DEBUG_BUILD),
-        )?;
-
-        let shader_binding_table =
-            vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
-
-        Self::record_render_command_buffers(
-            &core,
-            &core.cmd_pool().get_buffer(),
-            &ray_tracing_pipeline,
-            &descriptor_sets,
-            &shader_binding_table,
-            image,
+            std::mem::size_of::<UniformBufferContents>(),
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            vk::MemoryAllocateFlags::empty(),
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
         )?;
 
         Ok(Self {
             core,
-            scene,
-            blas,
-            tlas,
+            image_extent,
+            scene: Default::default(),
+            blas: Default::default(),
+            tlas: Default::default(),
             image,
             image_device_memory,
             image_view,
             uniform_buffer,
-            descriptor_sets,
-            ray_tracing_pipeline,
-            shader_binding_table,
+            descriptor_sets: Default::default(),
+            ray_tracing_pipeline: Default::default(),
+            shader_binding_table: Default::default(),
         })
     }
 
@@ -254,6 +220,7 @@ impl Renderer {
         descriptor_sets: &vulkan_abstraction::DescriptorSets,
         shader_binding_table: &vulkan_abstraction::ShaderBindingTable,
         image: vk::Image,
+        image_extent: vk::Extent3D,
     ) -> SrResult<()> {
         let device = core.device().inner();
         let cmd_buf_usage_flags = vk::CommandBufferUsageFlags::SIMULTANEOUS_USE;
@@ -298,8 +265,8 @@ impl Renderer {
                 shader_binding_table.get_miss_region(),
                 shader_binding_table.get_hit_region(),
                 shader_binding_table.get_callable_region(),
-                core.image_extent().width,
-                core.image_extent().height,
+                image_extent.width,
+                image_extent.height,
                 1,
             );
 
@@ -346,17 +313,93 @@ impl Renderer {
 
     /// # This is a mock function
     pub fn load_file(&self) -> SrResult<()> {
-        // discuss how to perform this
+        self.descriptor_sets = Some(vulkan_abstraction::DescriptorSets::new(
+            Rc::clone(&self.core),
+            &self.tlas.unwrap(),
+            &self.image_view,
+            &self.uniform_buffer,
+        )?);
+        //TODO: and so on
+
+        let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
+            Rc::clone(&core),
+            &descriptor_sets,
+            get_env_var_as_bool(Self::ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR)
+                .unwrap_or(Self::IS_DEBUG_BUILD),
+        )?;
+
+        let shader_binding_table =
+            vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
 
         Ok(())
     }
 
     /// # This is a mock function
-    pub fn set_camera(&self) -> SrResult<()> {
+    pub fn set_camera(&mut self, camera: Camera) -> SrResult<()> {
+        let proj = nalgebra::geometry::Perspective3::new(
+            self.image_extent.width as f32 / self.image_extent.height as f32,
+            3.14 / 2.0,
+            0.1,
+            1000.0,
+        );
+
+        let eye = nalgebra::geometry::Point3::new(0.0, 0.0, 3.0);
+        let target = nalgebra::geometry::Point3::new(0.0, 0.0, 0.0);
+        let up = nalgebra::Vector3::new(0.0, -1.0, 0.0);
+        //apparently vulkan uses right-handed coordinates
+        let view = nalgebra::Isometry3::look_at_rh(&eye, &target, &up);
+
+        let mem = self.uniform_buffer.map::<crate::UniformBufferContents>()?;
+        mem[0].proj_inverse = proj.to_homogeneous().try_inverse().unwrap();
+        mem[0].view_inverse = view.to_homogeneous().try_inverse().unwrap();
+
+        let origin = mem[0].view_inverse * nalgebra::Vector4::new(0.0, 0.0, 0.0, 1.0);
+        let target = mem[0].proj_inverse * nalgebra::Vector4::new(0.0, 0.0, 1.0, 1.0);
+        let target_normalized = target.normalize();
+        let direction = mem[0].view_inverse
+            * nalgebra::Vector4::new(
+                target_normalized.x,
+                target_normalized.y,
+                target_normalized.z,
+                0.0,
+            );
+
+        let origin = origin.xyz();
+        let direction = direction.xyz().normalize();
+
+        let fmt_vec = |v: nalgebra::Vector3<f32>| format!("({}, {}, {})", v.x, v.y, v.z);
+        println!(
+            "for screen center, ray origin={}, direction={}",
+            fmt_vec(origin),
+            fmt_vec(direction)
+        );
+
+        self.uniform_buffer.unmap();
+
         Ok(())
     }
 
+    /*
+
+    */
     pub fn render(&self) -> SrResult<vk::Image> {
+        /*
+           This should be in the new
+           as there is no need to recreate the command buffer every time
+           but it depends on a lof of stuff already existing.
+
+           I'm parking the function here for the moment
+        */
+        Self::record_render_command_buffers(
+            &core,
+            &core.cmd_pool().get_buffer(),
+            &ray_tracing_pipeline,
+            &descriptor_sets,
+            &shader_binding_table,
+            image,
+            self.image_extent,
+        )?;
+
         let cmd_buf = self.core.cmd_pool().get_buffer();
 
         self.core.queue().submit_async(*cmd_buf)?;

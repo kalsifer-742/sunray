@@ -26,31 +26,10 @@ pub struct Core {
     device: Rc<vulkan_abstraction::Device>,
     instance: vulkan_abstraction::Instance,
     entry: ash::Entry,
-
-    image_extent: vk::Extent3D, //new addition, I have yet to figure out this drop order thing
-}
-
-impl Default for Core {
-    fn default() -> Self {
-        Self {
-            acceleration_structure_device: 0,
-            ray_tracing_pipeline_device: Default::default(),
-            queue: Default::default(),
-            cmd_pool: Default::default(),
-            device: Default::default(),
-            instance: Default::default(),
-            entry: Default::default(),
-            image_extent: Default::default(),
-        }
-    }
 }
 
 impl Core {
-    pub fn new(
-        with_validation_layer: bool,
-        with_gpuav: bool,
-        image_extent: (u32, u32),
-    ) -> SrResult<Self> {
+    pub fn new(with_validation_layer: bool, with_gpuav: bool) -> SrResult<Self> {
         let entry = ash::Entry::linked();
 
         let instance =
@@ -79,12 +58,6 @@ impl Core {
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         )?;
 
-        let image_extent = vk::Extent2D {
-            width: image_extent.0,
-            height: image_extent.1,
-        }
-        .into();
-
         Ok(Self {
             entry,
             instance,
@@ -93,7 +66,6 @@ impl Core {
             ray_tracing_pipeline_device,
             queue: RefCell::new(queue),
             cmd_pool,
-            image_extent,
         })
     }
 
@@ -114,8 +86,5 @@ impl Core {
     }
     pub fn cmd_pool(&self) -> &vulkan_abstraction::CmdPool {
         &self.cmd_pool
-    }
-    pub fn image_extent(&self) -> &vk::Extent3D {
-        &self.image_extent
     }
 }
