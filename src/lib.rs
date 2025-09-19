@@ -5,7 +5,6 @@ use std::rc::Rc;
 use crate::camera::*;
 use crate::error::*;
 use ash::vk;
-use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 pub mod camera;
 pub mod error;
@@ -22,6 +21,7 @@ struct UniformBufferContents {
 pub struct Renderer {
     core: Rc<vulkan_abstraction::Core>,
     image_extent: vk::Extent3D,
+    image_format: vk::Format,
     scene: Option<vulkan_abstraction::Scene>,
     blas: Option<vulkan_abstraction::BLAS>,
     tlas: Option<vulkan_abstraction::TLAS>,
@@ -65,6 +65,11 @@ impl Renderer {
             height: image_extent.1,
         }
         .into();
+
+        /*
+           This code about the image needs to be moved into the image struct, wich at the moment is a placeholder
+           So that then the image can be passed around with its fields
+        */
 
         // the image we will do the rendering on
         let (image, image_device_memory, image_view) = {
@@ -168,6 +173,7 @@ impl Renderer {
             image,
             image_device_memory,
             image_view,
+            image_format,
             uniform_buffer,
             descriptor_sets: Default::default(),
             ray_tracing_pipeline: Default::default(),
@@ -175,6 +181,7 @@ impl Renderer {
         })
     }
 
+    /// https://github.com/SaschaWillems/Vulkan/blob/master/base/VulkanTools.cpp#L318
     unsafe fn cmd_image_memory_barrier(
         core: &vulkan_abstraction::Core,
         cmd_buf: vk::CommandBuffer,
@@ -213,6 +220,7 @@ impl Renderer {
         }
     }
 
+    /// https://github.com/SaschaWillems/Vulkan/blob/02f8f1017091edb4e5a531c92bde07c78d061df6/examples/screenshot/screenshot.cpp#L143
     fn record_render_command_buffers(
         core: &vulkan_abstraction::Core,
         cmd_buf: &vk::CommandBuffer,
@@ -221,6 +229,8 @@ impl Renderer {
         shader_binding_table: &vulkan_abstraction::ShaderBindingTable,
         image: vk::Image,
         image_extent: vk::Extent3D,
+        image_format: vk::Format,
+        dst_image: vk::Image,
     ) -> SrResult<()> {
         let device = core.device().inner();
         let cmd_buf_usage_flags = vk::CommandBufferUsageFlags::SIMULTANEOUS_USE;
@@ -257,7 +267,7 @@ impl Renderer {
                 &std::mem::transmute::<
                     vulkan_abstraction::PushConstant,
                     [u8; std::mem::size_of::<vulkan_abstraction::PushConstant>()],
-                >(push_constants),
+                >(push_constants), //TODO: comment this transmute
             );
             core.rt_pipeline_device().cmd_trace_rays(
                 *cmd_buf,
@@ -281,6 +291,9 @@ impl Renderer {
             let layout_tx_dst = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
             let layout_present = vk::ImageLayout::PRESENT_SRC_KHR;
 
+            //Ray tracing memory barrier
+            //This is the only memory barried that i saved from the refactor
+            //This should also already prepare correctly the image for transfer
             Self::cmd_image_memory_barrier(
                 &core,
                 *cmd_buf,
@@ -293,16 +306,87 @@ impl Renderer {
                 vk::AccessFlags::TRANSFER_READ,
             );
 
+            // Transition image from present to transfer source layout
+            // Self::cmd_image_memory_barrier(
+            //     &core,
+            //     *cmd_buf,
+            //     image,
+            //     vk::ImageLayout::PRESENT_SRC_KHR,
+            //     vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            //     vk::PipelineStageFlags::TRANSFER,
+            //     vk::PipelineStageFlags::TRANSFER,
+            //     vk::AccessFlags::MEMORY_READ,
+            //     vk::AccessFlags::TRANSFER_READ,
+            // );
+
+            // Transition destination image to transfer destination layout
+            Self::cmd_image_memory_barrier(
+                &core,
+                *cmd_buf,
+                dst_image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_WRITE,
+            );
+
+            //TODO: check for blit support, if blit is not supported there is image copy
+            let image_subresource_layers = vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(0)
+                .base_array_layer(0)
+                .layer_count(1);
+            //blit size
+            let whole_img_offsets = [
+                ash::vk::Offset3D { x: 0, y: 0, z: 0 }, //shouldn't the two offsets be the same?
+                ash::vk::Offset3D {
+                    x: image_extent.width as i32,
+                    y: image_extent.height as i32,
+                    z: 1,
+                },
+            ];
+            let image_blit = vk::ImageBlit::default()
+                .src_subresource(image_subresource_layers)
+                .src_offsets(whole_img_offsets)
+                .dst_subresource(image_subresource_layers)
+                .dst_offsets(whole_img_offsets);
+
+            device.cmd_blit_image(
+                *cmd_buf,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                dst_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[image_blit],
+                vk::Filter::NEAREST,
+            );
+
+            // Transition destination image to general layout, which is the required layout for mapping the image memory later on
+            Self::cmd_image_memory_barrier(
+                &core,
+                *cmd_buf,
+                dst_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::GENERAL,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::MEMORY_READ,
+            );
+
+            // Transition back the image after the blit is done
             Self::cmd_image_memory_barrier(
                 &core,
                 *cmd_buf,
                 image,
-                layout_tx_src,
-                layout_general,
-                stage_tx,
-                stage_pipebtm,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                layout_present,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER,
                 vk::AccessFlags::TRANSFER_READ,
-                vk::AccessFlags::empty(),
+                vk::AccessFlags::MEMORY_READ,
             );
 
             device.end_command_buffer(*cmd_buf)?;
@@ -312,24 +396,26 @@ impl Renderer {
     }
 
     /// # This is a mock function
-    pub fn load_file(&self) -> SrResult<()> {
+    pub fn load_file(&mut self) -> SrResult<()> {
         self.descriptor_sets = Some(vulkan_abstraction::DescriptorSets::new(
             Rc::clone(&self.core),
-            &self.tlas.unwrap(),
+            self.tlas.as_ref().unwrap(),
             &self.image_view,
             &self.uniform_buffer,
         )?);
         //TODO: and so on
 
-        let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
-            Rc::clone(&core),
-            &descriptor_sets,
+        self.ray_tracing_pipeline = Some(vulkan_abstraction::RayTracingPipeline::new(
+            Rc::clone(&self.core),
+            self.descriptor_sets.as_ref().unwrap(),
             get_env_var_as_bool(Self::ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR)
                 .unwrap_or(Self::IS_DEBUG_BUILD),
-        )?;
+        )?);
 
-        let shader_binding_table =
-            vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
+        self.shader_binding_table = Some(vulkan_abstraction::ShaderBindingTable::new(
+            &self.core,
+            self.ray_tracing_pipeline.as_ref().unwrap(),
+        )?);
 
         Ok(())
     }
@@ -379,10 +465,60 @@ impl Renderer {
         Ok(())
     }
 
-    /*
+    pub fn render(&self) -> SrResult<*mut std::ffi::c_void> {
+        let dst_image = {
+            let image_create_info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(self.image_format)
+                .extent(self.image_extent)
+                .flags(vk::ImageCreateFlags::empty())
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::LINEAR)
+                .usage(vk::ImageUsageFlags::TRANSFER_DST)
+                .initial_layout(vk::ImageLayout::UNDEFINED);
 
-    */
-    pub fn render(&self) -> SrResult<vk::Image> {
+            unsafe {
+                self.core
+                    .device()
+                    .inner()
+                    .create_image(&image_create_info, None)
+            }
+            .unwrap()
+        };
+        let dst_image_device_memory = {
+            let mem_reqs = unsafe {
+                self.core
+                    .device()
+                    .inner()
+                    .get_image_memory_requirements(dst_image)
+            };
+            let mem_alloc_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(mem_reqs.size)
+                .memory_type_index(vulkan_abstraction::get_memory_type_index(
+                    &self.core,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE //the memory must be host visible to copy from
+                            | vk::MemoryPropertyFlags::HOST_COHERENT,
+                    &mem_reqs,
+                )?);
+
+            unsafe {
+                self.core
+                    .device()
+                    .inner()
+                    .allocate_memory(&mem_alloc_info, None)
+            }
+            .unwrap()
+        };
+        unsafe {
+            self.core
+                .device()
+                .inner()
+                .bind_image_memory(dst_image, dst_image_device_memory, 0)
+        }
+        .unwrap();
+
         /*
            This should be in the new
            as there is no need to recreate the command buffer every time
@@ -391,13 +527,15 @@ impl Renderer {
            I'm parking the function here for the moment
         */
         Self::record_render_command_buffers(
-            &core,
-            &core.cmd_pool().get_buffer(),
-            &ray_tracing_pipeline,
-            &descriptor_sets,
-            &shader_binding_table,
-            image,
+            &self.core,
+            self.core.cmd_pool().get_buffer(),
+            self.ray_tracing_pipeline.as_ref().unwrap(),
+            self.descriptor_sets.as_ref().unwrap(),
+            self.shader_binding_table.as_ref().unwrap(),
+            self.image,
             self.image_extent,
+            self.image_format,
+            dst_image,
         )?;
 
         let cmd_buf = self.core.cmd_pool().get_buffer();
@@ -405,7 +543,35 @@ impl Renderer {
         self.core.queue().submit_async(*cmd_buf)?;
         self.core.queue().wait_idle()?;
 
-        Ok(self.image)
+        let dst_image_subresource = vk::ImageSubresource {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            array_layer: 0,
+        };
+        let dst_image_subresource_layout = unsafe {
+            self.core
+                .device()
+                .inner()
+                .get_image_subresource_layout(dst_image, dst_image_subresource)
+        };
+
+        //should we just return this?
+        let mapped_memory = unsafe {
+            self.core.device().inner().map_memory(
+                dst_image_device_memory,
+                0,
+                vk::WHOLE_SIZE,
+                vk::MemoryMapFlags::empty(),
+            )?
+        };
+        // let raw_mem = unsafe {
+        //     vulkan_abstraction::mapped_memory::RawMappedMemory::new(p, vk::WHOLE_SIZE as usize)
+        // };
+        // let mut mapped_memory = Some(raw_mem);
+        // let ret = mapped_memory.as_mut().unwrap().borrow(); //i have not figured out yet what it the type of this thing
+
+        //I think we should return a reference
+        Ok(mapped_memory)
     }
 }
 

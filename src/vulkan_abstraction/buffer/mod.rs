@@ -1,5 +1,5 @@
 pub mod index_buffer;
-mod mapped_memory;
+pub mod mapped_memory;
 pub mod vertex_buffer;
 
 //why use and not just mod?
