@@ -564,6 +564,10 @@ impl Renderer {
                 vk::MemoryMapFlags::empty(),
             )?
         };
+        // Looking at Sascha Willems code i get the idea that it knows that the type is u32
+
+        //possibility: Allocation of gpu_allocator
+
         // let raw_mem = unsafe {
         //     vulkan_abstraction::mapped_memory::RawMappedMemory::new(p, vk::WHOLE_SIZE as usize)
         // };
