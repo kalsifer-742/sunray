@@ -37,7 +37,7 @@ impl Swapchain {
                     String::from("Physical device does not support any surface formats"),
                 ))?;
 
-                println!("the BGRA8 SRGB format is not supported by the current physical device; falling back to {format:?}");
+                log::warn!("the BGRA8 SRGB format is not supported by the current physical device; falling back to {format:?}");
 
                 format
             }

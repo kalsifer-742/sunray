@@ -65,7 +65,7 @@ impl RayTracingPipeline {
         generate_shader_debug_info: bool
     ) -> SrResult<Self> {
         if generate_shader_debug_info {
-            println!("Building shaders with debug symbols");
+            log::info!("Building shaders with debug symbols");
         }
         let device = core.device().inner();
 

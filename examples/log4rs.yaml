@@ -1,0 +1,40 @@
+# see https://github.com/estk/log4rs/blob/main/docs/Configuration.md
+
+# set a refresh rate
+refresh_rate: 1 seconds
+
+# appenders
+appenders:
+
+  # this appender will append to the console
+  stdout:
+    kind: console
+    encoder:
+      kind: pattern
+      # less verbose pattern
+      pattern: "{h([{d(%H:%M:%S)} {l:<6}]: {m})}{n}"
+
+  # this appender will append to a log file
+  rolling_appender:
+    kind: rolling_file
+    path: examples/log.log
+    append: true
+    encoder:
+      kind: pattern
+      # more verbose pattern
+      pattern: "{h({d(%+)} [{f}:{L}] {l:<6} {M}: {m})}{n}"
+    policy:
+      kind: compound
+      trigger:
+        kind: size
+        limit: 10mb
+      # upon reaching the max log size, the file simply gets deleted on successful roll
+      roller:
+        kind: delete
+
+
+root:
+  level: trace # log messages below this minimum won't be recorded
+  appenders:
+    - stdout
+    - rolling_appender
