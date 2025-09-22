@@ -104,8 +104,8 @@ impl ShaderBindingTable {
             callable_region,
         })
     }
-    pub fn get_raygen_region(&self) -> &vk::StridedDeviceAddressRegionKHR { return &self.raygen_region; }
-    pub fn get_miss_region(&self) -> &vk::StridedDeviceAddressRegionKHR { return &self.miss_region; }
-    pub fn get_hit_region(&self) -> &vk::StridedDeviceAddressRegionKHR { return &self.hit_region; }
-    pub fn get_callable_region(&self) -> &vk::StridedDeviceAddressRegionKHR { return &self.callable_region; }
+    pub fn get_raygen_region(&self) -> &vk::StridedDeviceAddressRegionKHR { &self.raygen_region }
+    pub fn get_miss_region(&self) -> &vk::StridedDeviceAddressRegionKHR { &self.miss_region }
+    pub fn get_hit_region(&self) -> &vk::StridedDeviceAddressRegionKHR { &self.hit_region }
+    pub fn get_callable_region(&self) -> &vk::StridedDeviceAddressRegionKHR { &self.callable_region }
 }

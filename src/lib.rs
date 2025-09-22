@@ -75,7 +75,6 @@ impl Renderer {
 
     // TODO: currently take for granted that the user has a window, no support for offline rendering
     pub fn new(window_extent: [u32; 2], raw_window_handle: RawWindowHandle, raw_display_handle: RawDisplayHandle) -> SrResult<Self> {
-
         let core = Rc::new(vulkan_abstraction::Core::new(vulkan_abstraction::CoreCreateInfo {
             instance_exts: crate::utils::enumerate_required_extensions(raw_display_handle)?,
             device_exts: &[ khr::swapchain::NAME.as_ptr() ],
@@ -244,7 +243,7 @@ impl Renderer {
                 let direction = direction.xyz().normalize();
 
                 let fmt_vec = |v: nalgebra::Vector3<f32>| format!("({}, {}, {})", v.x, v.y, v.z);
-                println!("for screen center, ray origin={}, direction={}", fmt_vec(origin), fmt_vec(direction));
+                log::info!("for screen center, ray origin={}, direction={}", fmt_vec(origin), fmt_vec(direction));
             }
 
             uniform_buffer.unmap();

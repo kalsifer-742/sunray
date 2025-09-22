@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::{collections::HashSet, ffi::{c_void, CStr}};
 
 use ash::{ext, vk};
 
@@ -8,8 +8,14 @@ pub struct Instance {
     instance: ash::Instance,
 }
 
+
 impl Instance {
     pub const VALIDATION_LAYER_NAME: &'static CStr = c"VK_LAYER_KHRONOS_validation";
+    // VK_EXT_debug_utils for setting up a debug messenger to log validation layer errors
+    // NOTE: VK_EXT_debug_utils also allows
+    pub const DEBUG_EXTENSIONS: [&'static CStr; 1] = [
+        ext::debug_utils::NAME,
+    ];
 
     fn check_validation_layer_support(entry: &ash::Entry) -> SrResult<bool> {
         let layers_props = unsafe { entry.enumerate_instance_layer_properties() }?;
@@ -21,22 +27,89 @@ impl Instance {
         Ok(supports_validation_layer)
     }
 
+
+    fn filter_supported_exts<'a>(entry: &ash::Entry, layer: Option<&CStr>, required_exts: &[&'a CStr]) -> SrResult<Vec<&'a CStr>> {
+        match layer {
+            Some(layer) => log::info!("Attempting to enable some instance extensions for layer {layer:?}: {required_exts:?}"),
+            None => log::info!("Attempting to enable some instance extensions: {required_exts:?}"),
+        };
+
+        let extension_support = unsafe { entry.enumerate_instance_extension_properties(layer) }?;
+        let extension_support_u8 = extension_support.iter().map(|ext| {
+            ext.extension_name.map(|c| c as u8)
+        }).collect::<Vec<_>>();
+        let extension_support_hashset = HashSet::<&CStr>::from_iter(extension_support_u8.iter().map(|ext_name_u8| {
+            CStr::from_bytes_until_nul(ext_name_u8).unwrap()
+        }));
+
+        let mut supported = Vec::new();
+        let mut unsupported  = Vec::new();
+
+        for ext in required_exts.iter().copied() {
+            if extension_support_hashset.contains(ext) {
+                supported.push(ext);
+            } else {
+                unsupported.push(ext);
+            }
+        }
+
+        if !unsupported.is_empty() {
+            match layer {
+                Some(layer) => log::warn!("Some instance extensions for layer {layer:?} required by sunray were unavailable: {:?}", unsupported),
+                None => log::warn!("Some instance extensions required by sunray were unavailable: {:?}", unsupported),
+            }
+        }
+
+
+        Ok(supported)
+    }
+
+    pub unsafe extern "system" fn debug_utils_callback(
+        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+        message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+        callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+        _user_data: *mut c_void,
+    ) -> vk::Bool32 {
+        let level = match message_severity {
+            vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::Level::Debug,
+            vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::Level::Info,
+            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::Level::Warn,
+            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::Level::Error,
+            _ => {
+                log::warn!("unexpected message severity, got {message_severity:?}");
+                log::Level::Warn
+            }
+        };
+        let callback_data = unsafe {*callback_data};
+        let msg_id_number = callback_data.message_id_number;
+        let msg_id_name = unsafe { CStr::from_ptr(callback_data.p_message_id_name) }.to_str().unwrap();
+        let msg_text = unsafe { CStr::from_ptr(callback_data.p_message) }.to_str().unwrap();
+
+        // some messages have id_number=0, don't print it in that case
+        if msg_id_number != 0 {
+            // print the id num in lowercase hex, padding up to 10 characters. 10 characters = 0x_ where _ are 8 hex digits => 8 nibbles = 32 bits
+            log::log!(level, "{message_type:?} {msg_id_number:#010x} - {msg_id_name}: {msg_text}");
+        } else {
+            log::log!(level, "{message_type:?} {msg_id_name}: {msg_text}");
+        }
+
+        vk::FALSE
+    }
+
     pub fn new(entry: &ash::Entry, instance_exts: &[*const i8], with_validation_layer: bool, with_gpuav: bool) -> SrResult<Self> {
         let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 4, 0));
 
         let (enable_validation_layer, layer_names) = {
-            let validation_layer_supported = Self::check_validation_layer_support(&entry)?;
-
             let enable_validation_layer = if with_validation_layer{
-                if validation_layer_supported {
-                    println!("Validation layer enabled"); //TODO: use a logging library
+                if Self::check_validation_layer_support(&entry)? {
+                    log::info!("Validation layer enabled");
                     true
                 } else {
-                    println!("No validation layer support; continuing without validation layer...");
+                    log::warn!("No validation layer support; continuing without validation layer...");
                     false
                 }
             } else {
-                println!("validation layer disabled");
+                log::info!("validation layer disabled");
                 false
             };
 
@@ -49,15 +122,22 @@ impl Instance {
             (enable_validation_layer, layer_names)
         };
 
+        let supported_debug_extensions = Self::filter_supported_exts(entry, None, &Self::DEBUG_EXTENSIONS)?;
+        let enable_layer_settings =
+            enable_validation_layer
+            && Self::filter_supported_exts(entry, Some(Self::VALIDATION_LAYER_NAME), &[ext::layer_settings::NAME])?.len() > 0;
+        let enable_debug_utils =
+            enable_validation_layer
+            && supported_debug_extensions.contains(&ext::debug_utils::NAME);
+
         let instance_extensions = {
             if enable_validation_layer {
-            // add VK_EXT_layer_settings for configuring the validation layer
                 instance_exts.iter()
                     .copied()
                     .chain(
-                        std::iter::once(ext::layer_settings::NAME.as_ptr())
+                        supported_debug_extensions.iter().map(|arr| arr.as_ptr())
                     )
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<*const i8>>()
             } else {
                 instance_exts.iter().copied().collect::<Vec<_>>()
             }
@@ -84,10 +164,23 @@ impl Instance {
             validation_setting(c"validate_sync", true),
             validation_setting(c"validate_best_practices", true),
         ];
-        let mut layer_settings_create_info = if enable_validation_layer {
+        let mut layer_settings_create_info = if enable_layer_settings {
             Some(
                 vk::LayerSettingsCreateInfoEXT::default()
                     .settings(&settings)
+            )
+        } else {
+            None
+        };
+
+        let mut debug_utils_create_info = if enable_debug_utils {
+            use vk::DebugUtilsMessageSeverityFlagsEXT as Severity;
+            use vk::DebugUtilsMessageTypeFlagsEXT as MsgType;
+            Some(
+                vk::DebugUtilsMessengerCreateInfoEXT::default()
+                    .message_severity(Severity::VERBOSE | Severity::INFO | Severity::WARNING | Severity::ERROR)
+                    .message_type(MsgType::VALIDATION | MsgType::GENERAL | MsgType::PERFORMANCE)
+                    .pfn_user_callback(Some(Self::debug_utils_callback))
             )
         } else {
             None
@@ -98,8 +191,14 @@ impl Instance {
             .enabled_layer_names(&layer_names)
             .enabled_extension_names(&instance_extensions);
 
-        let instance_create_info = if enable_validation_layer {
+        let instance_create_info = if enable_layer_settings {
             instance_create_info.push_next(layer_settings_create_info.as_mut().unwrap())
+        } else {
+            instance_create_info
+        };
+
+        let instance_create_info = if enable_debug_utils {
+            instance_create_info.push_next(debug_utils_create_info.as_mut().unwrap())
         } else {
             instance_create_info
         };

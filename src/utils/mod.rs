@@ -59,7 +59,7 @@ pub fn enumerate_required_extensions(
         }
 
         _ => {
-            return Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT).map_err(SrError::from)
+            return Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT.into());
         },
     };
 
@@ -89,7 +89,6 @@ pub fn enumerate_required_extensions(
 /// connection, which must not be destroyed for the lifetime of the returned [`vk::SurfaceKHR`].
 ///
 /// [parent/child relation]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#fundamentals-objectmodel-lifetime
-
 pub unsafe fn create_surface(
     entry: &ash::Entry,
     instance: &ash::Instance,

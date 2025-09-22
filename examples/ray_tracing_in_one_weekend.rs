@@ -45,7 +45,7 @@ impl ApplicationHandler for App {
                     Ok(()) => {}
                     Err(error) => {
                         //no need to panic, sunray already takes care of the backtrace
-                        eprintln!("Sunray error: {}", error);
+                        log::error!("Sunray error: {}", error);
                         event_loop.exit();
                     }
                 }
@@ -56,6 +56,15 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    log4rs::config::init_file("examples/log4rs.yaml", log4rs::config::Deserializers::new()).unwrap();
+
+    if cfg!(debug_assertions) {
+        //stdlib unfortunately completely pollutes trace log level, TODO somehow config stdlib/log to fix this?
+        log::set_max_level(log::LevelFilter::Debug);
+    } else {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
 

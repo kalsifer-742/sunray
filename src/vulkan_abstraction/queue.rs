@@ -121,7 +121,7 @@ impl Drop for Queue {
             Ok(()) => {}
             // do not panic: drop should not panic, since it is invoked for all objects after a panic; for example
             // if the logical device is lost all queues will be dropped on panic and they will all panic themselves and make the backtrace unreadable
-            Err(e) => println!("Queue::wait_idle (inside Queue::drop) returned '{}'", e.get_source().unwrap()),
+            Err(e) => log::error!("Queue::wait_idle (inside Queue::drop) returned '{}'", e.get_source().unwrap()),
         }
 
         unsafe {
