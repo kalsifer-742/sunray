@@ -4,11 +4,7 @@ use ash::vk;
 use nalgebra as na;
 use sunray::{error::SrResult, vulkan_abstraction};
 use winit::{
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{self, ControlFlow, EventLoop},
-    raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle},
-    window::Window,
+    application::ApplicationHandler, event::WindowEvent, event_loop::{self, ControlFlow, EventLoop}, platform::wayland::WindowAttributesExtWayland, raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle}, window::Window
 };
 
 mod surface;
@@ -22,9 +18,15 @@ struct App {
     surface: Option<surface::Surface>,
     renderer: Option<sunray::Renderer>,
     start_time: Option<std::time::SystemTime>,
+    new_size: Option<(u32,u32)>,
 }
 impl App {
     fn rebuild_with_size(&mut self, size: (u32, u32)) -> SrResult<()> {
+        if let Some(renderer) = self.renderer.as_ref() {
+            renderer.core().queue().wait_idle()?;
+            unsafe { renderer.core().device().inner().device_wait_idle() }?;
+        }
+
         //ensuring old vulkan resources are dropped in the correct order
         self.swapchain = None;
         self.surface = None;
@@ -163,11 +165,33 @@ impl App {
 
             let queue = renderer.core().queue().inner();
 
-            unsafe { swapchain.device().queue_present(queue, &present_info) }.unwrap();
+            unsafe { swapchain.device().queue_present(queue, &present_info) }?;
         }
 
         Ok(())
     }
+
+    fn handle_event(&mut self, event_loop: &event_loop::ActiveEventLoop, event: winit::event::WindowEvent) -> SrResult<()> {
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(size) = self.new_size {
+                    self.rebuild_with_size(size)?;
+                    self.new_size = None;
+                }
+                self.draw()?;
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            WindowEvent::Resized(size) => {
+                self.new_size = Some(size.into());
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+
 }
 
 impl ApplicationHandler for App {
@@ -182,7 +206,13 @@ impl ApplicationHandler for App {
 
         self.start_time = Some(std::time::SystemTime::now());
 
-        self.rebuild_with_size(window_size).unwrap();
+        match self.rebuild_with_size(window_size) {
+            Ok(()) => {}
+            Err(e) => {
+                log::error!("{e}");
+                // event_loop.exit();
+            },
+        }
     }
 
     fn window_event(
@@ -191,18 +221,12 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        match event {
-            WindowEvent::CloseRequested => {
-                event_loop.exit();
-            }
-            WindowEvent::RedrawRequested => {
-                self.draw().unwrap();
-                self.window.as_ref().unwrap().request_redraw();
-            }
-            WindowEvent::Resized(size) => {
-                self.rebuild_with_size(size.into()).unwrap();
-            }
-            _ => (),
+        match self.handle_event(event_loop, event) {
+            Ok(()) => {}
+            Err(e) => {
+                log::error!("{e}");
+                // event_loop.exit();
+            },
         }
     }
 }
