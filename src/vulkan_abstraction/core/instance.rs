@@ -6,14 +6,16 @@ use crate::error::SrResult;
 
 pub struct Instance {
     instance: ash::Instance,
+    debug_utils_instance: Option<ext::debug_utils::Instance>,
+    debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
 }
 
 
 impl Instance {
     pub const VALIDATION_LAYER_NAME: &'static CStr = c"VK_LAYER_KHRONOS_validation";
-    // VK_EXT_debug_utils for setting up a debug messenger to log validation layer errors
-    // NOTE: VK_EXT_debug_utils also allows
     pub const DEBUG_EXTENSIONS: [&'static CStr; 1] = [
+        // VK_EXT_debug_utils for setting up a debug messenger to log validation layer errors
+        // NOTE: VK_EXT_debug_utils also allows tagging objects or command buffer commands to make them more recognizable in gpu debugging softwares like renderdoc or nsight graphics
         ext::debug_utils::NAME,
     ];
 
@@ -64,12 +66,30 @@ impl Instance {
         Ok(supported)
     }
 
-    pub unsafe extern "system" fn debug_utils_callback(
+    unsafe extern "system" fn debug_utils_callback(
         message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
         message_type: vk::DebugUtilsMessageTypeFlagsEXT,
         callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
         _user_data: *mut c_void,
     ) -> vk::Bool32 {
+        let callback_data = unsafe {*callback_data};
+        let msg_id_number = callback_data.message_id_number;
+        let msg_id_name = unsafe { CStr::from_ptr(callback_data.p_message_id_name) }.to_str().unwrap();
+        let msg_text = unsafe { CStr::from_ptr(callback_data.p_message) }.to_str().unwrap();
+
+        match (message_severity, message_type, msg_id_number) {
+            (vk::DebugUtilsMessageSeverityFlagsEXT::WARNING, vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION, 0x675dc32e)
+                => return vk::FALSE,
+            (vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0)
+            | (vk::DebugUtilsMessageSeverityFlagsEXT::INFO, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0)
+                => {
+                    if msg_id_name == "Loader Message" {
+                        return vk::FALSE;
+                    }
+                }
+            _ => {}
+        }
+
         let level = match message_severity {
             vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::Level::Debug,
             vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::Level::Info,
@@ -80,10 +100,6 @@ impl Instance {
                 log::Level::Warn
             }
         };
-        let callback_data = unsafe {*callback_data};
-        let msg_id_number = callback_data.message_id_number;
-        let msg_id_name = unsafe { CStr::from_ptr(callback_data.p_message_id_name) }.to_str().unwrap();
-        let msg_text = unsafe { CStr::from_ptr(callback_data.p_message) }.to_str().unwrap();
 
         // some messages have id_number=0, don't print it in that case
         if msg_id_number != 0 {
@@ -173,7 +189,7 @@ impl Instance {
             None
         };
 
-        let mut debug_utils_create_info = if enable_debug_utils {
+        let mut debug_messenger_create_info = if enable_debug_utils {
             use vk::DebugUtilsMessageSeverityFlagsEXT as Severity;
             use vk::DebugUtilsMessageTypeFlagsEXT as MsgType;
             Some(
@@ -198,13 +214,25 @@ impl Instance {
         };
 
         let instance_create_info = if enable_debug_utils {
-            instance_create_info.push_next(debug_utils_create_info.as_mut().unwrap())
+            instance_create_info.push_next(debug_messenger_create_info.as_mut().unwrap())
         } else {
             instance_create_info
         };
 
         let instance = unsafe { entry.create_instance(&instance_create_info, None) }?;
-        Ok(Self { instance })
+
+
+        let (debug_utils_instance, debug_messenger) =
+            if enable_debug_utils {
+                let debug_utils_instance = ext::debug_utils::Instance::new(&entry, &instance);
+                let debug_messenger = unsafe { debug_utils_instance.create_debug_utils_messenger(debug_messenger_create_info.as_ref().unwrap(), None) }?;
+
+                (Some(debug_utils_instance), Some(debug_messenger))
+            } else {
+                (None, None)
+            };
+
+        Ok(Self { instance, debug_utils_instance, debug_messenger })
     }
     pub fn inner(&self) -> &ash::Instance { &self.instance }
 }
@@ -212,6 +240,9 @@ impl Instance {
 impl Drop for Instance {
     fn drop(&mut self) {
         unsafe {
+            if let Some(debug_messenger) = self.debug_messenger {
+                self.debug_utils_instance.as_ref().unwrap().destroy_debug_utils_messenger(debug_messenger, None);
+            }
             self.instance.destroy_instance(None);
         }
     }

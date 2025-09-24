@@ -4,37 +4,44 @@ pub mod cmd_buffer;
 use crate::error::*;
 use crate::vulkan_abstraction;
 
+use ash::vk;
 use std::ops::Deref;
 use std::rc::Rc;
-use ash::vk;
-
 
 pub struct CmdPool {
     cmd_pool: vk::CommandPool,
     device: Rc<vulkan_abstraction::Device>,
-    cmd_bufs: Vec<vk::CommandBuffer>,
+    cmd_buf: vk::CommandBuffer,
 }
+
 impl CmdPool {
-    pub fn new(device: Rc<vulkan_abstraction::Device>, flags: vk::CommandPoolCreateFlags) -> SrResult<Self> {
+    pub fn new(
+        device: Rc<vulkan_abstraction::Device>,
+        flags: vk::CommandPoolCreateFlags,
+    ) -> SrResult<Self> {
         let info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(device.queue_family_index())
             .flags(flags);
 
-        let cmd_pool = unsafe { device.inner().create_command_pool(&info, None)  }?;
+        let cmd_pool = unsafe { device.inner().create_command_pool(&info, None) }?;
 
-        Ok(Self { cmd_pool, device, cmd_bufs: vec![] })
+        let mut ret = Self {
+            cmd_pool,
+            device,
+            cmd_buf: vk::CommandBuffer::default(),
+        };
+
+        ret.cmd_buf = cmd_buffer::new(&ret, &ret.device.inner())?;
+
+        Ok(ret)
     }
 
-    pub fn inner(&self) -> vk::CommandPool { self.cmd_pool }
+    pub fn inner(&self) -> vk::CommandPool {
+        self.cmd_pool
+    }
 
-    #[allow(dead_code)]
-    pub fn get_buffers_mut(&mut self) -> &mut Vec<vk::CommandBuffer> { &mut self.cmd_bufs }
-    #[allow(dead_code)]
-    pub fn get_buffers(&self) -> &Vec<vk::CommandBuffer> { &self.cmd_bufs }
-
-    pub fn append_buffers(&mut self, bufs: Vec<vk::CommandBuffer>) {
-        let mut bufs = bufs;
-        self.cmd_bufs.append(&mut bufs);
+    pub fn get_buffer(&self) -> vk::CommandBuffer {
+        self.cmd_buf
     }
 }
 impl Drop for CmdPool {
@@ -50,18 +57,25 @@ impl Drop for CmdPool {
                 // }
             }
             Ok(()) => {}
-
         }
 
-        if self.cmd_bufs.len() != 0 {
-            // cmd_bufs must be destroyed before cmd_pool
-            unsafe { self.device.inner().free_command_buffers(self.cmd_pool, &self.cmd_bufs) };
-        }
+        // cmd_buf must be destroyed before cmd_pool
+        unsafe {
+            self.device
+                .inner()
+                .free_command_buffers(self.cmd_pool, &[self.cmd_buf])
+        };
 
-        unsafe { self.device.inner().destroy_command_pool(self.cmd_pool, None) };
+        unsafe {
+            self.device
+                .inner()
+                .destroy_command_pool(self.cmd_pool, None)
+        };
     }
 }
 impl Deref for CmdPool {
     type Target = vk::CommandPool;
-    fn deref(&self) -> &Self::Target { &self.cmd_pool }
+    fn deref(&self) -> &Self::Target {
+        &self.cmd_pool
+    }
 }

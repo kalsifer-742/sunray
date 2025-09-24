@@ -4,7 +4,7 @@ use ash::vk;
 
 use crate::{error::*, vulkan_abstraction};
 
-use super::TLAS;
+use vulkan_abstraction::TLAS;
 
 pub struct DescriptorSets {
     core: Rc<vulkan_abstraction::Core>,
