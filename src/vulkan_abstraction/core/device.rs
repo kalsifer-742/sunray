@@ -1,23 +1,32 @@
 use std::{collections::HashSet, ffi::CStr};
 
-use ash::{khr, vk};
+use ash::{
+    khr,
+    vk::{self, FormatFeatureFlags},
+};
 
 use crate::{error::*, vulkan_abstraction};
 
 pub struct Device {
     device: ash::Device,
-    swapchain_support_details: Option<vulkan_abstraction::SwapchainSupportDetails>,
     physical_device_memory_properties: vk::PhysicalDeviceMemoryProperties,
-    physical_device_rt_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>,
+    physical_device_rt_pipeline_properties:
+        vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>,
     queue_family_index: u32,
+    surface_support_details: Option<SurfaceSupportDetails>,
 }
 
 impl Device {
-    pub fn new(instance: &vulkan_abstraction::Instance, device_extensions: &[*const i8], with_swapchain: bool, surface: &Option<vulkan_abstraction::Surface>) -> SrResult<Self> {
+    pub fn new(
+        instance: &vulkan_abstraction::Instance,
+        device_extensions: &[*const i8],
+        image_format: vk::Format,
+        surface_to_support: &Option<(vk::SurfaceKHR, khr::surface::Instance)>
+    ) -> SrResult<Self> {
         let instance = instance.inner();
         let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
 
-        let (physical_device, queue_family_index, swapchain_support_details) = physical_devices
+        let (physical_device, surface_support_details, queue_family_index) = physical_devices
             .into_iter()
             //only allow devices which support all required extensions
             .filter(|physical_device| {
@@ -25,18 +34,28 @@ impl Device {
                     &instance,
                     *physical_device,
                     &device_extensions,
-                ).unwrap_or(false)
+                )
+                .unwrap_or(false)
             })
-            //if swapchain support is required filter out devices without it, and acquire swapchain support details
-            .filter_map(|physical_device| {
-                if with_swapchain {
-                    let swapchain_support_details =
-                    //TODO: unwrap
-                        vulkan_abstraction::SwapchainSupportDetails::new(surface.as_ref().unwrap().inner(), surface.as_ref().unwrap().instance(), physical_device)
-                            .ok()?; // currently ignoring devices which return errors while querying their swapchain support
+            //check for blit support
+            .filter(|physical_device| {
+                let format_properties = unsafe {
+                    instance.get_physical_device_format_properties(*physical_device, image_format)
+                };
 
-                    if swapchain_support_details.check_swapchain_support() {
-                        Some((physical_device, Some(swapchain_support_details)))
+                format_properties
+                    .optimal_tiling_features
+                    .contains(FormatFeatureFlags::BLIT_SRC)
+                    && format_properties
+                        .linear_tiling_features
+                        .contains(FormatFeatureFlags::BLIT_DST)
+            })
+            // filter out devices without swapchain support if necessary
+            .filter_map(|physical_device| {
+                if let Some((surface, surface_instance)) = &surface_to_support {
+                    let surface_support_details = SurfaceSupportDetails::new(*surface, surface_instance, physical_device).unwrap();
+                    if surface_support_details.check_swapchain_support() {
+                        Some((physical_device, Some(surface_support_details)))
                     } else {
                         None
                     }
@@ -45,22 +64,15 @@ impl Device {
                 }
             })
             //choose a suitable queue family, and filter out devices without one
-            //TODO: assumes with_swapchain==true
-            .filter_map(|(physical_device, swapchain_support_details)| {
+            .filter_map(|(physical_device, surface_support_details)| {
                 Some((
                     physical_device,
-                    //TODO: surface_instance and surface should not be required
-                    Self::select_queue_family(
-                        &instance,
-                        surface.as_ref().unwrap().instance(),
-                        physical_device,
-                        surface.as_ref().unwrap().inner(),
-                    )?,
-                    swapchain_support_details,
+                    surface_support_details,
+                    Self::select_queue_family(&instance, physical_device)?,
                 ))
             })
             // try to get a discrete or at least integrated gpu
-            .max_by_key(|(physical_device, _, _)| {
+            .max_by_key(|(physical_device, _surface_support_details, _queue_family_index)| {
                 let device_type =
                     unsafe { instance.get_physical_device_properties(*physical_device) }
                         .device_type;
@@ -80,15 +92,15 @@ impl Device {
                 .queue_priorities(&queue_priorities)];
 
             // enable some device features necessary for ray-tracing
-            let mut vk12_features =
-                vk::PhysicalDeviceVulkan12Features::default()
+            let mut vk12_features = vk::PhysicalDeviceVulkan12Features::default()
                 .buffer_device_address(true) // necessary for ray-tracing
                 .timeline_semaphore(true)
                 .vulkan_memory_model(true)
                 .vulkan_memory_model_device_scope(true)
                 .storage_buffer8_bit_access(true);
             let mut physical_device_rt_pipeline_features =
-                vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
+                vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
+                    .ray_tracing_pipeline(true);
             let mut physical_device_acceleration_structure_features =
                 vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
                     .acceleration_structure(true);
@@ -103,7 +115,8 @@ impl Device {
             unsafe { instance.create_device(physical_device, &device_create_info, None) }?
         };
         //necessary for memory allocations
-        let physical_device_memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let physical_device_memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
         let physical_device_rt_pipeline_properties = {
             let mut physical_device_rt_pipeline_properties =
@@ -122,31 +135,26 @@ impl Device {
             physical_device_rt_pipeline_properties
         };
 
-        Ok(Self { device, swapchain_support_details, physical_device_memory_properties, physical_device_rt_pipeline_properties, queue_family_index })
+        Ok(Self {
+            device,
+            physical_device_memory_properties,
+            physical_device_rt_pipeline_properties,
+            queue_family_index,
+            surface_support_details,
+        })
     }
 
-    // TODO: this takes for granted that a swapchain is used
     fn select_queue_family(
         instance: &ash::Instance,
-        surface_instance: &khr::surface::Instance,
         physical_device: vk::PhysicalDevice,
-        surface: vk::SurfaceKHR,
     ) -> Option<u32> {
         unsafe { instance.get_physical_device_queue_family_properties(physical_device) }
             .into_iter()
             .enumerate()
-            .filter(|(queue_family_index, queue_family_props)| {
+            .filter(|(_queue_family_index, queue_family_props)| {
                 queue_family_props
                     .queue_flags
                     .contains(vk::QueueFlags::GRAPHICS)
-                    && unsafe {
-                        surface_instance.get_physical_device_surface_support(
-                            physical_device,
-                            *queue_family_index as u32,
-                            surface,
-                        )
-                    }
-                    .unwrap_or(false)
             })
             .map(|(queue_family_index, _)| queue_family_index as u32)
             .next()
@@ -178,11 +186,23 @@ impl Device {
         Ok(all_exts_are_available)
     }
 
-    pub fn inner(&self) -> &ash::Device { &self.device }
-    pub fn swapchain_support_details(&self) -> &SwapchainSupportDetails { &self.swapchain_support_details.as_ref().unwrap() }
-    pub fn rt_pipeline_properties(&self) -> &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static> { &self.physical_device_rt_pipeline_properties }
-    pub fn memory_properties(&self) -> &vk::PhysicalDeviceMemoryProperties{ &self.physical_device_memory_properties }
-    pub fn queue_family_index(&self) -> u32 { self.queue_family_index }
+    pub fn inner(&self) -> &ash::Device {
+        &self.device
+    }
+    pub fn rt_pipeline_properties(
+        &self,
+    ) -> &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static> {
+        &self.physical_device_rt_pipeline_properties
+    }
+    pub fn memory_properties(&self) -> &vk::PhysicalDeviceMemoryProperties {
+        &self.physical_device_memory_properties
+    }
+    pub fn queue_family_index(&self) -> u32 {
+        self.queue_family_index
+    }
+    pub fn surface_support_details(&self) -> &SurfaceSupportDetails {
+        self.surface_support_details.as_ref().unwrap()
+    }
 }
 
 impl Drop for Device {
@@ -193,13 +213,13 @@ impl Drop for Device {
     }
 }
 
-pub struct SwapchainSupportDetails {
+pub struct SurfaceSupportDetails {
     pub surface_capabilities: vk::SurfaceCapabilitiesKHR,
     pub surface_formats: Vec<vk::SurfaceFormatKHR>,
     pub surface_present_modes: Vec<vk::PresentModeKHR>,
 }
 
-impl SwapchainSupportDetails {
+impl SurfaceSupportDetails {
     /*
     TODO: bad error handling.
     many different phases can cause vulkan errors in choosing a physical device.
