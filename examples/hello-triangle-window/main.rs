@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use ash::vk;
 use nalgebra as na;
-use sunray::{error::SrResult, vulkan_abstraction};
+use sunray::{error::{ErrorSource, SrResult}, vulkan_abstraction};
 use winit::{
     application::ApplicationHandler, event::WindowEvent, event_loop::{self, ControlFlow, EventLoop}, platform::wayland::WindowAttributesExtWayland, raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle}, window::Window
 };
@@ -75,20 +75,15 @@ impl App {
 
         //acquire next image
         let image_index = {
-            let device = renderer.core().device().inner();
-            let fence = {
-                let fence_info =
-                    vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::empty());
-
-                unsafe { device.create_fence(&fence_info, None) }?
-            };
+            let device = renderer.core().device();
+            let fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(device))?;
 
             let (image_index, swapchain_suboptimal_for_surface) = unsafe {
                 swapchain.device().acquire_next_image(
                     swapchain.inner(),
                     u64::MAX,
                     vk::Semaphore::null(),
-                    fence,
+                    fence.inner(),
                 )
             }?;
 
@@ -98,11 +93,7 @@ impl App {
                 );
             }
 
-            unsafe { device.wait_for_fences(&[fence], true, u64::MAX) }?;
-
-            unsafe {
-                device.destroy_fence(fence, None);
-            }
+            unsafe { device.inner().wait_for_fences(&[fence.inner()], true, u64::MAX) }?;
 
             image_index as usize
         };
@@ -192,6 +183,22 @@ impl App {
         Ok(())
     }
 
+    fn handle_srresult(event_loop: &event_loop::ActiveEventLoop, result: SrResult<()>) {
+        match result {
+            Ok(()) => {}
+            Err(e) => {
+                match e.get_source() {
+                    Some(ErrorSource::VULKAN(vk::Result::ERROR_OUT_OF_DATE_KHR)) => {
+                        log::warn!("{e}"); // we still warn because this isn't really the best behaviour
+                    }
+                    _ => {
+                        log::error!("{e}");
+                        event_loop.exit();
+                    }
+                }
+            },
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -206,13 +213,8 @@ impl ApplicationHandler for App {
 
         self.start_time = Some(std::time::SystemTime::now());
 
-        match self.rebuild_with_size(window_size) {
-            Ok(()) => {}
-            Err(e) => {
-                log::error!("{e}");
-                // event_loop.exit();
-            },
-        }
+        let result = self.rebuild_with_size(window_size);
+        Self::handle_srresult(event_loop, result);
     }
 
     fn window_event(
@@ -221,13 +223,8 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        match self.handle_event(event_loop, event) {
-            Ok(()) => {}
-            Err(e) => {
-                log::error!("{e}");
-                // event_loop.exit();
-            },
-        }
+        let result = self.handle_event(event_loop, event);
+        Self::handle_srresult(event_loop, result);
     }
 }
 
