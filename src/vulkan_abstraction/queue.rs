@@ -3,14 +3,14 @@ use std::rc::Rc;
 use crate::{error::*, vulkan_abstraction};
 use ash::{vk};
 
-pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
+pub const MAX_FRAMES_IN_FLIGHT: usize = 1;
 
 pub struct Queue {
     queue: vk::Queue,
 
     render_complete_sems: Vec<vk::Semaphore>,
     img_available_sem: Vec<vk::Semaphore>,
-    render_complete_fences: Vec<vk::Fence>,
+    render_complete_fences: Vec<vulkan_abstraction::Fence>,
     device: Rc<vulkan_abstraction::Device>,
 }
 impl Queue {
@@ -34,10 +34,7 @@ impl Queue {
             .collect::<Result<_, _>>()?;
 
         let create_fence = || {
-            let fence_flags = vk::FenceCreateFlags::SIGNALED; // SIGNALED flag to start with a flag that's already signaled
-            let fence_info = vk::FenceCreateInfo::default().flags(fence_flags);
-
-            unsafe { device.inner().create_fence(&fence_info, None) }
+            vulkan_abstraction::Fence::new_signaled(Rc::clone(&device))
         };
         let render_complete_fences = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| create_fence())
@@ -91,23 +88,18 @@ impl Queue {
             .command_buffers(&command_buffers)
             .signal_semaphores(&[]);
 
-        let fence = {
-            let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::empty());
-
-            unsafe { self.device.inner().create_fence(&fence_info, None) }?
-        };
+        let fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(&self.device))?;
 
         unsafe {
             self.device
                 .inner()
-                .queue_submit(self.queue, &[submit_info], fence)
+                .queue_submit(self.queue, &[submit_info], fence.inner())
         }?;
         unsafe {
             self.device
                 .inner()
-                .wait_for_fences(&[fence], true, u64::MAX)
+                .wait_for_fences(&[fence.inner()], true, u64::MAX)
         }?;
-        unsafe { self.device.inner().destroy_fence(fence, None) };
 
         Ok(())
     }
@@ -131,9 +123,6 @@ impl Drop for Queue {
             }
             for s in self.img_available_sem.iter() {
                 self.device.inner().destroy_semaphore(*s, None);
-            }
-            for f in self.render_complete_fences.iter() {
-                self.device.inner().destroy_fence(*f, None);
             }
         }
     }
