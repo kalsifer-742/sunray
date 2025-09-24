@@ -168,7 +168,7 @@ impl Renderer {
         let view = na::Isometry3::look_at_rh(&eye, &target, &up);
         //clip_space: normalised coordinates adding perspective
         let projection = na::Perspective3::new(
-            (self.image.extent().width / self.image.extent().height) as f32,
+            self.image.extent().width as f32 / self.image.extent().height as f32,
             camera.fov() * 3.14 / std::f32::consts::PI,
             0.1,   //render everything after this distance
             100.0, //discard everything after this distance
