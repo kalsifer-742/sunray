@@ -114,7 +114,7 @@ impl Core {
         self.instance.inner()
     }
 
-    pub fn device(&self) -> &vulkan_abstraction::Device {
+    pub fn device(&self) -> &Rc<vulkan_abstraction::Device> {
         &self.device
     }
     pub fn acceleration_structure_device(&self) -> &khr::acceleration_structure::Device {
