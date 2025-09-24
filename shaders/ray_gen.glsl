@@ -17,16 +17,15 @@ void main() {
     const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5); //the coordinates are of the corner, +0.5 gets the pixel center
     const vec2 inUV = pixelCenter / vec2(gl_LaunchSizeEXT.xy); //normalize value in [0, 1]
     vec2 d = inUV * 2.0 - 1.0; //map [0, 1] to [-1, 1]
+    d.y = -d.y; //vulkan screen-space origin is top-left meanwhile in Perspective origin is center
 
     uint  ray_flags = gl_RayFlagsOpaqueEXT;
     float tMin     = 0.001;
     float tMax     = 10000.0;
 
-    vec4 origin    = uniform_buffer.view_inverse * vec4(0, 0, 0, 1);
-    vec4 target    = uniform_buffer.proj_inverse * vec4(d.x, d.y, 1, 1);
-    vec4 direction = uniform_buffer.view_inverse * vec4(normalize(target.xyz), 0);
-
-    prd.color = vec3(.3, 0, 0);
+    vec4 origin    = uniform_buffer.view_inverse * vec4(0, 0, 0, 1); //transform to world_space
+    vec4 target    = uniform_buffer.proj_inverse * vec4(d.x, d.y, 1, 1); //transform to view_space
+    vec4 direction = uniform_buffer.view_inverse * vec4(normalize(target.xyz), 0); //transform to world_space
 
     traceRayEXT(
         tlas,                   // acceleration structure

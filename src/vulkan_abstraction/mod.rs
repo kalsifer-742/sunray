@@ -1,19 +1,23 @@
-pub mod blas;
+pub mod acceleration_structure;
 pub mod buffer;
 pub mod cmd_pool;
 pub mod core;
 pub mod descriptor_set;
+pub mod image;
 pub mod queue;
 pub mod ray_tracing_pipeline;
+pub mod scene;
 pub mod shader_binding_table;
-pub mod tlas;
+pub mod syncronization;
 
-pub use blas::*;
+pub use acceleration_structure::*;
 pub use buffer::*;
 pub use cmd_pool::*;
 pub use core::*;
 pub use descriptor_set::*;
+pub use image::*;
 pub use queue::*;
 pub use ray_tracing_pipeline::*;
+pub use scene::*;
 pub use shader_binding_table::*;
-pub use tlas::*;
+pub use syncronization::*;

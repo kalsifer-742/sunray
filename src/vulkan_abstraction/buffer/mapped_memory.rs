@@ -12,7 +12,7 @@ impl RawMappedMemory {
         Self { p, byte_size }
     }
 
-    pub fn borrow<T>(&mut self) -> &mut [T] {
+    pub fn borrow<'a, T>(&'a mut self) -> &'a mut [T] {
         unsafe {
             assert_eq!(0, self.byte_size % size_of::<T>());
             std::slice::from_raw_parts_mut(self.p as *mut T, self.byte_size / size_of::<T>())

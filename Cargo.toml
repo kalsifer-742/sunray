@@ -6,15 +6,24 @@ license = "AGPL-3.0-only"
 description = "feature-rich hardware ray-tracing library"
 repository = "https://github.com/Kalsifer-742/sunray.git"
 readme = "README.md"
-keywords = ["gamedev", "graphics"]
+keywords = ["graphics", "gamedev"]
 categories = ["graphics", "hardware-support", "game-development"]
 
 [dependencies]
 ash = { version = "0.38.0", features = ["linked"] }
-winit = { version = "0.30.9", features = ["rwh_05"] } #make it a feature
 shaderc = "0.9"
 nalgebra = "0.34"
+gltf = "1.4.1"
 log = { version = "0.4.28", features = ["release_max_level_warn"] }
 
 [dev-dependencies]
-log4rs = "1.4.0"
+winit = { version = "0.30.9", features = ["rwh_05"] }
+log4rs = "1.4.0" #logging for examples
+image = "0.25.8" #png example
+
+[[example]]
+name = "hello-triangle-png"
+
+[[example]]
+name = "hello-triangle-window"
+
