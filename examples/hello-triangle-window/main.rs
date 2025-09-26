@@ -4,28 +4,51 @@ use ash::vk;
 use nalgebra as na;
 use sunray::{error::{ErrorSource, SrResult}, vulkan_abstraction};
 use winit::{
-    application::ApplicationHandler, event::WindowEvent, event_loop::{self, ControlFlow, EventLoop}, platform::wayland::WindowAttributesExtWayland, raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle}, window::Window
+    application::ApplicationHandler, event::WindowEvent, event_loop::{self, ControlFlow, EventLoop}, raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle}, window::Window
 };
 
 mod surface;
 mod swapchain;
 mod utils;
 
+struct AppResources {
+    pub swapchain: swapchain::Swapchain,
+    #[allow(unused)]
+    pub surface: surface::Surface,
+    pub img_rendered_fences: Vec<vulkan_abstraction::Fence>,
+    pub img_acquired_sems: Vec<vulkan_abstraction::Semaphore>,
+    pub ready_to_present_sems: Vec<vulkan_abstraction::Semaphore>,
+    pub img_barrier_to_present_cmd_bufs: Vec<vulkan_abstraction::CmdBuffer>,
+    pub renderer: sunray::Renderer,
+    pub new_size: Option<(u32,u32)>,
+}
+impl Drop for AppResources {
+    fn drop(&mut self) {
+        match self.renderer.core().queue().wait_idle() {
+            Ok(()) => {}
+            Err(e) => log::warn!("VkQueueWaitIdle returned {e} in AppResources::drop"),
+        }
+    }
+}
+
 #[derive(Default)]
 struct App {
     window: Option<Window>,
-    swapchain: Option<swapchain::Swapchain>,
-    surface: Option<surface::Surface>,
-    renderer: Option<sunray::Renderer>,
+    resources: Option<AppResources>,
+
     start_time: Option<std::time::SystemTime>,
-    new_size: Option<(u32,u32)>,
+    frame_count: u64,
 }
+
+/// The number of concurrent frames that are processed (both by CPU and GPU).
+///
+/// Apparently 2 is the most common choice. Empirically it seems like the performance doesn't really
+/// get any better with a higher number, but it does get measurably worse with only 1.
+const MAX_FRAMES_IN_FLIGHT : usize = 2;
+
 impl App {
     fn rebuild_with_size(&mut self, size: (u32, u32)) -> SrResult<()> {
-        //ensuring old vulkan resources are dropped in the correct order
-        self.swapchain = None;
-        self.surface = None;
-        self.renderer = None;
+        self.resources = None;
 
         let instance_exts = utils::enumerate_required_extensions(
             self.window.as_ref().unwrap().raw_display_handle(),
@@ -45,114 +68,167 @@ impl App {
             instance_exts,
             &create_surface,
         )?;
-        self.renderer = Some(renderer);
 
-        let core = self.renderer.as_ref().unwrap().core();
+        let core = renderer.core();
 
         //take ownership of the surface
-        self.surface = Some(surface::Surface::new(
+        let surface = surface::Surface::new(
             core.entry(),
             core.instance(),
             surface,
-        ));
+        );
 
-        self.swapchain = Some(swapchain::Swapchain::new(
+        let swapchain = swapchain::Swapchain::new(
             Rc::clone(&core),
-            self.surface.as_ref().unwrap(),
+            &surface,
             size,
-        )?);
+        )?;
+
+        // img_acquired_sems & img_rendered_fences cannot be indexed by image index, since they are sent to gpu before an image index is acquired
+        let img_acquired_sems = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(core.device())))
+            .collect::<Result<Vec<_>, _>>()?;
+        let img_rendered_fences = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| vulkan_abstraction::Fence::new_signaled(Rc::clone(core.device())))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let ready_to_present_sems = swapchain.images().iter()
+            .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(core.device())))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let img_barrier_to_present_cmd_bufs = swapchain.images().iter()
+            .map(|image| -> SrResult<vulkan_abstraction::CmdBuffer> {
+                let cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(core))?;
+
+                unsafe {
+                    let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::empty());
+
+                    core.device().inner().begin_command_buffer(cmd_buf.inner(), &cmd_buf_begin_info)?;
+
+                    vulkan_abstraction::cmd_image_memory_barrier(
+                        renderer.core(),
+                        cmd_buf.inner(),
+                        *image,
+                        //TODO: ALL_COMMANDS? unnecessary...
+                        vk::PipelineStageFlags::ALL_GRAPHICS,
+                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                        vk::AccessFlags::TRANSFER_WRITE,
+                        vk::AccessFlags::empty(),
+                        vk::ImageLayout::UNDEFINED,
+                        vk::ImageLayout::PRESENT_SRC_KHR,
+                    );
+
+                    core.device().inner().end_command_buffer(cmd_buf.inner())?;
+                }
+                Ok(cmd_buf)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.resources = Some(AppResources {
+            swapchain,
+            surface,
+            img_rendered_fences,
+            img_acquired_sems,
+            ready_to_present_sems,
+            img_barrier_to_present_cmd_bufs,
+            renderer,
+            new_size: None
+
+        });
+
         Ok(())
     }
 
-    fn draw(&mut self) -> sunray::error::SrResult<()> {
-        let swapchain = self.swapchain.as_ref().unwrap();
-        let renderer = self.renderer.as_mut().unwrap();
+    fn time_elapsed(&self) -> f32 {
+         std::time::SystemTime::now()
+            .duration_since(self.start_time.unwrap())
+            .unwrap()
+            .as_millis() as f32
+            / 1000.0
+    }
 
-        //acquire next image
+    fn acquire_next_image(&self, signal_sem: vk::Semaphore) -> SrResult<usize> {
         let image_index = {
-            let device = renderer.core().device();
-            let fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(device))?;
-
             let (image_index, swapchain_suboptimal_for_surface) = unsafe {
-                swapchain.device().acquire_next_image(
-                    swapchain.inner(),
+                self.res().swapchain.device().acquire_next_image(
+                    self.res().swapchain.inner(),
                     u64::MAX,
-                    vk::Semaphore::null(),
-                    fence.inner(),
+                    signal_sem,
+                    vk::Fence::null(),
                 )
             }?;
 
             if swapchain_suboptimal_for_surface {
-                log::warn!(
-                    "swapchain::Device::acquire_next_image reports that the swapchain is supobtimal for the surface"
-                );
+                log::warn!("VkAcquireNextImageKHR: swapchain is supobtimal for the surface");
             }
-
-            unsafe { device.inner().wait_for_fences(&[fence.inner()], true, u64::MAX) }?;
 
             image_index as usize
         };
 
-        let swapchain_image = swapchain.images()[image_index];
+        Ok(image_index)
+    }
 
-        let time = std::time::SystemTime::now()
-            .duration_since(self.start_time.unwrap())
-            .unwrap()
-            .as_millis() as f32
-            / 1000.0;
+    fn present(&self, img_index: usize, ready_to_present_sem: vk::Semaphore) -> SrResult<()> {
+        let swapchains = [self.res().swapchain.inner()];
+        let image_indices = [img_index as u32];
+        let wait_semaphores = [ready_to_present_sem];
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&wait_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
 
-        let camera = sunray::Camera::new(na::Point3::new(0.0, 0.0, 2.0 + time.sin()), na::Point3::origin(), 90.0)?;
-        renderer.set_camera(camera)?;
+        let queue = self.res().renderer.core().queue().inner();
 
-        renderer.render_to_image(swapchain_image)?;
+        unsafe { self.res().swapchain.device().queue_present(queue, &present_info) }?;
+
+        Ok(())
+    }
+
+    fn draw(&mut self) -> sunray::error::SrResult<()> {
+        // update frame data:
+        let time = self.time_elapsed();
+
+        self.res_mut().renderer.set_camera(sunray::Camera::new(na::Point3::new(0.0, 0.0, 2.0 + time.sin()), na::Point3::origin(), 90.0)?)?;
+
+
+        let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
+
+        //acquire next image
+        let img_acquired_sem = self.res().img_acquired_sems[frame_index].inner();
+        let img_rendered_fence = &mut self.res_mut().img_rendered_fences[frame_index];
+        img_rendered_fence.wait()?;
+        img_rendered_fence.reset()?;
+        let img_rendered_fence = img_rendered_fence.submit();
+        let img_index = self.acquire_next_image(img_acquired_sem)?;
+
+        let swapchain_image = self.res().swapchain.images()[img_index];
+
+        //render
+        self.res_mut().renderer.render_to_image(swapchain_image, img_acquired_sem, img_rendered_fence)?;
 
         // image barrier to transition to PRESENT_SRC
-        {
-            let device = renderer.core().device().inner();
-            let cmd_buf =
-                vulkan_abstraction::cmd_buffer::new(renderer.core().cmd_pool(), device).unwrap();
+        let img_barrier_to_present_cmd_buf = &mut self.res_mut().img_barrier_to_present_cmd_bufs[img_index];
+        img_barrier_to_present_cmd_buf.fence_mut().wait()?;
+        img_barrier_to_present_cmd_buf.fence_mut().reset()?;
+        let img_barrier_done_fence = img_barrier_to_present_cmd_buf.fence_mut().submit();
 
-            unsafe {
-                let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-                device
-                    .begin_command_buffer(cmd_buf, &cmd_buf_begin_info)
-                    .unwrap();
+        let img_barrier_to_present_cmd_buf_inner = img_barrier_to_present_cmd_buf.inner();
+        let ready_to_present_sem = self.res().ready_to_present_sems[img_index].inner();
 
-                vulkan_abstraction::cmd_image_memory_barrier(
-                    renderer.core(),
-                    cmd_buf,
-                    swapchain_image,
-                    vk::PipelineStageFlags::ALL_COMMANDS,
-                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                    vk::AccessFlags::TRANSFER_WRITE,
-                    vk::AccessFlags::empty(),
-                    vk::ImageLayout::GENERAL,
-                    vk::ImageLayout::PRESENT_SRC_KHR,
-                );
 
-                device.end_command_buffer(cmd_buf).unwrap();
-            }
+        self.res().renderer.core().queue().submit_async(
+            img_barrier_to_present_cmd_buf_inner,
+            img_barrier_done_fence,
+            &[], &[ready_to_present_sem], &[]
+        )?;
 
-            let queue = renderer.core().queue();
-            queue.submit_sync(cmd_buf).unwrap();
-
-            unsafe { device.free_command_buffers(renderer.core().cmd_pool().inner(), &[cmd_buf]) };
-        }
 
         //present
-        {
-            let swapchains = [swapchain.inner()];
-            let image_indices = [image_index as u32];
-            let present_info = vk::PresentInfoKHR::default()
-                .wait_semaphores(&[])
-                .swapchains(&swapchains)
-                .image_indices(&image_indices);
+        self.present(img_index, ready_to_present_sem)?;
 
-            let queue = renderer.core().queue().inner();
 
-            unsafe { swapchain.device().queue_present(queue, &present_info) }?;
-        }
+        self.frame_count += 1;
 
         Ok(())
     }
@@ -160,25 +236,33 @@ impl App {
     fn handle_event(&mut self, event_loop: &event_loop::ActiveEventLoop, event: winit::event::WindowEvent) -> SrResult<()> {
         match event {
             WindowEvent::CloseRequested => {
+                let run_time = {
+                    let end_time = std::time::SystemTime::now();
+
+                    end_time.duration_since(self.start_time.unwrap()).unwrap().as_millis() as f32 / 1000.0
+                };
+                let fps = self.frame_count as f32 / run_time;
+                log::info!("Frames per second: {fps}");
+
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(size) = self.new_size {
+                if let Some(size) = self.res().new_size {
                     self.rebuild_with_size(size)?;
-                    self.new_size = None;
+                    self.res_mut().new_size = None;
                 }
                 self.draw()?;
                 self.window.as_ref().unwrap().request_redraw();
             }
             WindowEvent::Resized(size) => {
-                self.new_size = Some(size.into());
+                self.res_mut().new_size = Some(size.into());
             }
             _ => (),
         }
         Ok(())
     }
 
-    fn handle_srresult(event_loop: &event_loop::ActiveEventLoop, result: SrResult<()>) {
+    fn handle_srresult(&self, event_loop: &event_loop::ActiveEventLoop, result: SrResult<()>) {
         match result {
             Ok(()) => {}
             Err(e) => {
@@ -188,12 +272,17 @@ impl App {
                     }
                     _ => {
                         log::error!("{e}");
+
                         event_loop.exit();
                     }
                 }
             },
         }
     }
+
+    fn res_mut(&mut self) -> &mut AppResources { self.resources.as_mut().unwrap() }
+
+    fn res(&self) -> &AppResources { self.resources.as_ref().unwrap() }
 }
 
 impl ApplicationHandler for App {
@@ -206,10 +295,10 @@ impl ApplicationHandler for App {
 
         self.window = Some(window);
 
-        self.start_time = Some(std::time::SystemTime::now());
-
         let result = self.rebuild_with_size(window_size);
-        Self::handle_srresult(event_loop, result);
+        self.handle_srresult(event_loop, result);
+
+        self.start_time = Some(std::time::SystemTime::now());
     }
 
     fn window_event(
@@ -219,7 +308,7 @@ impl ApplicationHandler for App {
         event: winit::event::WindowEvent,
     ) {
         let result = self.handle_event(event_loop, event);
-        Self::handle_srresult(event_loop, result);
+        self.handle_srresult(event_loop, result);
     }
 }
 

@@ -33,7 +33,18 @@ impl TLAS {
 
         Ok(Self { tlas })
     }
-
+    /// "the application must not use an update operation to do any of the following:
+    /// - Change primitives or instances from active to inactive, or vice versa
+    /// - Change the index or vertex formats of triangle geometry.
+    /// - Change triangle geometry transform pointers from null to non-null or vice versa.
+    /// - Change the number of geometries or instances in the structure.
+    /// - Change the geometry flags for any geometry in the structure.
+    /// - Change the number of vertices or primitives for any geometry in the structure."
+    /// (from https://docs.vulkan.org/spec/latest/chapters/accelstructures.html#acceleration-structure-update)
+    ///
+    /// Basically from what I can tell only the following operations are allowed in a TLAS update:
+    /// - Change one or more transform matrices
+    /// - switch one BLAS instance for another, possibly to switch LODs
     #[allow(unused)]
     pub fn update(&mut self, blas: &[&BLAS]) -> SrResult<()> {
         let instances_buffer = Self::make_instances_buffer(Rc::clone(self.tlas.core()), blas)?;

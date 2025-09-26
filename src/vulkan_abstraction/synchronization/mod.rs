@@ -14,10 +14,17 @@
 //!
 //! ### References:
 //! - https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/
+//! - https://www.sctheblog.com/blog/vulkan-synchronization/
 
 use ash::vk;
 
 use crate::vulkan_abstraction;
+
+pub mod fence;
+pub mod semaphore;
+
+pub use fence::*;
+pub use semaphore::*;
 
 /// # Creates a memory barrier
 ///
