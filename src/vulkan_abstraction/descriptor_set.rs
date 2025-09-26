@@ -6,43 +6,18 @@ use crate::{error::*, vulkan_abstraction};
 
 use vulkan_abstraction::TLAS;
 
-pub struct DescriptorSets {
+pub struct DescriptorSetLayout {
+    descriptor_set_layout: vk::DescriptorSetLayout,
+
     core: Rc<vulkan_abstraction::Core>,
-    descriptor_sets: Vec<vk::DescriptorSet>,
-    descriptor_pool: vk::DescriptorPool,
-    descriptor_set_layouts: Vec<vk::DescriptorSetLayout>,
 }
+impl DescriptorSetLayout {
+    pub const TLAS_BINDING: u32 = 0;
+    pub const IMAGE_BINDING: u32 = 1;
+    pub const UNIFORM_BUFFER_BINDING: u32 = 2;
 
-impl DescriptorSets {
-    const TLAS_BINDING: u32 = 0;
-    const IMAGE_BINDING: u32 = 1;
-    const UNIFORM_BUFFER_BINDING: u32 = 2;
-
-    pub fn new(
-        core: Rc<vulkan_abstraction::Core>,
-        tlas: &TLAS,
-        output_image_view: &vk::ImageView,
-        uniform_buffer: &vulkan_abstraction::Buffer,
-    ) -> SrResult<Self> {
+    pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let device = core.device().inner();
-        let descriptor_pool_sizes = [
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(1),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1),
-        ];
-
-        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(&descriptor_pool_sizes)
-            .max_sets(1);
-
-        let descriptor_pool =
-            unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None) }?;
 
         let descriptor_set_layout_bindings = [
             // TLAS layout binding
@@ -72,7 +47,54 @@ impl DescriptorSets {
             device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
         }?;
 
-        let descriptor_set_layouts = vec![descriptor_set_layout];
+        Ok(Self{ descriptor_set_layout, core })
+    }
+
+    pub fn inner(&self) -> vk::DescriptorSetLayout { self.descriptor_set_layout }
+}
+impl Drop for DescriptorSetLayout {
+    fn drop(&mut self) {
+        unsafe { self.core.device().inner().destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
+    }
+}
+
+pub struct DescriptorSets {
+    descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_pool: vk::DescriptorPool,
+
+    core: Rc<vulkan_abstraction::Core>,
+}
+
+impl DescriptorSets {
+    pub fn new(
+        core: Rc<vulkan_abstraction::Core>,
+        descriptor_set_layout: &vulkan_abstraction::DescriptorSetLayout,
+        tlas: &TLAS,
+        output_image_view: &vk::ImageView,
+        uniform_buffer: &vulkan_abstraction::Buffer,
+    ) -> SrResult<Self> {
+        let device = core.device().inner();
+        let descriptor_pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(1),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1),
+        ];
+
+        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(&descriptor_pool_sizes)
+            .max_sets(1);
+
+        let descriptor_pool =
+            unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None) }?;
+
+        let descriptor_set_layouts = [descriptor_set_layout.inner()];
+
 
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
@@ -93,7 +115,7 @@ impl DescriptorSets {
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .push_next(&mut write_descriptor_set_acceleration_structure)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(Self::TLAS_BINDING)
+                .dst_binding(DescriptorSetLayout::TLAS_BINDING)
                 .descriptor_count(1),
         );
 
@@ -108,7 +130,7 @@ impl DescriptorSets {
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(&descriptor_image_infos)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(Self::IMAGE_BINDING)
+                .dst_binding(DescriptorSetLayout::IMAGE_BINDING)
                 .descriptor_count(1),
         );
 
@@ -123,7 +145,7 @@ impl DescriptorSets {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(&descriptor_buffer_infos)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(Self::UNIFORM_BUFFER_BINDING)
+                .dst_binding(DescriptorSetLayout::UNIFORM_BUFFER_BINDING)
                 .descriptor_count(1)
         );
 
@@ -136,13 +158,9 @@ impl DescriptorSets {
             core,
             descriptor_sets,
             descriptor_pool,
-            descriptor_set_layouts,
         })
     }
 
-    pub fn get_layouts(&self) -> &[vk::DescriptorSetLayout] {
-        &self.descriptor_set_layouts
-    }
     pub fn get_handles(&self) -> &[vk::DescriptorSet] {
         &self.descriptor_sets
     }
@@ -154,9 +172,5 @@ impl Drop for DescriptorSets {
         //unsafe { self.core.device().free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets) }.unwrap();
 
         unsafe { self.core.device().inner().destroy_descriptor_pool(self.descriptor_pool, None) };
-
-        for layout in self.descriptor_set_layouts.iter() {
-            unsafe { self.core.device().inner().destroy_descriptor_set_layout(*layout, None) };
-        }
     }
 }

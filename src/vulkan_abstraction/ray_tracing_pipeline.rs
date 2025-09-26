@@ -61,7 +61,7 @@ pub struct RayTracingPipeline {
 impl RayTracingPipeline {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
-        descriptor_sets: &vulkan_abstraction::DescriptorSets,
+        descriptor_set_layout: &vulkan_abstraction::DescriptorSetLayout,
         generate_shader_debug_info: bool
     ) -> SrResult<Self> {
         if generate_shader_debug_info {
@@ -150,9 +150,11 @@ impl RayTracingPipeline {
             .offset(0)
             .size(std::mem::size_of::<PushConstant>() as u32)];
 
+        let set_layouts = [descriptor_set_layout.inner()];
+
         let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
             .push_constant_ranges(&push_constants)
-            .set_layouts(descriptor_sets.get_layouts());
+            .set_layouts(&set_layouts);
 
         let pipeline_layout =
             unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }?;
