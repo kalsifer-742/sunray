@@ -52,7 +52,7 @@ impl BLAS {
 
         let mut geometries = Vec::new();
         let mut build_range_infos = Vec::new();
-        for mesh in model.meshes() {
+        for (i, mesh) in model.meshes().iter().enumerate() {
             // specify what the BLAS's geometry (vbo, ibo) is
             let geometry = {
                 vk::AccelerationStructureGeometryKHR::default()
@@ -72,7 +72,7 @@ impl BLAS {
                 // an offset (in bytes) into geometry.geometry_data.index_data from which to start reading
                 .primitive_offset((mesh.index_offset * std::mem::size_of::<u32>()) as u32)
                 // transform_offset is an offset (in bytes) into geometry.geometry_data.transform_data
-                .transform_offset((0 * size_of::<vk::TransformMatrixKHR>()) as u32); //TODO: calculate transform offset
+                .transform_offset((i * size_of::<vk::TransformMatrixKHR>()) as u32); //TODO: calculate transform offset
             build_range_infos.push(build_range_info);
         }
 

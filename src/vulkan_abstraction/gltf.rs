@@ -21,36 +21,41 @@ pub fn create_scene(
     };
 
     // I think this is not optimal but i'm going to load all scenes from the start by default
-    for scene in document.scenes() {
+    for (i, scene) in document.scenes().enumerate() {
+        log::debug!("scene #{}", i);
+
         let mut models: Vec<vulkan_abstraction::Model> = Vec::new();
-        log::debug!("scene: {}", scene.name().unwrap_or_default());
 
         //maybe i should keep the node structure for the scene
-        for node in scene.nodes() {
-            log::debug!(
-                "node: {} - n: {} - has {} children",
-                node.name().unwrap_or_default(),
-                node.index(),
-                node.children().count()
-            );
+        for (j, node) in scene.nodes().enumerate() {
+            log::debug!("\tnode #{}", j);
 
             let mut meshes: Vec<vulkan_abstraction::Mesh> = Vec::new();
             let mut transforms: Vec<vk::TransformMatrixKHR> = Vec::new();
             let mut vertices: Vec<vulkan_abstraction::Vertex> = Vec::new();
             let mut indices: Vec<u32> = Vec::new();
-            let mut index_count = 0;
 
-            for child in node.children() {
+            for (z, child) in node.children().enumerate() {
+                log::debug!("\t\tchidlren #{} of node #{}", z, j);
+
                 // for now we are interested only in loading meshes
                 if child.mesh().is_some() {
+                    log::debug!("\t\t\tmesh #{}", z);
+
                     let mesh = child.mesh().unwrap();
 
                     // the trasnform can also be given decomposed in: translation, rotation and scale
                     // but the gltf crate takes care of this:
                     // "If the transform is Decomposed, then the matrix is generated with the equation matrix = translation * rotation * scale."
                     transforms.push(to_vk_transform(child.transform().matrix()));
+                    log::debug!("\t\t\ttransform #{}", z);
 
-                    for primitive in mesh.primitives() {
+                    let vertex_offset = vertices.len();
+                    let index_offset = indices.len();
+                    let mut index_count = 0;
+                    for (k, primitive) in mesh.primitives().enumerate() {
+                        log::debug!("\t\t\t\tprimitive #{}", k);
+
                         let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
                         // get vertices positions
@@ -61,17 +66,24 @@ pub fn create_scene(
 
                         // get vertices index
                         let indexes = reader.read_indices().unwrap().into_u32();
+                        index_count = indexes.len();
 
                         indexes.clone().for_each(|i| indices.push(i));
-                        index_count += indexes.len();
                     }
-                }
 
-                meshes.push(vulkan_abstraction::Mesh {
-                    vertex_offset: vertices.len(),
-                    index_offset: indices.len(),
-                    index_count,
-                });
+                    log::debug!(
+                        "\t\t\tmesh attributes: v_offset {} - i_offset {} - i_count - {}",
+                        vertex_offset,
+                        index_offset,
+                        index_count
+                    );
+
+                    meshes.push(vulkan_abstraction::Mesh {
+                        vertex_offset,
+                        index_offset,
+                        index_count,
+                    });
+                }
             }
 
             models.push(vulkan_abstraction::Model::new(
