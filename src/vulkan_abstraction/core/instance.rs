@@ -170,6 +170,9 @@ impl Instance {
                 .ty(vk::LayerSettingTypeEXT::BOOL32)
                 .values(if v {&TRUE_BYTES} else {&FALSE_BYTES})
         };
+        if with_gpuav {
+            log::info!("Enabling GPU assisted validation");
+        }
         let settings = [
             // Khronos Validation layer recommends not to enable both GPU Assisted Validation (gpuav_enable) and Normal Core Check Validation (validate_core), as it will be very slow.
             // Once all errors in Core Check are solved it recommends to disable validate_core, then only use GPU-AV for best performance.

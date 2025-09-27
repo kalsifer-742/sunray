@@ -234,7 +234,7 @@ impl Buffer {
         }
 
         let device = core.device().inner();
-        let bufcpy_cmd_buf = vulkan_abstraction::cmd_buffer::new(core.cmd_pool(), core.device().inner())?;
+        let bufcpy_cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
 
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);

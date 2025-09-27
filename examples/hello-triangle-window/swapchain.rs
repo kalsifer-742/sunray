@@ -10,9 +10,9 @@ pub struct Swapchain {
     core: Rc<vulkan_abstraction::Core>,
     swapchain_device: khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_image_views: Vec<vk::ImageView>,
-    swapchain_image_extent: vk::Extent2D,
+    images: Vec<vk::Image>,
+    image_views: Vec<vk::ImageView>,
+    image_extent: vk::Extent2D,
 }
 
 impl Swapchain {
@@ -46,7 +46,7 @@ impl Swapchain {
             }
         };
 
-        let swapchain_image_extent = if device.surface_support_details().surface_capabilities.current_extent.width != u32::MAX {
+        let image_extent = if device.surface_support_details().surface_capabilities.current_extent.width != u32::MAX {
             device.surface_support_details().surface_capabilities.current_extent
         } else {
             vk::Extent2D {
@@ -89,7 +89,7 @@ impl Swapchain {
                 .min_image_count(image_count)
                 .image_format(surface_format.format)
                 .image_color_space(surface_format.color_space)
-                .image_extent(swapchain_image_extent)
+                .image_extent(image_extent)
                 .image_array_layers(1)
                 .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
                 .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
@@ -99,12 +99,14 @@ impl Swapchain {
                 .clipped(true)
                 .old_swapchain(vk::SwapchainKHR::null());
 
-            unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }?
+            let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }?;
+
+            swapchain
         };
 
-        let swapchain_images = unsafe { swapchain_device.get_swapchain_images(swapchain) }?;
+        let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }?;
 
-        let swapchain_image_views = swapchain_images
+        let image_views = images
             .iter()
             .map(|image| {
                 let image_view_create_info = vk::ImageViewCreateInfo::default()
@@ -130,27 +132,30 @@ impl Swapchain {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+
+
         Ok(Self {
             core,
             swapchain_device,
             swapchain,
-            swapchain_images,
-            swapchain_image_views,
-            swapchain_image_extent,
+            images,
+            image_views,
+            image_extent,
         })
     }
+
     pub fn inner(&self) -> vk::SwapchainKHR { self.swapchain }
     pub fn device(&self) -> &khr::swapchain::Device { &self.swapchain_device }
     #[allow(unused)]
-    pub fn image_extent(&self) -> vk::Extent2D { self.swapchain_image_extent }
-    pub fn images(&self) -> &[vk::Image]{ &self.swapchain_images }
+    pub fn extent(&self) -> vk::Extent2D { self.image_extent }
+    pub fn images(&self) -> &[vk::Image]{ &self.images }
     #[allow(unused)]
-    pub fn image_views(&self) -> &[vk::ImageView]{ &self.swapchain_image_views }
+    pub fn image_views(&self) -> &[vk::ImageView]{ &self.image_views }
 }
 
 impl Drop for Swapchain {
     fn drop(&mut self) {
-        for img_view in self.swapchain_image_views.iter() {
+        for img_view in self.image_views.iter() {
             unsafe { self.core.device().inner().destroy_image_view(*img_view, None) };
         }
 

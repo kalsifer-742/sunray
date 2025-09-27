@@ -9,7 +9,7 @@ pub mod queue;
 pub mod ray_tracing_pipeline;
 pub mod scene;
 pub mod shader_binding_table;
-pub mod syncronization;
+pub mod synchronization;
 
 pub use acceleration_structure::*;
 pub use buffer::*;
@@ -22,4 +22,4 @@ pub use queue::*;
 pub use ray_tracing_pipeline::*;
 pub use scene::*;
 pub use shader_binding_table::*;
-pub use syncronization::*;
+pub use synchronization::*;
