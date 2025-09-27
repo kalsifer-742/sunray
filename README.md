@@ -19,6 +19,8 @@
 ### glTF
 
 - [2.0 reference guide pdf](https://www.khronos.org/files/gltf20-reference-guide.pdf)
+- [2.0 spec](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.pdf)
+- [khronos tutorials](https://github.com/KhronosGroup/glTF-Tutorials/tree/main)
 - https://www.gltfeditor.com/
 
 #### Models

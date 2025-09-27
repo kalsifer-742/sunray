@@ -1,0 +1,102 @@
+use std::rc::Rc;
+
+use ash::vk;
+
+use crate::{
+    error::SrResult,
+    vulkan_abstraction::{self, Vertex},
+};
+
+pub fn create_scene(
+    core: &Rc<vulkan_abstraction::Core>,
+    document: gltf::Document,
+    buffers: Vec<gltf::buffer::Data>,
+    _images: Vec<gltf::image::Data>,
+) -> SrResult<(usize, Vec<vulkan_abstraction::Scene>)> {
+    let mut scenes = Vec::new();
+
+    let default_scene_index = match document.default_scene() {
+        Some(s) => s.index(),
+        None => 0,
+    };
+
+    // I think this is not optimal but i'm going to load all scenes from the start by default
+    for scene in document.scenes() {
+        let mut models: Vec<vulkan_abstraction::Model> = Vec::new();
+        log::debug!("scene: {}", scene.name().unwrap_or_default());
+
+        //maybe i should keep the node structure for the scene
+        for node in scene.nodes() {
+            log::debug!(
+                "node: {} - n: {} - has {} children",
+                node.name().unwrap_or_default(),
+                node.index(),
+                node.children().count()
+            );
+
+            let mut meshes: Vec<vulkan_abstraction::Mesh> = Vec::new();
+            let mut transforms: Vec<vk::TransformMatrixKHR> = Vec::new();
+            let mut vertices: Vec<vulkan_abstraction::Vertex> = Vec::new();
+            let mut indices: Vec<u32> = Vec::new();
+            let mut index_count = 0;
+
+            for child in node.children() {
+                // for now we are interested only in loading meshes
+                if child.mesh().is_some() {
+                    let mesh = child.mesh().unwrap();
+
+                    // the trasnform can also be given decomposed in: translation, rotation and scale
+                    // but the gltf crate takes care of this:
+                    // "If the transform is Decomposed, then the matrix is generated with the equation matrix = translation * rotation * scale."
+                    transforms.push(to_vk_transform(child.transform().matrix()));
+
+                    for primitive in mesh.primitives() {
+                        let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+
+                        // get vertices positions
+                        reader
+                            .read_positions()
+                            .unwrap()
+                            .for_each(|position| vertices.push(Vertex { position }));
+
+                        // get vertices index
+                        let indexes = reader.read_indices().unwrap().into_u32();
+
+                        indexes.clone().for_each(|i| indices.push(i));
+                        index_count += indexes.len();
+                    }
+                }
+
+                meshes.push(vulkan_abstraction::Mesh {
+                    vertex_offset: vertices.len(),
+                    index_offset: indices.len(),
+                    index_count,
+                });
+            }
+
+            models.push(vulkan_abstraction::Model::new(
+                core, vertices, indices, meshes, transforms,
+            )?);
+        }
+
+        scenes.push(vulkan_abstraction::Scene { models });
+    }
+
+    Ok((default_scene_index, scenes))
+}
+
+fn to_vk_transform(transform: [[f32; 4]; 4]) -> vk::TransformMatrixKHR {
+    let r0 = transform[0];
+    let r1 = transform[1];
+    let r2 = transform[2];
+    let r3 = transform[3];
+
+    #[rustfmt::skip]
+    let matrix = [
+        r0[0], r1[0], r2[0], r3[0],
+        r0[1], r1[1], r2[1], r3[1],
+        r0[2], r1[2], r2[2], r3[2],
+    ];
+
+    vk::TransformMatrixKHR { matrix }
+}

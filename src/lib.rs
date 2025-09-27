@@ -17,10 +17,7 @@ struct UniformBufferContents {
 pub struct Renderer {
     core: Rc<vulkan_abstraction::Core>,
     image: vulkan_abstraction::Image,
-    #[allow(unused)]
-    blas: vulkan_abstraction::BLAS,
-    #[allow(unused)]
-    tlas: vulkan_abstraction::TLAS,
+    tlases: Vec<vulkan_abstraction::TLAS>,
     uniform_buffer: vulkan_abstraction::Buffer,
     descriptor_sets: vulkan_abstraction::DescriptorSets,
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
@@ -103,16 +100,6 @@ impl Renderer {
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 
-        let scene = vulkan_abstraction::Scene::new_default(&core)?;
-
-        let blas = vulkan_abstraction::BLAS::new(
-            Rc::clone(&core),
-            scene.vertex_buffer(),
-            scene.index_buffer(),
-        )?;
-
-        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[&blas])?;
-
         let uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(&core),
             std::mem::size_of::<UniformBufferContents>(),
@@ -123,7 +110,7 @@ impl Renderer {
 
         let descriptor_sets = vulkan_abstraction::DescriptorSets::new(
             Rc::clone(&core),
-            &tlas,
+            None,
             image.image_view(),
             &uniform_buffer,
         )?;
@@ -142,8 +129,7 @@ impl Renderer {
             Self {
                 core,
                 image,
-                blas,
-                tlas,
+                tlases: vec![],
                 uniform_buffer,
                 descriptor_sets,
                 ray_tracing_pipeline,
@@ -154,7 +140,31 @@ impl Renderer {
     }
 
     pub fn load_file(&mut self, path: &str) -> SrResult<()> {
-        let _gltf = gltf::Gltf::open(path)?;
+        let (document, buffers, images) = gltf::import(path)?;
+
+        let (_default_scene_index, scenes) =
+            vulkan_abstraction::create_scene(&self.core, document, buffers, images)?;
+
+        for (scene_index, scene) in scenes.iter().enumerate() {
+            let mut blases = Vec::new();
+            for model in scene.models.iter() {
+                blases.push(vulkan_abstraction::BLAS::new(Rc::clone(&self.core), model)?);
+            }
+            match self.tlases.get_mut(scene_index) {
+                Some(tlas) => tlas.rebuild(&blases)?,
+                None => self.tlases.push(vulkan_abstraction::TLAS::new(
+                    Rc::clone(&self.core),
+                    &blases,
+                )?),
+            }
+        }
+
+        self.descriptor_sets = vulkan_abstraction::DescriptorSets::new(
+            Rc::clone(&self.core),
+            Some(&self.tlases),
+            self.image.image_view(),
+            &self.uniform_buffer,
+        )?;
 
         Ok(())
     }
@@ -168,7 +178,8 @@ impl Renderer {
         let view = na::Isometry3::look_at_rh(&eye, &target, &up);
         //clip_space: normalised coordinates adding perspective
         let projection = na::Perspective3::new(
-            (self.image.extent().width / self.image.extent().height) as f32,
+            //why `as f32`: aspect ratio is a float
+            self.image.extent().width as f32 / self.image.extent().height as f32,
             camera.fov() * 3.14 / std::f32::consts::PI,
             0.1,   //render everything after this distance
             100.0, //discard everything after this distance

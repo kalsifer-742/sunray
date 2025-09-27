@@ -10,11 +10,8 @@ fn get_vk_format(image_format: ExtendedColorType) -> vk::Format {
 }
 
 fn init_logging() {
-    log4rs::config::init_file(
-        "examples/log4rs.yaml",
-        log4rs::config::Deserializers::new(),
-    )
-    .unwrap();
+    log4rs::config::init_file("examples/log4rs.yaml", log4rs::config::Deserializers::new())
+        .unwrap();
 
     if cfg!(debug_assertions) {
         //stdlib unfortunately completely pollutes trace log level, TODO somehow config stdlib/log to fix this?
@@ -53,7 +50,7 @@ fn render_and_save() -> SrResult<()> {
     let camera = Camera::default();
     renderer.set_camera(camera)?;
 
-    let image_buf = renderer.render_to_host_memory().unwrap();
+    let image_buf = renderer.render_to_host_memory()?;
     render_to_file(&image_buf, image_extent, path, ImageFormat::Png);
 
     Ok(())
