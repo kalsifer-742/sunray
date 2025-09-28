@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ffi::CStr};
+use std::{cell::{Ref, RefCell}, collections::HashSet, ffi::CStr};
 
 use ash::{
     khr,
@@ -10,10 +10,11 @@ use crate::{error::*, vulkan_abstraction};
 pub struct Device {
     device: ash::Device,
     physical_device_memory_properties: vk::PhysicalDeviceMemoryProperties,
+    physical_device: vk::PhysicalDevice,
     physical_device_rt_pipeline_properties:
         vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>,
     queue_family_index: u32,
-    surface_support_details: Option<SurfaceSupportDetails>,
+    surface_support_details: Option<RefCell<SurfaceSupportDetails>>,
 }
 
 impl Device {
@@ -55,7 +56,7 @@ impl Device {
                 if let Some((surface, surface_instance)) = &surface_to_support {
                     let surface_support_details = SurfaceSupportDetails::new(*surface, surface_instance, physical_device).unwrap();
                     if surface_support_details.check_swapchain_support() {
-                        Some((physical_device, Some(surface_support_details)))
+                        Some((physical_device, Some(RefCell::new(surface_support_details))))
                     } else {
                         None
                     }
@@ -137,6 +138,7 @@ impl Device {
 
         Ok(Self {
             device,
+            physical_device,
             physical_device_memory_properties,
             physical_device_rt_pipeline_properties,
             queue_family_index,
@@ -200,8 +202,12 @@ impl Device {
     pub fn queue_family_index(&self) -> u32 {
         self.queue_family_index
     }
-    pub fn surface_support_details(&self) -> &SurfaceSupportDetails {
-        self.surface_support_details.as_ref().unwrap()
+    pub fn surface_support_details(&self) -> Ref<'_, SurfaceSupportDetails> {
+        self.surface_support_details.as_ref().unwrap().borrow()
+    }
+    pub fn update_surface_support_details(&self, surface: vk::SurfaceKHR, surface_instance: &khr::surface::Instance) {
+        *self.surface_support_details.as_ref().unwrap().borrow_mut() =
+            SurfaceSupportDetails::new(surface, surface_instance, self.physical_device).unwrap();
     }
 }
 

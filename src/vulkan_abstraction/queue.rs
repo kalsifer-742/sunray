@@ -32,10 +32,10 @@ impl Queue {
     pub fn submit_async(
         &self,
         command_buffer: vk::CommandBuffer,
-        signal_fence: vk::Fence,
         wait_semaphores: &[vk::Semaphore],
+        wait_dst_stages: &[vk::PipelineStageFlags],
         signal_semaphores: &[vk::Semaphore],
-        wait_dst_stages: &[vk::PipelineStageFlags]
+        signal_fence: vk::Fence,
     ) -> SrResult<()> {
         // NOTE: consider using VkQueueSubmit2 from the extension VK_KHR_synchronization2 which adds more dst stages (VkPipelineStageFlags2) like BLIT
         if cfg!(debug_assertions) && wait_semaphores.len() != wait_dst_stages.len() {
