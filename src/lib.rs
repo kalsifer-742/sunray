@@ -109,14 +109,9 @@ impl Renderer {
         }
         .into();
 
-        let scene = vulkan_abstraction::Scene::new_default(&core)?;
-
-        let blas = vulkan_abstraction::BLAS::new(
-            Rc::clone(&core),
-            scene.vertex_buffer(),
-            scene.index_buffer(),
-        )?;
-
+        let scene = vulkan_abstraction::Scene::new_testing(&core)?;
+        let mesh = scene.meshes.first().unwrap();
+        let blas = vulkan_abstraction::BLAS::new(Rc::clone(&core), mesh)?;
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[&blas])?;
 
         let uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
@@ -127,8 +122,6 @@ impl Renderer {
             vk::BufferUsageFlags::UNIFORM_BUFFER,
         )?;
 
-
-
         let descriptor_set_layout = vulkan_abstraction::DescriptorSetLayout::new(Rc::clone(&core))?;
 
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
@@ -138,7 +131,8 @@ impl Renderer {
                 .unwrap_or(Self::IS_DEBUG_BUILD),
         )?;
 
-        let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
+        let shader_binding_table =
+            vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
 
         let image_dependant_data = HashMap::new();
 
@@ -167,7 +161,6 @@ impl Renderer {
 
     pub fn build_image_dependent_data(&mut self, images: &[vk::Image]) -> SrResult<()> {
         for post_blit_image in images {
-
             let raytrace_result_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
@@ -185,7 +178,6 @@ impl Renderer {
                 &self.uniform_buffer,
             )?;
 
-
             let blit_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
             let raytracing_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
 
@@ -195,7 +187,8 @@ impl Renderer {
                     .flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE);
 
                 unsafe {
-                    self.core.device()
+                    self.core
+                        .device()
                         .inner()
                         .begin_command_buffer(raytracing_cmd_buf.inner(), &cmd_buf_begin_info)
                 }?;
@@ -210,7 +203,12 @@ impl Renderer {
                     raytrace_result_image.extent(),
                 )?;
 
-                unsafe { self.core.device().inner().end_command_buffer(raytracing_cmd_buf.inner()) }?;
+                unsafe {
+                    self.core
+                        .device()
+                        .inner()
+                        .end_command_buffer(raytracing_cmd_buf.inner())
+                }?;
             }
 
             //record blit
@@ -241,19 +239,32 @@ impl Renderer {
                 }?;
             }
 
-            self.image_dependant_data.insert(*post_blit_image, ImageDependentData {
-                raytrace_result_image,
-                raytracing_cmd_buf,
-                blit_cmd_buf,
-                descriptor_sets,
-            });
+            self.image_dependant_data.insert(
+                *post_blit_image,
+                ImageDependentData {
+                    raytrace_result_image,
+                    raytracing_cmd_buf,
+                    blit_cmd_buf,
+                    descriptor_sets,
+                },
+            );
         }
 
         Ok(())
     }
 
     pub fn load_file(&mut self, path: &str) -> SrResult<()> {
-        let _gltf = gltf::Gltf::open(path)?;
+        let gltf = vulkan_abstraction::Gltf::new(Rc::clone(&self.core), path)?;
+        let (_default_scene_index, scenes) = gltf.create_scenes()?;
+
+        //TODO: create a blas for each model
+        let mesh = &scenes[0].meshes[0];
+
+        self.blas = vulkan_abstraction::BLAS::new(Rc::clone(&self.core), &mesh)?;
+        self.tlas.rebuild(&[&self.blas])?;
+
+        // TODO: update insted of recreating
+        self.clear_image_dependent_data();
 
         Ok(())
     }
@@ -284,7 +295,12 @@ impl Renderer {
     /// Render to dst_image. the user may also pass a Semaphore which the user should signal when the image is
     /// ready to be written to (for example after being acquired from a swapchain) and a Fence that will be signaled
     /// when the rendering is finished (which can be used to know when the Semaphore has no pending operations left).
-    pub fn render_to_image(&mut self, dst_image: vk::Image, wait_sem: vk::Semaphore, signal_fence: vk::Fence) -> SrResult<()> {
+    pub fn render_to_image(
+        &mut self,
+        dst_image: vk::Image,
+        wait_sem: vk::Semaphore,
+        signal_fence: vk::Fence,
+    ) -> SrResult<()> {
         if !self.image_dependant_data.contains_key(&dst_image) {
             // gracefully handle cache misses
             self.build_image_dependent_data(&[dst_image])?;
@@ -298,7 +314,9 @@ impl Renderer {
         self.core.queue().submit_async(
             img_dependent_data.raytracing_cmd_buf.inner(),
             img_dependent_data.raytracing_cmd_buf.fence_mut().submit(),
-            &[], &[], &[],
+            &[],
+            &[],
+            &[],
         )?;
 
         // blitting
@@ -312,7 +330,13 @@ impl Renderer {
             ([].as_slice(), [].as_slice())
         };
 
-        self.core.queue().submit_async(img_dependent_data.blit_cmd_buf.inner(), signal_fence, &wait_sems, &[], &wait_dst_stages)?;
+        self.core.queue().submit_async(
+            img_dependent_data.blit_cmd_buf.inner(),
+            signal_fence,
+            &wait_sems,
+            &[],
+            &wait_dst_stages,
+        )?;
 
         Ok(())
     }
@@ -327,9 +351,14 @@ impl Renderer {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
 
-        let mut image_rendered_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(&self.core.device()))?;
+        let mut image_rendered_fence =
+            vulkan_abstraction::Fence::new_unsignaled(Rc::clone(&self.core.device()))?;
 
-        self.render_to_image(dst_image.inner(), vk::Semaphore::null(), image_rendered_fence.submit())?;
+        self.render_to_image(
+            dst_image.inner(),
+            vk::Semaphore::null(),
+            image_rendered_fence.submit(),
+        )?;
 
         image_rendered_fence.wait()?;
 

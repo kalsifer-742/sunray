@@ -10,11 +10,8 @@ fn get_vk_format(image_format: ExtendedColorType) -> vk::Format {
 }
 
 fn init_logging() {
-    log4rs::config::init_file(
-        "examples/log4rs.yaml",
-        log4rs::config::Deserializers::new(),
-    )
-    .unwrap();
+    log4rs::config::init_file("examples/log4rs.yaml", log4rs::config::Deserializers::new())
+        .unwrap();
 
     if cfg!(debug_assertions) {
         //stdlib unfortunately completely pollutes trace log level, TODO somehow config stdlib/log to fix this?
@@ -48,7 +45,7 @@ fn render_and_save() -> SrResult<()> {
     let image_format = get_vk_format(ExtendedColorType::Rgba8);
     let mut renderer = Renderer::new(image_extent, image_format)?;
 
-    renderer.load_file("assets/Lantern.glb")?;
+    renderer.load_file("assets/triangle.gltf")?;
 
     let camera = Camera::default();
     renderer.set_camera(camera)?;
