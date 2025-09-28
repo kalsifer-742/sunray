@@ -43,6 +43,15 @@ pub struct Renderer {
     core: Rc<vulkan_abstraction::Core>,
 }
 
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        match self.core().queue().wait_idle() {
+            Ok(()) => {}
+            Err(e) => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
+        }
+    }
+}
+
 fn get_env_var_as_bool(name: &str) -> Option<bool> {
     match std::env::var(name) {
         Ok(s) => match s.parse::<i32>() {
@@ -64,6 +73,18 @@ impl Renderer {
 
     pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
         Ok(Self::new_impl(image_extent, image_format, &[], None)?.0)
+    }
+
+    pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
+        if image_extent.0 == self.image_extent.width
+            && image_extent.1 == self.image_extent.height {
+                return Ok(())
+            }
+        self.clear_image_dependent_data();
+        self.image_extent.width = image_extent.0;
+        self.image_extent.height = image_extent.1;
+
+        Ok(())
     }
 
     // It is necessary to pass a function to create the surface, because surface depends on instance,
@@ -282,9 +303,9 @@ impl Renderer {
     }
 
     /// Render to dst_image. the user may also pass a Semaphore which the user should signal when the image is
-    /// ready to be written to (for example after being acquired from a swapchain) and a Fence that will be signaled
-    /// when the rendering is finished (which can be used to know when the Semaphore has no pending operations left).
-    pub fn render_to_image(&mut self, dst_image: vk::Image, wait_sem: vk::Semaphore, signal_fence: vk::Fence) -> SrResult<()> {
+    /// ready to be written to (for example after being acquired from a swapchain) and a Fence will be returned
+    /// that will be signaled when the rendering is finished (which can be used to know when the Semaphore has no pending operations left).
+    pub fn render_to_image(&mut self, dst_image: vk::Image, wait_sem: vk::Semaphore) -> SrResult<vk::Fence> {
         if !self.image_dependant_data.contains_key(&dst_image) {
             // gracefully handle cache misses
             self.build_image_dependent_data(&[dst_image])?;
@@ -297,13 +318,13 @@ impl Renderer {
 
         self.core.queue().submit_async(
             img_dependent_data.raytracing_cmd_buf.inner(),
-            img_dependent_data.raytracing_cmd_buf.fence_mut().submit(),
             &[], &[], &[],
+            img_dependent_data.raytracing_cmd_buf.fence_mut().submit(),
         )?;
 
         // blitting
         let wait_semaphores = [wait_sem];
-        // TODO: not ALL_GRAPHICS...
+        // ALL_GRAPHICS is fine, since literally all graphics (both barriers and blit) have to wait for the image to be available
         let wait_dst_stages = [vk::PipelineStageFlags::ALL_GRAPHICS];
 
         let (wait_sems, wait_dst_stages) = if wait_sem != vk::Semaphore::null() {
@@ -312,9 +333,13 @@ impl Renderer {
             ([].as_slice(), [].as_slice())
         };
 
-        self.core.queue().submit_async(img_dependent_data.blit_cmd_buf.inner(), signal_fence, &wait_sems, &[], &wait_dst_stages)?;
+        img_dependent_data.blit_cmd_buf.fence_mut().wait()?;
+        img_dependent_data.blit_cmd_buf.fence_mut().reset()?;
+        let signal_fence = img_dependent_data.blit_cmd_buf.fence_mut().submit();
 
-        Ok(())
+        self.core.queue().submit_async(img_dependent_data.blit_cmd_buf.inner(), &wait_sems, &wait_dst_stages, &[], signal_fence)?;
+
+        Ok(signal_fence)
     }
 
     pub fn render_to_host_memory(&mut self) -> SrResult<Vec<u8>> {
@@ -327,11 +352,10 @@ impl Renderer {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
 
-        let mut image_rendered_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(&self.core.device()))?;
 
-        self.render_to_image(dst_image.inner(), vk::Semaphore::null(), image_rendered_fence.submit())?;
+        let wait_fence = self.render_to_image(dst_image.inner(), vk::Semaphore::null())?;
 
-        image_rendered_fence.wait()?;
+        unsafe { self.core.device().inner().wait_for_fences(&[wait_fence], true, u64::MAX) }?;
 
         let mem = Self::fix_image_memory_alignment(&self.core, &mut dst_image)?;
 
@@ -481,7 +505,7 @@ impl Renderer {
                 cmd_buf,
                 dst_image,
                 vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::ALL_COMMANDS, // the image should already be transitioned when the used makes use of it
+                vk::PipelineStageFlags::ALL_GRAPHICS, // the image should already be transitioned when the used makes use of it
                 vk::AccessFlags::TRANSFER_WRITE,
                 vk::AccessFlags::MEMORY_READ,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,

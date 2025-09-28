@@ -4,8 +4,6 @@ use ash::{khr, vk};
 
 use sunray::{error::*, vulkan_abstraction};
 
-use crate::surface;
-
 pub struct Swapchain {
     core: Rc<vulkan_abstraction::Core>,
     swapchain_device: khr::swapchain::Device,
@@ -16,7 +14,26 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub fn new(core: Rc<vulkan_abstraction::Core>, surface: &surface::Surface, window_extent: (u32,u32)) -> SrResult<Self> {
+    pub fn get_extent(window_extent: (u32,u32), surface_support_details: &vulkan_abstraction::SurfaceSupportDetails) -> vk::Extent2D{
+        if surface_support_details.surface_capabilities.current_extent.width != u32::MAX {
+            surface_support_details.surface_capabilities.current_extent
+        } else {
+            vk::Extent2D {
+                width: window_extent.0.clamp(
+                    surface_support_details.surface_capabilities.min_image_extent.width,
+                    surface_support_details.surface_capabilities.max_image_extent.width,
+                ),
+                height: window_extent.1.clamp(
+                    surface_support_details.surface_capabilities.min_image_extent.height,
+                    surface_support_details.surface_capabilities.max_image_extent.height,
+                ),
+            }
+        }
+    }
+
+    fn build_swapchain(core: &Rc<vulkan_abstraction::Core>, surface: vk::SurfaceKHR, window_extent: (u32,u32), old_swapchain: Option<vk::SwapchainKHR>)
+        -> SrResult<(vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>, vk::Extent2D)>
+    {
         let instance = core.instance();
         let device = core.device();
         let swapchain_device = khr::swapchain::Device::new(instance, device.inner());
@@ -46,20 +63,7 @@ impl Swapchain {
             }
         };
 
-        let image_extent = if device.surface_support_details().surface_capabilities.current_extent.width != u32::MAX {
-            device.surface_support_details().surface_capabilities.current_extent
-        } else {
-            vk::Extent2D {
-                width: window_extent.0.clamp(
-                    device.surface_support_details().surface_capabilities.min_image_extent.width,
-                    device.surface_support_details().surface_capabilities.max_image_extent.width,
-                ),
-                height: window_extent.1.clamp(
-                    device.surface_support_details().surface_capabilities.min_image_extent.height,
-                    device.surface_support_details().surface_capabilities.max_image_extent.height,
-                ),
-            }
-        };
+        let image_extent = Self::get_extent(window_extent, &device.surface_support_details());
 
         let swapchain = {
             let present_modes = &device.surface_support_details().surface_present_modes;
@@ -85,7 +89,7 @@ impl Swapchain {
             }
 
             let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-                .surface(surface.inner())
+                .surface(surface)
                 .min_image_count(image_count)
                 .image_format(surface_format.format)
                 .image_color_space(surface_format.color_space)
@@ -97,14 +101,14 @@ impl Swapchain {
                 .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
                 .present_mode(present_mode)
                 .clipped(true)
-                .old_swapchain(vk::SwapchainKHR::null());
+                .old_swapchain(old_swapchain.unwrap_or(vk::SwapchainKHR::null()));
 
-            let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }?;
-
-            swapchain
+            unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }?
         };
 
         let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }?;
+
+        log::info!("built swapchain {{ handle: {swapchain:#x?}, extent: {image_extent:?}, images: {images:#x?} }}");
 
         let image_views = images
             .iter()
@@ -134,6 +138,18 @@ impl Swapchain {
 
 
 
+        Ok((
+            swapchain,
+            images,
+            image_views,
+            image_extent,
+        ))
+    }
+
+    pub fn new(core: Rc<vulkan_abstraction::Core>, surface: vk::SurfaceKHR, window_extent: (u32,u32)) -> SrResult<Self> {
+        let swapchain_device = khr::swapchain::Device::new(core.instance(), core.device().inner());
+        let (swapchain, images, image_views, image_extent) = Self::build_swapchain(&core, surface, window_extent, None)?;
+
         Ok(Self {
             core,
             swapchain_device,
@@ -151,6 +167,27 @@ impl Swapchain {
     pub fn images(&self) -> &[vk::Image]{ &self.images }
     #[allow(unused)]
     pub fn image_views(&self) -> &[vk::ImageView]{ &self.image_views }
+
+    pub fn rebuild(&mut self, surface: vk::SurfaceKHR, window_extent: (u32,u32)) -> SrResult<()> {
+        for img_view in self.image_views.iter() {
+            unsafe { self.core.device().inner().destroy_image_view(*img_view, None) };
+        }
+
+        self.image_views = vec![];
+        self.images = vec![];
+
+        let (swapchain, images, image_views, image_extent) = Self::build_swapchain(&self.core, surface, window_extent, Some(self.swapchain))?;
+
+        unsafe { self.swapchain_device.destroy_swapchain(self.swapchain, None) };
+
+        self.swapchain = swapchain;
+        self.images = images;
+
+        self.image_views = image_views;
+        self.image_extent = image_extent;
+
+        Ok(())
+    }
 }
 
 impl Drop for Swapchain {
@@ -160,6 +197,8 @@ impl Drop for Swapchain {
         }
 
         //"swapchain and all associated VkImage handles are destroyed" by calling VkDestroySwapchainKHR
-        unsafe { self.swapchain_device.destroy_swapchain(self.swapchain, None) };
+        if self.swapchain != vk::SwapchainKHR::null() {
+            unsafe { self.swapchain_device.destroy_swapchain(self.swapchain, None) };
+        }
     }
 }
