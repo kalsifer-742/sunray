@@ -1,30 +1,22 @@
-pub mod model;
-use std::rc::Rc;
+pub mod mesh;
+pub mod node;
 
-use ash::vk;
-pub use model::*;
+pub use mesh::*;
+pub use node::*;
 
 use crate::{
     error::SrResult,
     vulkan_abstraction::{self},
 };
 
-#[rustfmt::skip]
-pub const IDENTITY_MATRIX : vk::TransformMatrixKHR = vk::TransformMatrixKHR {
-    matrix: [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0
-    ],
-};
-
 pub struct Scene {
-    pub meshes: Vec<vulkan_abstraction::Mesh>,
+    nodes: Vec<Node>,
 }
 
-impl Scene {
-    pub fn new_testing(core: &Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
-        let vertices = [
+impl Default for Scene {
+    fn default() -> Self {
+        let transform = vulkan_abstraction::IDENTITY_MATRIX;
+        let vertices = vec![
             vulkan_abstraction::Vertex {
                 position: [-1.0, -0.5, 0.0],
             },
@@ -35,12 +27,20 @@ impl Scene {
                 position: [0.0, 1.0, 0.0],
             },
         ];
-        let indices: [u32; 3] = [0, 1, 2];
+        let indices = vec![0, 1, 2];
+        let mesh = vulkan_abstraction::Mesh::new(vertices, indices).unwrap();
+        let nodes = vec![vulkan_abstraction::Node::new(transform, Some(mesh), None).unwrap()];
 
-        let _transforms = vec![vulkan_abstraction::IDENTITY_MATRIX];
+        Self { nodes }
+    }
+}
 
-        let meshes = vec![vulkan_abstraction::Mesh::new(core, &vertices, &indices)?];
+impl Scene {
+    pub fn new(nodes: Vec<Node>) -> SrResult<Self> {
+        Ok(Self { nodes })
+    }
 
-        Ok(Self { meshes })
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
     }
 }

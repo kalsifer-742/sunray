@@ -1,12 +1,9 @@
-use std::{rc::Rc};
+use std::rc::Rc;
 
 use ash::vk;
 
 use super::BLAS;
-use crate::{
-    error::*,
-    vulkan_abstraction,
-};
+use crate::{error::*, vulkan_abstraction};
 
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
@@ -19,17 +16,20 @@ pub struct TLAS {
 }
 
 impl TLAS {
-    pub fn new(
-        core: Rc<vulkan_abstraction::Core>,
-        blas: &[&BLAS],
-    ) -> SrResult<Self> {
-        let instances_buffer = Self::make_instances_buffer(Rc::clone(&core), blas)?;
+    pub fn new(core: Rc<vulkan_abstraction::Core>, blases: &[BLAS]) -> SrResult<Self> {
+        let instances_buffer = Self::make_instances_buffer(Rc::clone(&core), blases)?;
 
         let geometry = Self::make_geometry(&instances_buffer);
 
-        let build_range_info = Self::make_build_range_info(blas.len() as u32);
+        let build_range_info = Self::make_build_range_info(blases.len() as u32);
 
-        let tlas = vulkan_abstraction::AccelerationStructure::new(core, vk::AccelerationStructureTypeKHR::TOP_LEVEL, &[build_range_info], &[geometry], true)?;
+        let tlas = vulkan_abstraction::AccelerationStructure::new(
+            core,
+            vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+            &[build_range_info],
+            &[geometry],
+            true,
+        )?;
 
         Ok(Self { tlas })
     }
@@ -46,12 +46,12 @@ impl TLAS {
     /// - Change one or more transform matrices
     /// - switch one BLAS instance for another, possibly to switch LODs
     #[allow(unused)]
-    pub fn update(&mut self, blas: &[&BLAS]) -> SrResult<()> {
-        let instances_buffer = Self::make_instances_buffer(Rc::clone(self.tlas.core()), blas)?;
+    pub fn update(&mut self, blases: &[BLAS]) -> SrResult<()> {
+        let instances_buffer = Self::make_instances_buffer(Rc::clone(self.tlas.core()), blases)?;
 
         let geometry = Self::make_geometry(&instances_buffer);
 
-        let build_range_info = Self::make_build_range_info(blas.len() as u32);
+        let build_range_info = Self::make_build_range_info(blases.len() as u32);
 
         self.tlas.update(&[build_range_info], &[geometry])?;
 
@@ -59,24 +59,27 @@ impl TLAS {
     }
 
     #[allow(unused)]
-    pub fn rebuild(&mut self, blas: &[&BLAS]) -> SrResult<()> {
-        let instances_buffer = Self::make_instances_buffer(Rc::clone(self.tlas.core()), blas)?;
+    pub fn rebuild(&mut self, blases: &[BLAS]) -> SrResult<()> {
+        let instances_buffer = Self::make_instances_buffer(Rc::clone(self.tlas.core()), blases)?;
 
         let geometry = Self::make_geometry(&instances_buffer);
 
-        let build_range_info = Self::make_build_range_info(blas.len() as u32);
+        let build_range_info = Self::make_build_range_info(blases.len() as u32);
 
         self.tlas.rebuild(&[build_range_info], &[geometry])?;
 
         Ok(())
     }
 
-    fn make_instances_buffer(core: Rc<vulkan_abstraction::Core>, blas: &[&BLAS]) -> SrResult<vulkan_abstraction::Buffer> {
+    fn make_instances_buffer(
+        core: Rc<vulkan_abstraction::Core>,
+        blases: &[BLAS],
+    ) -> SrResult<vulkan_abstraction::Buffer> {
         // this is the transformation for positioning individual BLASes
         // for now it's an Identity Matrix
         let transform_matrix = vulkan_abstraction::IDENTITY_MATRIX;
 
-        let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = blas
+        let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = blases
             .iter()
             .map(|blas| {
                 vk::AccelerationStructureInstanceKHR {
@@ -88,10 +91,11 @@ impl TLAS {
                     ),
                     acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
                         device_handle: unsafe {
-                            core.acceleration_structure_device().get_acceleration_structure_device_address(
-                                &vk::AccelerationStructureDeviceAddressInfoKHR::default()
-                                    .acceleration_structure(blas.inner()),
-                            )
+                            core.acceleration_structure_device()
+                                .get_acceleration_structure_device_address(
+                                    &vk::AccelerationStructureDeviceAddressInfoKHR::default()
+                                        .acceleration_structure(blas.inner()),
+                                )
                         },
                     },
                 }
@@ -112,7 +116,9 @@ impl TLAS {
         Ok(instances_buffer)
     }
 
-    fn make_geometry(instances_buffer: &vulkan_abstraction::Buffer) -> vk::AccelerationStructureGeometryKHR<'_> {
+    fn make_geometry(
+        instances_buffer: &vulkan_abstraction::Buffer,
+    ) -> vk::AccelerationStructureGeometryKHR<'_> {
         vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::INSTANCES)
             .flags(vk::GeometryFlagsKHR::OPAQUE)
@@ -133,5 +139,7 @@ impl TLAS {
             .transform_offset(0)
     }
 
-    pub fn inner(&self) -> vk::AccelerationStructureKHR { self.tlas.inner() }
+    pub fn inner(&self) -> vk::AccelerationStructureKHR {
+        self.tlas.inner()
+    }
 }

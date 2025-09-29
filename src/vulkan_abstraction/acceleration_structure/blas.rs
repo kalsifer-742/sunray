@@ -12,7 +12,9 @@ pub struct BLAS {
 impl BLAS {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
-        mesh: &vulkan_abstraction::Mesh,
+        transform_buffer: vulkan_abstraction::Buffer,
+        vertex_buffer: vulkan_abstraction::VertexBuffer,
+        index_buffer: vulkan_abstraction::IndexBuffer,
     ) -> SrResult<Self> {
         /*
          * Building the BLAS is mostly a 3 step process (with some complications):
@@ -27,17 +29,17 @@ impl BLAS {
             let geometry_data = vk::AccelerationStructureGeometryDataKHR {
                 triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
                     .vertex_data(vk::DeviceOrHostAddressConstKHR {
-                        device_address: mesh.vertex_buffer().get_device_address(),
+                        device_address: vertex_buffer.get_device_address(),
                     })
-                    .max_vertex(mesh.vertex_buffer().len() as u32 - 1)
-                    .vertex_stride(mesh.vertex_buffer().stride() as u64)
+                    .max_vertex(vertex_buffer.len() as u32 - 1)
+                    .vertex_stride(vertex_buffer.stride() as u64)
                     .vertex_format(vk::Format::R32G32B32_SFLOAT)
                     .index_data(vk::DeviceOrHostAddressConstKHR {
-                        device_address: mesh.index_buffer().get_device_address(),
+                        device_address: index_buffer.get_device_address(),
                     })
-                    .index_type(mesh.index_buffer().index_type())
+                    .index_type(index_buffer.index_type())
                     .transform_data(vk::DeviceOrHostAddressConstKHR {
-                        device_address: mesh.transform_buffer().get_device_address(),
+                        device_address: transform_buffer.get_device_address(),
                     }),
             };
 
@@ -56,7 +58,7 @@ impl BLAS {
             // the value of first_vertex is added to index values before fetching verts
             .first_vertex(0 as u32)
             // the number of triangles to read (3 * the number of indices to read)
-            .primitive_count((mesh.vertex_buffer().len() / 3) as u32)
+            .primitive_count((vertex_buffer.len() / 3) as u32)
             // an offset (in bytes) into geometry.geometry_data.index_data from which to start reading
             .primitive_offset(0 as u32)
             // transform_offset is an offset (in bytes) into geometry.geometry_data.transform_data
