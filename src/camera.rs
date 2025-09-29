@@ -10,7 +10,7 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            position: na::point![0.0, 0.0, 1.0],
+            position: na::point![0.0, 0.0, 10.0],
             target: na::point![0.0, 0.0, 0.0],
             fov: 90.0,
         }

@@ -45,7 +45,7 @@ fn render_and_save() -> SrResult<()> {
     let image_format = get_vk_format(ExtendedColorType::Rgba8);
     let mut renderer = Renderer::new(image_extent, image_format)?;
 
-    renderer.load_file("assets/triangle.gltf")?;
+    renderer.load_file("assets/Lantern.glb")?;
 
     let camera = Camera::default();
     renderer.set_camera(camera)?;

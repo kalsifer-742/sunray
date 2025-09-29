@@ -1,7 +1,10 @@
 pub mod mesh;
 pub mod node;
 
+use std::convert::identity;
+
 pub use mesh::*;
+use nalgebra as na;
 pub use node::*;
 
 use crate::{
@@ -15,7 +18,7 @@ pub struct Scene {
 
 impl Default for Scene {
     fn default() -> Self {
-        let transform = vulkan_abstraction::IDENTITY_MATRIX;
+        let transform = na::Matrix4::identity();
         let vertices = vec![
             vulkan_abstraction::Vertex {
                 position: [-1.0, -0.5, 0.0],

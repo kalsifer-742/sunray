@@ -1,23 +1,15 @@
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 use ash::vk;
+use nalgebra as na;
 
 use crate::{
     error::SrResult,
     vulkan_abstraction::{self},
 };
 
-#[rustfmt::skip]
-pub const IDENTITY_MATRIX : vk::TransformMatrixKHR = vk::TransformMatrixKHR {
-    matrix: [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0
-    ],
-};
-
 pub struct Node {
-    transform: vk::TransformMatrixKHR,
+    transform: na::Matrix4<f32>,
     mesh: Option<vulkan_abstraction::Mesh>,
     children: Option<Vec<vulkan_abstraction::Node>>,
 }
@@ -25,7 +17,7 @@ pub struct Node {
 impl Default for Node {
     fn default() -> Self {
         Self {
-            transform: vulkan_abstraction::IDENTITY_MATRIX,
+            transform: na::Matrix4::identity(),
             mesh: None,
             children: None,
         }
@@ -34,7 +26,7 @@ impl Default for Node {
 
 impl Node {
     pub fn new(
-        transform: vk::TransformMatrixKHR,
+        transform: na::Matrix4<f32>,
         mesh: Option<vulkan_abstraction::Mesh>,
         children: Option<Vec<Node>>,
     ) -> SrResult<Self> {
@@ -45,7 +37,7 @@ impl Node {
         })
     }
 
-    pub fn transform(&self) -> &vk::TransformMatrixKHR {
+    pub fn transform(&self) -> &na::Matrix4<f32> {
         &self.transform
     }
 
@@ -57,54 +49,42 @@ impl Node {
         &self.children
     }
 
-    pub fn load_into_gpu_memory(
+    pub fn load_mesh_into_gpu_memory(
         &self,
         core: &Rc<vulkan_abstraction::Core>,
     ) -> SrResult<(
-        vulkan_abstraction::Buffer,
-        Option<vulkan_abstraction::VertexBuffer>,
-        Option<vulkan_abstraction::IndexBuffer>,
+        vulkan_abstraction::VertexBuffer,
+        vulkan_abstraction::IndexBuffer,
     )> {
-        let transform_buffer = vulkan_abstraction::Buffer::new_from_data(
-            Rc::clone(&core),
-            &[self.transform],
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            vk::MemoryAllocateFlags::DEVICE_ADDRESS,
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::TRANSFER_DST,
-        )?;
-        if let Some(mesh) = &self.mesh {
-            let vertex_buffer = {
-                let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<
-                    vulkan_abstraction::Vertex,
-                >(Rc::clone(&core), mesh.vertices())?;
+        let mesh = self.mesh.as_ref().unwrap();
 
-                let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas::<
-                    vulkan_abstraction::Vertex,
-                >(Rc::clone(&core), mesh.vertices().len())?;
-                vulkan_abstraction::Buffer::clone_buffer(&core, &staging_buffer, &vertex_buffer)?;
+        let vertex_buffer = {
+            let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<
+                vulkan_abstraction::Vertex,
+            >(Rc::clone(&core), mesh.vertices())?;
 
-                vertex_buffer
-            };
+            let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas::<
+                vulkan_abstraction::Vertex,
+            >(Rc::clone(&core), mesh.vertices().len())?;
+            vulkan_abstraction::Buffer::clone_buffer(&core, &staging_buffer, &vertex_buffer)?;
 
-            let index_buffer = {
-                let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<u32>(
-                    Rc::clone(&core),
-                    mesh.indices(),
-                )?;
-                let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas::<u32>(
-                    Rc::clone(&core),
-                    mesh.indices().len(),
-                )?;
-                vulkan_abstraction::Buffer::clone_buffer(&core, &staging_buffer, &index_buffer)?;
+            vertex_buffer
+        };
 
-                index_buffer
-            };
+        let index_buffer = {
+            let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<u32>(
+                Rc::clone(&core),
+                mesh.indices(),
+            )?;
+            let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas::<u32>(
+                Rc::clone(&core),
+                mesh.indices().len(),
+            )?;
+            vulkan_abstraction::Buffer::clone_buffer(&core, &staging_buffer, &index_buffer)?;
 
-            return Ok((transform_buffer, Some(vertex_buffer), Some(index_buffer)));
-        }
+            index_buffer
+        };
 
-        Ok((transform_buffer, None, None))
+        Ok((vertex_buffer, index_buffer))
     }
 }

@@ -6,8 +6,11 @@ pub mod vulkan_abstraction;
 use nalgebra as na;
 use std::{collections::HashMap, rc::Rc};
 
-use crate::{error::*, vulkan_abstraction::blas};
-use ash::vk;
+use crate::{
+    error::*,
+    vulkan_abstraction::{BlasInstance, Scene, blas, index_buffer, scene, vertex_buffer},
+};
+use ash::{prelude::VkResult, vk};
 
 struct UniformBufferContents {
     pub view_inverse: na::Matrix4<f32>,
@@ -28,7 +31,6 @@ pub struct Renderer {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
     uniform_buffer: vulkan_abstraction::Buffer,
-    #[allow(unused)]
     blases: Vec<vulkan_abstraction::BLAS>,
     #[allow(unused)]
     tlas: vulkan_abstraction::TLAS,
@@ -129,17 +131,8 @@ impl Renderer {
         }
         .into();
 
-        let scene = vulkan_abstraction::Scene::default();
-        let node = scene.nodes().first().unwrap();
-        let (transform_buffer, vertex_buffer, index_buffer) = node.load_into_gpu_memory(&core)?;
-
-        let blases = vec![vulkan_abstraction::BLAS::new(
-            Rc::clone(&core),
-            transform_buffer,
-            vertex_buffer.unwrap(),
-            index_buffer.unwrap(),
-        )?];
-        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &blases)?;
+        let blases = vec![];
+        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[])?;
 
         let uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(&core),
@@ -282,14 +275,11 @@ impl Renderer {
 
     pub fn load_file(&mut self, path: &str) -> SrResult<()> {
         let gltf = vulkan_abstraction::Gltf::new(path)?;
-        let (default_scene_index, scenes) = gltf.load_scenes()?;
+        // TODO: insert directly into buffer
+        let (default_scene_index, scenes) = gltf.create_scenes()?;
         let deault_scene = &scenes[default_scene_index];
 
-        self.blases.clear();
-        for node in deault_scene.nodes() {
-            self.load_blases(node)?;
-        }
-        self.tlas.rebuild(&self.blases)?;
+        self.load_scene(deault_scene)?;
 
         //TODO: update insted of recreating
         self.clear_image_dependent_data();
@@ -297,24 +287,68 @@ impl Renderer {
         Ok(())
     }
 
-    fn load_blases(&mut self, node: &vulkan_abstraction::Node) -> SrResult<()> {
-        let (transform_buffer, vertex_buffer, index_buffer) =
-            node.load_into_gpu_memory(&self.core)?;
-        let blas = vulkan_abstraction::BLAS::new(
-            Rc::clone(&self.core),
-            transform_buffer,
-            vertex_buffer.unwrap(),
-            index_buffer.unwrap(),
-        )?;
-        self.blases.push(blas);
+    fn load_scene(&mut self, scene: &Scene) -> SrResult<()> {
+        self.blases.clear();
+
+        let mut blas_instances = vec![];
+        for node in scene.nodes() {
+            let local_transform = node.transform();
+            self.load_node(node, local_transform, &mut blas_instances)?;
+        }
+
+        let blas_instances = blas_instances
+            .into_iter()
+            .map(|(index, transform)| vulkan_abstraction::BlasInstance {
+                blas: &self.blases[index],
+                transform: Self::to_vk_transform(transform),
+            })
+            .collect::<Vec<_>>();
+        self.tlas.rebuild(&blas_instances)?;
+
+        Ok(())
+    }
+
+    fn load_node(
+        &mut self,
+        node: &vulkan_abstraction::Node,
+        transform: &na::Matrix4<f32>,
+        blas_instances: &mut Vec<(usize, na::Matrix4<f32>)>,
+    ) -> SrResult<()> {
+        let local_transform = node.transform() * transform;
+
+        // TODO: avoid creating new blas for alredy seen meshes
+        if node.mesh().is_some() {
+            let (vertex_buffer, index_buffer) = node.load_mesh_into_gpu_memory(&self.core)?;
+            let blas =
+                vulkan_abstraction::BLAS::new(Rc::clone(&self.core), vertex_buffer, index_buffer)?;
+            self.blases.push(blas);
+
+            blas_instances.push((self.blases.len() - 1, local_transform));
+        }
 
         if let Some(children) = node.children() {
             for child in children {
-                self.load_blases(child)?
+                self.load_node(child, &local_transform, blas_instances)?
             }
         }
 
         Ok(())
+    }
+
+    fn to_vk_transform(transform: na::Matrix4<f32>) -> vk::TransformMatrixKHR {
+        let r0 = transform.row(0);
+        let r1 = transform.row(1);
+        let r2 = transform.row(2);
+        let r3 = transform.row(3);
+
+        #[rustfmt::skip]
+        let matrix = [
+            r0[0], r1[0], r2[0], r3[0],
+            r0[1], r1[1], r2[1], r3[1],
+            r0[2], r1[2], r2[2], r3[2],
+        ];
+
+        vk::TransformMatrixKHR { matrix }
     }
 
     pub fn set_camera(&mut self, camera: Camera) -> SrResult<()> {
