@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use ash::vk;
 use nalgebra as na;
-use sunray::{error::{ErrorSource, SrResult}, vulkan_abstraction};
+use sunray::{error::{ErrorSource, SrResult}, vulkan_abstraction, camera::Camera};
 use winit::{
     application::ApplicationHandler, event::WindowEvent, event_loop::{self, ControlFlow, EventLoop}, raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle}, window::Window
 };
@@ -62,7 +62,7 @@ impl App {
             &create_surface,
         )?;
 
-        renderer.load_file("assets/triangle.gltf")?;
+        renderer.load_file("assets/Lantern.glb")?;
 
         //take ownership of the surface
         let surface = surface::Surface::new(
@@ -257,7 +257,7 @@ impl App {
     fn draw(&mut self) -> sunray::error::SrResult<()> {
         // update frame data:
         let time = self.time_elapsed();
-        self.res_mut().renderer.set_camera(sunray::Camera::new(na::Point3::new(0.0, 0.0, 2.0 + time.sin()), na::Point3::origin(), 90.0)?)?;
+        self.res_mut().renderer.set_camera(Camera::new(na::Point3::new(-15.0 * time.cos(), 0.0, 15.0 * time.sin()), na::Point3::origin(), 90.0)?)?;
 
         let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
 

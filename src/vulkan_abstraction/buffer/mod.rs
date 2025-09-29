@@ -132,6 +132,17 @@ impl Buffer {
         buffer_usage_flags: vk::BufferUsageFlags,
         name: &'static str,
     ) -> SrResult<Self> {
+        Self::new_aligned::<V>(core, len, 1, memory_location, buffer_usage_flags, name)
+    }
+
+    pub fn new_aligned<V>(
+        core: Rc<vulkan_abstraction::Core>,
+        len: usize,
+        alignment: u64,
+        memory_location: gpu_allocator::MemoryLocation,
+        buffer_usage_flags: vk::BufferUsageFlags,
+        name: &'static str,
+    ) -> SrResult<Self> {
         if len == 0 {
             return Ok(Self::new_null(core))
         }
@@ -148,6 +159,8 @@ impl Buffer {
         };
 
         let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        // fix alignment
+        let mem_requirements = mem_requirements.alignment(mem_requirements.alignment.max(alignment));
 
         let allocation = core.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
             name,

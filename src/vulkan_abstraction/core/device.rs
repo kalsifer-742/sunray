@@ -11,8 +11,8 @@ pub struct Device {
     device: ash::Device,
     physical_device_memory_properties: vk::PhysicalDeviceMemoryProperties,
     physical_device: vk::PhysicalDevice,
-    physical_device_rt_pipeline_properties:
-        vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>,
+    physical_device_rt_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>,
+    physical_device_acceleration_structure_properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'static>,
     queue_family_index: u32,
     surface_support_details: Option<RefCell<SurfaceSupportDetails>>,
 }
@@ -119,12 +119,13 @@ impl Device {
         let physical_device_memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
-        let physical_device_rt_pipeline_properties = {
-            let mut physical_device_rt_pipeline_properties =
-                vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+        let (physical_device_rt_pipeline_properties, physical_device_acceleration_structure_properties) = {
+            let mut physical_device_rt_pipeline_properties = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+            let mut physical_device_acceleration_structure_properties = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
 
             let mut physical_device_properties = vk::PhysicalDeviceProperties2::default()
-                .push_next(&mut physical_device_rt_pipeline_properties);
+                .push_next(&mut physical_device_rt_pipeline_properties)
+                .push_next(&mut physical_device_acceleration_structure_properties);
 
             unsafe {
                 instance.get_physical_device_properties2(
@@ -133,7 +134,7 @@ impl Device {
                 )
             };
 
-            physical_device_rt_pipeline_properties
+            (physical_device_rt_pipeline_properties, physical_device_acceleration_structure_properties)
         };
 
         Ok(Self {
@@ -141,6 +142,7 @@ impl Device {
             physical_device,
             physical_device_memory_properties,
             physical_device_rt_pipeline_properties,
+            physical_device_acceleration_structure_properties,
             queue_family_index,
             surface_support_details,
         })
@@ -194,11 +196,14 @@ impl Device {
     pub fn physical_device(&self) -> vk::PhysicalDevice {
         self.physical_device
     }
-    pub fn rt_pipeline_properties(
-        &self,
-    ) -> &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static> {
+    pub fn rt_pipeline_properties(&self) -> &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static> {
         &self.physical_device_rt_pipeline_properties
     }
+
+    pub fn acceleration_structure_properties(&self) -> &vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'static> {
+        &self.physical_device_acceleration_structure_properties
+    }
+
     pub fn memory_properties(&self) -> &vk::PhysicalDeviceMemoryProperties {
         &self.physical_device_memory_properties
     }
