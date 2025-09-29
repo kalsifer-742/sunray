@@ -47,7 +47,13 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         match self.core().queue().wait_idle() {
             Ok(()) => {}
-            Err(e) => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
+            Err(e) => {
+                match e.get_source() {
+                    Some(ErrorSource::VULKAN(e)) => log::warn!("VkQueueWaitIdle s returned {e:?} in sunray::Renderer::drop"),
+                    _ => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
+                }
+
+            }
         }
     }
 }
@@ -134,12 +140,8 @@ impl Renderer {
         let blas = vulkan_abstraction::BLAS::new(Rc::clone(&core), mesh)?;
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[&blas])?;
 
-        let uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
+        let uniform_buffer = vulkan_abstraction::Buffer::new_uniform::<UniformBufferContents>(
             Rc::clone(&core),
-            std::mem::size_of::<UniformBufferContents>(),
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            vk::MemoryAllocateFlags::empty(),
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
         )?;
 
         let descriptor_set_layout = vulkan_abstraction::DescriptorSetLayout::new(Rc::clone(&core))?;
@@ -186,8 +188,9 @@ impl Renderer {
                 self.image_extent,
                 self.image_format,
                 vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                "sunray (internal, pre-blit) raytrace result image",
             )?;
 
             let descriptor_sets = vulkan_abstraction::DescriptorSets::new(
@@ -307,7 +310,6 @@ impl Renderer {
         let mem = self.uniform_buffer.map::<crate::UniformBufferContents>()?;
         mem[0].view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
         mem[0].proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
-        self.uniform_buffer.unmap();
 
         Ok(())
     }
@@ -370,8 +372,9 @@ impl Renderer {
             self.image_extent,
             self.image_format,
             vk::ImageTiling::LINEAR,
+            gpu_allocator::MemoryLocation::GpuToCpu,
             vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            "mapped sunray output image"
         )?;
 
         let wait_fence = self.render_to_image(dst_image.inner(), vk::Semaphore::null())?;
@@ -578,7 +581,7 @@ impl Renderer {
         let row_byte_size = image.extent().width as usize * std::mem::size_of::<u32>();
         let height = image.extent().height as usize;
 
-        let mem = image.map(subresource_layout.offset as usize)?;
+        let mem = image.map()?;
         let mut row_pitch_corrected_mem: Vec<u8> = vec![0; size];
 
         let mut index = 0;
@@ -591,7 +594,6 @@ impl Renderer {
             fixed_pitch_index += subresource_layout.row_pitch as usize;
             index += row_byte_size;
         }
-        image.unmap();
 
         Ok(row_pitch_corrected_mem)
     }

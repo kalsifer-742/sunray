@@ -4,7 +4,7 @@ use ash::vk;
 
 use crate::{
     error::SrResult,
-    vulkan_abstraction::{self, Scene, Vertex, scene},
+    vulkan_abstraction::{self, Vertex},
 };
 
 struct GltfData {
@@ -69,7 +69,7 @@ impl Gltf {
             let mut vertices = vec![];
             let mut indices = vec![];
 
-            for (i, primitive) in mesh.primitives().enumerate() {
+            for (_i, primitive) in mesh.primitives().enumerate() {
                 let reader =
                     primitive.reader(|buffer| Some(&self.gltf_data.buffers[buffer.index()]));
 

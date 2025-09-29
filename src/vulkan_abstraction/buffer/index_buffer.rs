@@ -13,8 +13,6 @@ pub struct IndexBuffer {
 impl IndexBuffer {
     //build an index buffer with flags for usage in a blas
     pub fn new_for_blas<T : 'static>(core: Rc<vulkan_abstraction::Core>, len: usize) -> SrResult<Self> {
-        let mem_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
-        let alloc_flags = vk::MemoryAllocateFlags::DEVICE_ADDRESS;
         let usage_flags = 
             vk::BufferUsageFlags::TRANSFER_DST
             | vk::BufferUsageFlags::INDEX_BUFFER
@@ -28,7 +26,7 @@ impl IndexBuffer {
             },
         };
 
-        let buffer = Buffer::new::<T>(core, len, mem_flags, alloc_flags, usage_flags)?;
+        let buffer = Buffer::new::<T>(core, len, gpu_allocator::MemoryLocation::GpuOnly, usage_flags, "index buffer for BLAS usage")?;
 
         Ok(Self { buffer, len, idx_type })
     }

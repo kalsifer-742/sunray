@@ -102,11 +102,11 @@ impl TLAS {
         let instances_buffer = vulkan_abstraction::Buffer::new_from_data(
             core,
             &blas_instances,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            gpu_allocator::MemoryLocation::GpuOnly,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::TRANSFER_DST,
+            "TLAS instances buffer"
         )?;
 
         Ok(instances_buffer)

@@ -6,7 +6,7 @@ pub use model::*;
 
 use crate::{
     error::SrResult,
-    vulkan_abstraction::{self, scene},
+    vulkan_abstraction::{self},
 };
 
 #[rustfmt::skip]
