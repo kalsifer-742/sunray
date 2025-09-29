@@ -75,32 +75,8 @@ impl Node {
             "node BLAS transform buffer"
         )?;
         if let Some(mesh) = &self.mesh {
-            let vertex_buffer = {
-                let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<
-                    vulkan_abstraction::Vertex,
-                >(Rc::clone(&core), mesh.vertices())?;
-
-                let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas::<
-                    vulkan_abstraction::Vertex,
-                >(Rc::clone(&core), mesh.vertices().len())?;
-                vulkan_abstraction::Buffer::clone_buffer(&core, &staging_buffer, &vertex_buffer)?;
-
-                vertex_buffer
-            };
-
-            let index_buffer = {
-                let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<u32>(
-                    Rc::clone(&core),
-                    mesh.indices(),
-                )?;
-                let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas::<u32>(
-                    Rc::clone(&core),
-                    mesh.indices().len(),
-                )?;
-                vulkan_abstraction::Buffer::clone_buffer(&core, &staging_buffer, &index_buffer)?;
-
-                index_buffer
-            };
+            let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&core), mesh.vertices())?;
+            let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(Rc::clone(&core), mesh.indices())?;
 
             return Ok((transform_buffer, Some(vertex_buffer), Some(index_buffer)));
         }
