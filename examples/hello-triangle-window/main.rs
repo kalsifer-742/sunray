@@ -62,6 +62,8 @@ impl App {
             &create_surface,
         )?;
 
+        renderer.load_file("assets/triangle.gltf")?;
+
         //take ownership of the surface
         let surface = surface::Surface::new(
             renderer.core().entry(),
