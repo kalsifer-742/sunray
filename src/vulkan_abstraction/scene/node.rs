@@ -1,6 +1,5 @@
-use std::{rc::Rc, sync::Arc};
+use std::rc::Rc;
 
-use ash::vk;
 use nalgebra as na;
 
 use crate::{
@@ -58,32 +57,14 @@ impl Node {
     )> {
         let mesh = self.mesh.as_ref().unwrap();
 
-        let vertex_buffer = {
-            let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<
-                vulkan_abstraction::Vertex,
-            >(Rc::clone(&core), mesh.vertices())?;
-
-            let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas::<
-                vulkan_abstraction::Vertex,
-            >(Rc::clone(&core), mesh.vertices().len())?;
-            vulkan_abstraction::Buffer::clone_buffer(&core, &staging_buffer, &vertex_buffer)?;
-
-            vertex_buffer
-        };
-
-        let index_buffer = {
-            let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data::<u32>(
-                Rc::clone(&core),
-                mesh.indices(),
-            )?;
-            let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas::<u32>(
-                Rc::clone(&core),
-                mesh.indices().len(),
-            )?;
-            vulkan_abstraction::Buffer::clone_buffer(&core, &staging_buffer, &index_buffer)?;
-
-            index_buffer
-        };
+        let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(
+            Rc::clone(&core),
+            mesh.vertices(),
+        )?;
+        let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
+            Rc::clone(&core),
+            mesh.indices(),
+        )?;
 
         Ok((vertex_buffer, index_buffer))
     }

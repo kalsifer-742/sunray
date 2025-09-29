@@ -1,5 +1,3 @@
-use ash::vk;
-
 use crate::{error::SrResult, vulkan_abstraction};
 
 use nalgebra as na;

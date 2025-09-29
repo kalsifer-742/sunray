@@ -58,9 +58,9 @@ impl ShaderBindingTable {
         let mut sbt_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(core),
             sbt_buffer_size,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            gpu_allocator::MemoryLocation::CpuToGpu,
             vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
+            "shader binding table buffer",
         )?;
         let sbt_buffer_data = sbt_buffer.map()?;
         let mut buffer_index = 0;
@@ -87,8 +87,6 @@ impl ShaderBindingTable {
             buffer_index += hit_region.stride as usize;
             handles_index += handle_size;
         }
-
-        sbt_buffer.unmap();
 
         // Find the SBT addresses of each group
         let sbt_buffer_device_address = sbt_buffer.get_device_address();

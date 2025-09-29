@@ -1,10 +1,8 @@
 pub mod index_buffer;
-pub mod mapped_memory;
 pub mod vertex_buffer;
 
 //why use and not just mod?
 pub use index_buffer::*;
-use mapped_memory::*;
 pub use vertex_buffer::*;
 
 use crate::{error::*, vulkan_abstraction};
@@ -43,43 +41,33 @@ pub fn get_memory_type_index(
 
 //I think Buffer should be a trait with some default implementations
 pub struct Buffer {
-    usable_byte_size: vk::DeviceSize,
     core: Rc<vulkan_abstraction::Core>,
 
     buffer: vk::Buffer,
-    memory: vk::DeviceMemory,
-    mapped_memory: Option<RawMappedMemory>,
+    allocation: gpu_allocator::vulkan::Allocation,
+
+    byte_size: u64,
 }
 
 impl Buffer {
     pub fn new_staging<V>(core: Rc<vulkan_abstraction::Core>, size: usize) -> SrResult<Self> {
-        let memory_property_flags =
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let memory_allocate_flags = vk::MemoryAllocateFlags::empty();
-        let buffer_usage_flags = vk::BufferUsageFlags::TRANSFER_SRC;
-
         Self::new::<V>(
             core,
             size,
-            memory_property_flags,
-            memory_allocate_flags,
-            buffer_usage_flags,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            "staging buffer"
         )
     }
 
     #[allow(dead_code)]
     pub fn new_uniform<T>(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
-        let memory_property_flags =
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let memory_allocate_flags = vk::MemoryAllocateFlags::empty();
-        let buffer_usage_flags = vk::BufferUsageFlags::UNIFORM_BUFFER;
-
         Self::new::<T>(
             core,
             1,
-            memory_property_flags,
-            memory_allocate_flags,
-            buffer_usage_flags,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            "uniform buffer",
         )
     }
 
@@ -88,7 +76,7 @@ impl Buffer {
         data: &[T],
     ) -> SrResult<Self> {
         if data.len() == 0 {
-            return Self::new_staging::<T>(core, data.len());
+            return Ok(Self::new_null(core));
         }
         //create staging buffer
         let mut staging_buffer = Self::new_staging::<T>(core, data.len())?;
@@ -96,7 +84,6 @@ impl Buffer {
         //copy data to staging buffer
         let mapped_memory = staging_buffer.map::<T>()?;
         mapped_memory[0..data.len()].copy_from_slice(data);
-        staging_buffer.unmap();
 
         Ok(staging_buffer)
     }
@@ -104,25 +91,34 @@ impl Buffer {
     pub fn new_from_data<T: Copy>(
         core: Rc<vulkan_abstraction::Core>,
         data: &[T],
-        memory_property_flags: vk::MemoryPropertyFlags,
-        alloc_flags: vk::MemoryAllocateFlags,
+        mem_location: gpu_allocator::MemoryLocation,
         buffer_usage_flags: vk::BufferUsageFlags,
+        name: &'static str,
     ) -> SrResult<Self> {
         if data.len() == 0 {
-            return Self::new::<T>(core, data.len(), memory_property_flags, alloc_flags, buffer_usage_flags);
+            return Ok(Self::new_null(core));
         }
 
         let staging_buffer = Self::new_staging_from_data(Rc::clone(&core), data)?;
         let buffer = Self::new::<T>(
             Rc::clone(&core),
             data.len(),
-            memory_property_flags,
-            alloc_flags,
+            mem_location,
             buffer_usage_flags,
+            name,
         )?;
         Self::clone_buffer(&core, &staging_buffer, &buffer)?;
 
         Ok(buffer)
+    }
+
+    pub fn new_null(core: Rc<vulkan_abstraction::Core>) -> Self {
+        Self {
+            core,
+            buffer: vk::Buffer::null(),
+            allocation: gpu_allocator::vulkan::Allocation::default(),
+            byte_size: 0,
+        }
     }
 
     /// # Create a new Buffer
@@ -132,18 +128,12 @@ impl Buffer {
     pub fn new<V>(
         core: Rc<vulkan_abstraction::Core>,
         len: usize,
-        memory_property_flags: vk::MemoryPropertyFlags,
-        alloc_flags: vk::MemoryAllocateFlags,
+        memory_location: gpu_allocator::MemoryLocation,
         buffer_usage_flags: vk::BufferUsageFlags,
+        name: &'static str,
     ) -> SrResult<Self> {
         if len == 0 {
-            return Ok(Self {
-                usable_byte_size: 0,
-                core,
-                buffer: vk::Buffer::null(),
-                memory: vk::DeviceMemory::null(),
-                mapped_memory: None,
-            })
+            return Ok(Self::new_null(core))
         }
 
         let device = core.device().inner();
@@ -158,51 +148,34 @@ impl Buffer {
         };
 
         let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-        let allocation_byte_size = mem_requirements.size;
-        let mem_type_idx = get_memory_type_index(&core, memory_property_flags, &mem_requirements)?;
 
-        let mut memory_allocate_flags_info =
-            vk::MemoryAllocateFlagsInfo::default().flags(alloc_flags);
+        let allocation = core.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name,
+            requirements: mem_requirements,
+            location: memory_location,
+            linear: true, // Buffers are always linear
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+        })?;
 
-        let mem_alloc_info = {
-            let mem_alloc_info = vk::MemoryAllocateInfo::default()
-                .allocation_size(allocation_byte_size)
-                .memory_type_index(mem_type_idx);
 
-            if alloc_flags == vk::MemoryAllocateFlags::empty() {
-                mem_alloc_info
-            } else {
-                mem_alloc_info.push_next(&mut memory_allocate_flags_info)
-            }
-        };
-        let memory = unsafe { device.allocate_memory(&mem_alloc_info, None) }?;
-
-        unsafe { device.bind_buffer_memory(buffer, memory, 0) }?;
+        unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }?;
 
         Ok(Self {
             core,
-            usable_byte_size,
             buffer,
-            memory,
-            mapped_memory: None,
+            allocation,
+            byte_size: usable_byte_size,
         })
     }
 
     pub fn byte_size(&self) -> vk::DeviceSize {
-        self.usable_byte_size
+        self.byte_size
     }
-    pub fn map<V>(&mut self) -> SrResult<&mut [V]> {
+    pub fn map<V: Sized>(&mut self) -> SrResult<&mut [V]> {
         if !self.is_null() {
-            let flags = vk::MemoryMapFlags::empty();
-            let p = unsafe {
-                self.core
-                    .device()
-                    .inner()
-                    .map_memory(self.memory, 0, self.usable_byte_size, flags)
-            }?;
-            let raw_mem = unsafe { RawMappedMemory::new(p, self.usable_byte_size as usize) };
-            self.mapped_memory = Some(raw_mem);
-            let ret = self.mapped_memory.as_mut().unwrap().borrow();
+            let slice = self.allocation.mapped_slice_mut().unwrap();
+
+            let ret = unsafe { std::slice::from_raw_parts_mut(slice.as_ptr() as *mut V, slice.len() / std::mem::size_of::<V>()) };
 
             Ok(ret)
         } else {
@@ -210,15 +183,6 @@ impl Buffer {
         }
     }
 
-    // correctness of unmap is checked by the borrow checker: it only works if the previous
-    // mut borrow of self was already dropped. drop() calls unmap() if necessary
-    pub fn unmap(&mut self) {
-        self.mapped_memory = None;
-
-        if !self.is_null() {
-            unsafe { self.core.device().inner().unmap_memory(self.memory) };
-        }
-    }
 
     // mainly useful to copy from a staging buffer to a device buffer
     pub fn clone_buffer(
@@ -282,17 +246,16 @@ impl Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        //unmap() must be called before the buffer is dropped
-        if self.mapped_memory.is_some() {
-            self.unmap();
-        }
-
         let device = self.core.device().inner();
         unsafe {
             device.destroy_buffer(self.buffer, None);
         }
-        unsafe {
-            device.free_memory(self.memory, None);
+
+        //need to take ownership to pass to free
+        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+        match self.core.allocator_mut().free(allocation) {
+            Ok(()) => {}
+            Err(e) => log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Buffer::drop"),
         }
     }
 }

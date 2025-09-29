@@ -55,8 +55,14 @@ impl Drop for CmdBuffer {
         unsafe {
             match self.fence.wait() {
                 Ok(()) => {}
-                Err(e) => log::warn!("device.wait_for_fences returned {e} inside CommandBuffer::drop"),
-            };
+                Err(e) => {
+                    match e.get_source() {
+                        Some(ErrorSource::VULKAN(e)) => log::warn!("VkWaitForFences returned {e:?} in CmdBuffer::drop"),
+                        _ => log::error!("VkWaitForFences returned {e} in CmdBuffer::drop"),
+                    }
+
+                }
+            }
             self.core.device().inner().free_command_buffers(self.core.cmd_pool().inner(), &[self.handle]);
         }
     }

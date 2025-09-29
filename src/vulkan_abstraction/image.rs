@@ -7,13 +7,12 @@ use crate::{error::SrResult, vulkan_abstraction};
 pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
     image: vk::Image,
-    device_memory: vk::DeviceMemory,
+    allocation: gpu_allocator::vulkan::Allocation,
     byte_size: usize,
     image_view: vk::ImageView,
     image_subresource_range: vk::ImageSubresourceRange,
     extent: vk::Extent3D,
     format: vk::Format,
-    mapped_memory: Option<vulkan_abstraction::mapped_memory::RawMappedMemory>,
 }
 
 impl Image {
@@ -22,8 +21,9 @@ impl Image {
         extent: vk::Extent3D,
         format: vk::Format,
         tiling: vk::ImageTiling,
+        location: gpu_allocator::MemoryLocation,
         usage_flags: vk::ImageUsageFlags,
-        memory_flags: vk::MemoryPropertyFlags,
+        name: &'static str,
     ) -> SrResult<Self> {
         let image = {
             let image_create_info = vk::ImageCreateInfo::default()
@@ -41,27 +41,26 @@ impl Image {
             unsafe { core.device().inner().create_image(&image_create_info, None) }.unwrap()
         };
 
-        let (device_memory, byte_size) = {
+        let (allocation, byte_size) = {
             let mem_reqs = unsafe { core.device().inner().get_image_memory_requirements(image) };
-            let mem_alloc_info = vk::MemoryAllocateInfo::default()
-                .allocation_size(mem_reqs.size)
-                .memory_type_index(vulkan_abstraction::get_memory_type_index(
-                    &core,
-                    memory_flags,
-                    &mem_reqs,
-                )?);
 
             let byte_size = mem_reqs.size as usize;
-            let device_memory =
-                unsafe { core.device().inner().allocate_memory(&mem_alloc_info, None) }.unwrap();
 
-            (device_memory, byte_size)
+            let allocation = core.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                name,
+                requirements: mem_reqs,
+                location,
+                linear: true, // Should be ok?
+                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            })?;
+
+            (allocation, byte_size)
         };
 
         unsafe {
             core.device()
                 .inner()
-                .bind_image_memory(image, device_memory, 0)
+                .bind_image_memory(image, allocation.memory(), allocation.offset())
         }
         .unwrap();
 
@@ -90,47 +89,17 @@ impl Image {
         Ok(Self {
             core,
             image,
-            device_memory,
+            allocation,
             byte_size,
             image_view,
             image_subresource_range,
             extent,
             format,
-            mapped_memory: None,
         })
     }
 
-    pub fn device_memory(&self) -> &vk::DeviceMemory {
-        &self.device_memory
-    }
-
-    //TODO: somehow unify this with Buffer's implementation
-    pub fn map(&mut self, offset: usize) -> SrResult<&[u8]> {
-        let p = unsafe {
-            self.core.device().inner().map_memory(
-                self.device_memory,
-                offset as u64,
-                self.byte_size as u64,
-                vk::MemoryMapFlags::empty(),
-            )
-        }?;
-        // let p = unsafe { p.add(offset as usize) };
-
-        let raw_mem = unsafe {
-            vulkan_abstraction::mapped_memory::RawMappedMemory::new(p, self.byte_size as usize)
-        };
-        self.mapped_memory = Some(raw_mem);
-        let ret = self.mapped_memory.as_mut().unwrap().borrow();
-
-        Ok(ret)
-    }
-
-    // correctness of unmap is checked by the borrow checker: it only works if the previous
-    // mut borrow of self was already dropped. drop() calls unmap() if necessary
-    pub fn unmap(&mut self) {
-        self.mapped_memory = None;
-
-        unsafe { self.core.device().inner().unmap_memory(self.device_memory) };
+    pub fn map(&mut self) -> SrResult<&[u8]> {
+        Ok(self.allocation.mapped_slice().unwrap())
     }
 
     pub fn image_view(&self) -> &vk::ImageView {
@@ -160,10 +129,6 @@ impl Image {
 
 impl Drop for Image {
     fn drop(&mut self) {
-        if let Some(_mapped_memory) = &self.mapped_memory {
-            self.unmap();
-        }
-
         let device = self.core.device().inner();
         unsafe {
             device.destroy_image_view(self.image_view, None);
@@ -171,8 +136,12 @@ impl Drop for Image {
         unsafe {
             device.destroy_image(self.image, None);
         }
-        unsafe {
-            device.free_memory(self.device_memory, None);
+
+        //need to take ownership to pass to free
+        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+        match self.core.allocator_mut().free(allocation) {
+            Ok(()) => {}
+            Err(e) => log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop"),
         }
     }
 }

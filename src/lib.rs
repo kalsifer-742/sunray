@@ -1,16 +1,12 @@
 pub mod camera;
-pub use camera::Camera;
 pub mod error;
 pub mod vulkan_abstraction;
 
 use nalgebra as na;
 use std::{collections::HashMap, rc::Rc};
 
-use crate::{
-    error::*,
-    vulkan_abstraction::{BlasInstance, Scene, blas, index_buffer, scene, vertex_buffer},
-};
-use ash::{prelude::VkResult, vk};
+use crate::error::*;
+use ash::vk;
 
 struct UniformBufferContents {
     pub view_inverse: na::Matrix4<f32>,
@@ -49,7 +45,12 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         match self.core().queue().wait_idle() {
             Ok(()) => {}
-            Err(e) => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
+            Err(e) => match e.get_source() {
+                Some(ErrorSource::VULKAN(e)) => {
+                    log::warn!("VkQueueWaitIdle s returned {e:?} in sunray::Renderer::drop")
+                }
+                _ => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
+            },
         }
     }
 }
@@ -134,13 +135,8 @@ impl Renderer {
         let blases = vec![];
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[])?;
 
-        let uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
-            Rc::clone(&core),
-            std::mem::size_of::<UniformBufferContents>(),
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            vk::MemoryAllocateFlags::empty(),
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
-        )?;
+        let uniform_buffer =
+            vulkan_abstraction::Buffer::new_uniform::<UniformBufferContents>(Rc::clone(&core))?;
 
         let descriptor_set_layout = vulkan_abstraction::DescriptorSetLayout::new(Rc::clone(&core))?;
 
@@ -186,8 +182,9 @@ impl Renderer {
                 self.image_extent,
                 self.image_format,
                 vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                "sunray (internal, pre-blit) raytrace result image",
             )?;
 
             let descriptor_sets = vulkan_abstraction::DescriptorSets::new(
@@ -287,7 +284,7 @@ impl Renderer {
         Ok(())
     }
 
-    fn load_scene(&mut self, scene: &Scene) -> SrResult<()> {
+    fn load_scene(&mut self, scene: &vulkan_abstraction::Scene) -> SrResult<()> {
         self.blases.clear();
 
         let mut blas_instances = vec![];
@@ -351,7 +348,7 @@ impl Renderer {
         vk::TransformMatrixKHR { matrix }
     }
 
-    pub fn set_camera(&mut self, camera: Camera) -> SrResult<()> {
+    pub fn set_camera(&mut self, camera: camera::Camera) -> SrResult<()> {
         let eye = camera.position();
         let target = camera.target();
         let up = &na::vector![0.0, 1.0, 0.0];
@@ -369,7 +366,6 @@ impl Renderer {
         let mem = self.uniform_buffer.map::<crate::UniformBufferContents>()?;
         mem[0].view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
         mem[0].proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
-        self.uniform_buffer.unmap();
 
         Ok(())
     }
@@ -432,8 +428,9 @@ impl Renderer {
             self.image_extent,
             self.image_format,
             vk::ImageTiling::LINEAR,
+            gpu_allocator::MemoryLocation::GpuToCpu,
             vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            "mapped sunray output image",
         )?;
 
         let wait_fence = self.render_to_image(dst_image.inner(), vk::Semaphore::null())?;
@@ -640,7 +637,7 @@ impl Renderer {
         let row_byte_size = image.extent().width as usize * std::mem::size_of::<u32>();
         let height = image.extent().height as usize;
 
-        let mem = image.map(subresource_layout.offset as usize)?;
+        let mem = image.map()?;
         let mut row_pitch_corrected_mem: Vec<u8> = vec![0; size];
 
         let mut index = 0;
@@ -653,7 +650,6 @@ impl Renderer {
             fixed_pitch_index += subresource_layout.row_pitch as usize;
             index += row_byte_size;
         }
-        image.unmap();
 
         Ok(row_pitch_corrected_mem)
     }

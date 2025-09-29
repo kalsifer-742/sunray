@@ -1,6 +1,6 @@
 use ash::vk;
 use image::{ExtendedColorType, ImageFormat};
-use sunray::{Camera, Renderer, error::SrResult};
+use sunray::{Renderer, camera::Camera, error::SrResult};
 
 fn get_vk_format(image_format: ExtendedColorType) -> vk::Format {
     match image_format {

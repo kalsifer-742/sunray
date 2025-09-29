@@ -108,7 +108,21 @@ impl Swapchain {
 
         let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }?;
 
-        log::info!("built swapchain {{ handle: {swapchain:#x?}, extent: {image_extent:?}, images: {images:#x?} }}");
+        let fmt_handles = |imgs: &[vk::Image]| -> String {
+            if log::max_level() < log::LevelFilter::Debug {
+                return String::new();
+            }
+            let mut s = String::from("[ ");
+            for img in imgs.iter() {
+                s += &format!("{:#x?}, ", img);
+            }
+            s += "]";
+
+            s
+        };
+
+
+        log::debug!("built swapchain {{ handle: {swapchain:#x?}, extent: {image_extent:?}, images: {} }}", fmt_handles(&images));
 
         let image_views = images
             .iter()

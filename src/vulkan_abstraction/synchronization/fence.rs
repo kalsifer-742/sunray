@@ -1,6 +1,6 @@
 use std::rc::Rc;
 use ash::vk;
-use crate::{error::SrResult, vulkan_abstraction};
+use crate::{error::{ErrorSource, SrResult}, vulkan_abstraction};
 
 
 pub struct Fence {
@@ -58,7 +58,13 @@ impl Drop for Fence {
         // don't panic in drop, if possible
         match self.wait() {
             Ok(()) => {}
-            Err(e) => log::warn!("VkWaitForFences returned {e} in Fence::drop"),
+            Err(e) => {
+                match e.get_source() {
+                    Some(ErrorSource::VULKAN(e)) => log::warn!("VkWaitForFences returned {e:?} in Fence::drop"),
+                    _ => log::error!("VkWaitForFences returned {e} in Fence::drop"),
+                }
+
+            }
         }
         unsafe { self.device.inner().destroy_fence(self.handle, None) };
     }

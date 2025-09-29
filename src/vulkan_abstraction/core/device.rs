@@ -191,6 +191,9 @@ impl Device {
     pub fn inner(&self) -> &ash::Device {
         &self.device
     }
+    pub fn physical_device(&self) -> vk::PhysicalDevice {
+        self.physical_device
+    }
     pub fn rt_pipeline_properties(
         &self,
     ) -> &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static> {

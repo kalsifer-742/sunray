@@ -7,6 +7,7 @@ pub type SrResult<T> = std::result::Result<T, SrError>;
 pub enum ErrorSource {
     VULKAN(vk::Result),
     GLTF(gltf::Error),
+    ALLOCATOR(gpu_allocator::AllocationError)
 }
 
 #[derive(Debug)]
@@ -63,11 +64,23 @@ impl From<vk::Result> for SrError {
     }
 }
 
+impl From<gpu_allocator::AllocationError> for SrError {
+    fn from(value: gpu_allocator::AllocationError) -> Self {
+        let description = match value {
+            //TODO: provide description for some errors
+            ref e => format!("UNEXPECTED GPU_ALLOCATOR ERROR: {e}"),
+        };
+
+        Self::new(Some(ErrorSource::ALLOCATOR(value)), description)
+    }
+}
+
 impl Display for ErrorSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorSource::VULKAN(result) => result.fmt(f),
+            ErrorSource::VULKAN(e) => e.fmt(f),
             ErrorSource::GLTF(e) => e.fmt(f),
+            ErrorSource::ALLOCATOR(e) => e.fmt(f),
         }
     }
 }

@@ -62,6 +62,8 @@ impl App {
             &create_surface,
         )?;
 
+        renderer.load_file("assets/triangle.gltf")?;
+
         //take ownership of the surface
         let surface = surface::Surface::new(
             renderer.core().entry(),
@@ -120,8 +122,21 @@ impl App {
             .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(&core)))
             .collect::<Result<Vec<_>, _>>()?;
 
-        log::info!("img_acquired_sems: {:#x?}", img_acquired_sems.iter().map(|s| s.inner()).collect::<Vec<_>>());
-        log::info!("ready_to_present_sems: {:#x?}", ready_to_present_sems.iter().map(|s| s.inner()).collect::<Vec<_>>());
+        let fmt_handles = |sems: &[vulkan_abstraction::Semaphore]| -> String {
+            if log::max_level() < log::LevelFilter::Debug {
+                return String::new();
+            }
+            let mut s = String::from("[ ");
+            for sem in sems.iter() {
+                s += &format!("{:#x?}, ", sem.inner());
+            }
+            s += "]";
+
+            s
+        };
+
+        log::debug!("img_acquired_sems: {}", fmt_handles(&img_acquired_sems));
+        log::debug!("ready_to_present_sems: {}", fmt_handles(&ready_to_present_sems));
 
         self.resources = Some(AppResources {
             swapchain, surface,
@@ -143,11 +158,10 @@ impl App {
         let new_size = swapchain::Swapchain::get_extent(size, &self.res().renderer.core().device().surface_support_details());
 
         if curr_size == new_size {
-            log::info!("ignored swapchain resize from {curr_size:?} to {new_size:?}");
             return Ok(());
         }
 
-        log::info!("resizing swapchain from {curr_size:?} to {new_size:?}");
+        log::debug!("resizing swapchain from {curr_size:?} to {new_size:?}");
 
 
         let core = Rc::clone(self.res().renderer.core());
@@ -308,7 +322,6 @@ impl App {
                 if size.width != 0 && size.height != 0 {
                     self.resize(size.into()).unwrap(); // TODO: unwrap
                 }
-                self.window.as_ref().unwrap().request_redraw();
             }
             _ => (),
         }

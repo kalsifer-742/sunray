@@ -2,6 +2,7 @@ pub mod device;
 pub mod instance;
 
 pub use device::*;
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 pub use instance::*;
 
 use std::cell::{Ref, RefCell, RefMut};
@@ -21,6 +22,8 @@ pub struct Core {
     //queue needs mutability for .present()
     queue: RefCell<vulkan_abstraction::Queue>,
     cmd_pool: vulkan_abstraction::CmdPool,
+
+    allocator: RefCell<Allocator>,
 
     device: Rc<vulkan_abstraction::Device>,
     instance: vulkan_abstraction::Instance,
@@ -78,6 +81,16 @@ impl Core {
             &surface_support
         )?);
 
+        let allocator = Allocator::new(&AllocatorCreateDesc {
+            instance: instance.inner().clone(),
+            device: device.inner().clone(),
+            physical_device: device.physical_device(),
+            debug_settings: Default::default(),
+            // NOTE: Ideally, check the BufferDeviceAddressFeatures struct.
+            buffer_device_address: true,
+            allocation_sizes: Default::default(),
+        })?;
+
         let acceleration_structure_device =
             khr::acceleration_structure::Device::new(&instance.inner(), &device.inner());
         let ray_tracing_pipeline_device =
@@ -95,6 +108,7 @@ impl Core {
                 entry,
                 instance,
                 device,
+                allocator: RefCell::new(allocator),
                 acceleration_structure_device,
                 ray_tracing_pipeline_device,
                 queue: RefCell::new(queue),
@@ -128,6 +142,12 @@ impl Core {
     }
     pub fn queue_mut(&self) -> RefMut<'_, vulkan_abstraction::Queue> {
         self.queue.borrow_mut()
+    }
+    pub fn allocator(&self) -> Ref<'_, Allocator> {
+        self.allocator.borrow()
+    }
+    pub fn allocator_mut(&self) -> RefMut<'_, Allocator> {
+        self.allocator.borrow_mut()
     }
     pub fn cmd_pool(&self) -> &vulkan_abstraction::CmdPool {
         &self.cmd_pool

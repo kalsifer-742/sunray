@@ -15,6 +15,7 @@ shaderc = "0.9"
 nalgebra = "0.34"
 gltf = "1.4.1"
 log = { version = "0.4.28", features = ["release_max_level_warn"] }
+gpu-allocator = "0.28.0"
 
 [dev-dependencies]
 winit = { version = "0.30.9", features = ["rwh_05"] }

@@ -1,8 +1,6 @@
 pub mod mesh;
 pub mod node;
 
-use std::convert::identity;
-
 pub use mesh::*;
 use nalgebra as na;
 pub use node::*;
