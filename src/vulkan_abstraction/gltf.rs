@@ -1,90 +1,95 @@
-use std::rc::Rc;
-
 use ash::vk;
 
-use crate::{
-    error::SrResult,
-    vulkan_abstraction::{self, Scene, Vertex, scene},
-};
+use crate::{error::SrResult, vulkan_abstraction};
 
-struct GltfData {
+pub struct Gltf {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
     _images: Vec<gltf::image::Data>,
 }
 
-pub struct Gltf {
-    core: Rc<vulkan_abstraction::Core>,
-    gltf_data: GltfData,
-}
-
 impl Gltf {
-    pub fn new(core: Rc<vulkan_abstraction::Core>, path: &str) -> SrResult<Self> {
+    pub fn new(path: &str) -> SrResult<Self> {
         let (document, buffers, _images) = gltf::import(path)?;
-        let gltf_data = GltfData {
+
+        Ok(Self {
             document,
             buffers,
             _images,
-        };
-
-        Ok(Self { core, gltf_data })
+        })
     }
 
-    pub fn create_scenes(&self) -> SrResult<(usize, Vec<vulkan_abstraction::Scene>)> {
-        let mut scenes = vec![];
-
-        // find the defualt scene - TODO: check if this index makes sense
-        let default_scene_index = match self.gltf_data.document.default_scene() {
+    pub fn load_scenes(&self) -> SrResult<(usize, Vec<vulkan_abstraction::Scene>)> {
+        // find the defualt scene index
+        let default_scene_index = match self.document.default_scene() {
             Some(s) => s.index(),
             None => 0,
         };
 
+        let mut scenes = vec![];
         // load all scenes by default
-        for scene in self.gltf_data.document.scenes() {
-            let mut meshes = vec![];
-            for node in scene.nodes() {
-                self.explore(&node, &mut meshes);
+        for gltf_scene in self.document.scenes() {
+            let mut nodes = vec![];
+            for gltf_node in gltf_scene.nodes() {
+                let node = self.explore(&gltf_node)?;
+                nodes.push(node);
             }
-            scenes.push(vulkan_abstraction::Scene { meshes });
+            scenes.push(vulkan_abstraction::Scene::new(nodes)?);
         }
 
         Ok((default_scene_index, scenes))
     }
 
-    fn explore(&self, node: &gltf::Node, meshes: &mut Vec<vulkan_abstraction::Mesh>) {
-        self.process_node(node, meshes);
+    fn explore(&self, gltf_node: &gltf::Node) -> SrResult<vulkan_abstraction::Node> {
+        let (transform, mesh) = self.process_node(gltf_node)?;
 
-        for child in node.children() {
-            self.explore(&child, meshes);
-        }
+        let children = if gltf_node.children().len() == 0 {
+            None
+        } else {
+            let mut children = vec![];
+            for gltf_child in gltf_node.children() {
+                let child = self.explore(&gltf_child)?;
+                children.push(child);
+            }
+
+            Some(children)
+        };
+
+        Ok(vulkan_abstraction::Node::new(transform, mesh, children)?)
     }
 
-    fn process_node(&self, node: &gltf::Node, meshes: &mut Vec<vulkan_abstraction::Mesh>) {
+    fn process_node(
+        &self,
+        gltf_node: &gltf::Node,
+    ) -> SrResult<(vk::TransformMatrixKHR, Option<vulkan_abstraction::Mesh>)> {
         // the trasnform can also be given decomposed in: translation, rotation and scale
         // but the gltf crate takes care of this:
         // "If the transform is Decomposed, then the matrix is generated with the equation matrix = translation * rotation * scale."
-        let _transform = Self::to_vk_transform(node.transform().matrix());
+        let transform = Self::to_vk_transform(gltf_node.transform().matrix());
+        let mut mesh = None;
 
-        if let Some(mesh) = node.mesh() {
+        if let Some(gltf_mesh) = gltf_node.mesh() {
             let mut vertices = vec![];
             let mut indices = vec![];
 
-            for (i, primitive) in mesh.primitives().enumerate() {
-                let reader =
-                    primitive.reader(|buffer| Some(&self.gltf_data.buffers[buffer.index()]));
+            for (_i, primitive) in gltf_mesh.primitives().enumerate() {
+                let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
                 // get vertices positions
                 reader
                     .read_positions()
                     .unwrap()
-                    .for_each(|position| vertices.push(Vertex { position }));
+                    .for_each(|position| vertices.push(vulkan_abstraction::Vertex { position }));
 
                 // get vertices index
                 let indexes = reader.read_indices().unwrap().into_u32();
                 indexes.clone().for_each(|i| indices.push(i));
             }
-            meshes.push(vulkan_abstraction::Mesh::new(&self.core, &vertices, &indices).unwrap())
+
+            mesh = Some(vulkan_abstraction::Mesh::new(vertices, indices)?);
         }
+
+        Ok((transform, mesh))
     }
 
     fn to_vk_transform(transform: [[f32; 4]; 4]) -> vk::TransformMatrixKHR {

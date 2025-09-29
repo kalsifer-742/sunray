@@ -6,7 +6,7 @@ pub mod vulkan_abstraction;
 use nalgebra as na;
 use std::{collections::HashMap, rc::Rc};
 
-use crate::error::*;
+use crate::{error::*, vulkan_abstraction::blas};
 use ash::vk;
 
 struct UniformBufferContents {
@@ -29,7 +29,7 @@ pub struct Renderer {
 
     uniform_buffer: vulkan_abstraction::Buffer,
     #[allow(unused)]
-    blas: vulkan_abstraction::BLAS,
+    blases: Vec<vulkan_abstraction::BLAS>,
     #[allow(unused)]
     tlas: vulkan_abstraction::TLAS,
     #[allow(unused)]
@@ -129,10 +129,17 @@ impl Renderer {
         }
         .into();
 
-        let scene = vulkan_abstraction::Scene::new_testing(&core)?;
-        let mesh = scene.meshes.first().unwrap();
-        let blas = vulkan_abstraction::BLAS::new(Rc::clone(&core), mesh)?;
-        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[&blas])?;
+        let scene = vulkan_abstraction::Scene::default();
+        let node = scene.nodes().first().unwrap();
+        let (transform_buffer, vertex_buffer, index_buffer) = node.load_into_gpu_memory(&core)?;
+
+        let blases = vec![vulkan_abstraction::BLAS::new(
+            Rc::clone(&core),
+            transform_buffer,
+            vertex_buffer.unwrap(),
+            index_buffer.unwrap(),
+        )?];
+        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &blases)?;
 
         let uniform_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(&core),
@@ -163,7 +170,7 @@ impl Renderer {
                 shader_binding_table,
                 ray_tracing_pipeline,
                 descriptor_set_layout,
-                blas,
+                blases,
                 tlas,
                 uniform_buffer,
                 image_extent,
@@ -274,17 +281,38 @@ impl Renderer {
     }
 
     pub fn load_file(&mut self, path: &str) -> SrResult<()> {
-        let gltf = vulkan_abstraction::Gltf::new(Rc::clone(&self.core), path)?;
-        let (_default_scene_index, scenes) = gltf.create_scenes()?;
+        let gltf = vulkan_abstraction::Gltf::new(path)?;
+        let (default_scene_index, scenes) = gltf.load_scenes()?;
+        let deault_scene = &scenes[default_scene_index];
 
-        //TODO: create a blas for each model
-        let mesh = &scenes[0].meshes[0];
+        self.blases.clear();
+        for node in deault_scene.nodes() {
+            self.load_blases(node)?;
+        }
+        self.tlas.rebuild(&self.blases)?;
 
-        self.blas = vulkan_abstraction::BLAS::new(Rc::clone(&self.core), &mesh)?;
-        self.tlas.rebuild(&[&self.blas])?;
-
-        // TODO: update insted of recreating
+        //TODO: update insted of recreating
         self.clear_image_dependent_data();
+
+        Ok(())
+    }
+
+    fn load_blases(&mut self, node: &vulkan_abstraction::Node) -> SrResult<()> {
+        let (transform_buffer, vertex_buffer, index_buffer) =
+            node.load_into_gpu_memory(&self.core)?;
+        let blas = vulkan_abstraction::BLAS::new(
+            Rc::clone(&self.core),
+            transform_buffer,
+            vertex_buffer.unwrap(),
+            index_buffer.unwrap(),
+        )?;
+        self.blases.push(blas);
+
+        if let Some(children) = node.children() {
+            for child in children {
+                self.load_blases(child)?
+            }
+        }
 
         Ok(())
     }
