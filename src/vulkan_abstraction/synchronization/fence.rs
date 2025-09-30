@@ -1,7 +1,9 @@
-use std::rc::Rc;
+use crate::{
+    error::{ErrorSource, SrResult},
+    vulkan_abstraction,
+};
 use ash::vk;
-use crate::{error::{ErrorSource, SrResult}, vulkan_abstraction};
-
+use std::rc::Rc;
 
 pub struct Fence {
     device: Rc<vulkan_abstraction::Device>,
@@ -16,13 +18,18 @@ impl Fence {
     pub fn new_unsignaled(device: Rc<vulkan_abstraction::Device>) -> SrResult<Self> {
         Self::new(device, vk::FenceCreateFlags::empty())
     }
-    pub fn new(device: Rc<vulkan_abstraction::Device>, flags: vk::FenceCreateFlags) -> SrResult<Self> {
+    pub fn new(
+        device: Rc<vulkan_abstraction::Device>,
+        flags: vk::FenceCreateFlags,
+    ) -> SrResult<Self> {
         let fence_info = vk::FenceCreateInfo::default().flags(flags);
 
         let handle = unsafe { device.inner().create_fence(&fence_info, None) }?;
 
-        Ok(Self{
-            device, handle, fence_waited: true
+        Ok(Self {
+            device,
+            handle,
+            fence_waited: true,
         })
     }
     pub fn reset(&mut self) -> SrResult<()> {
@@ -43,14 +50,18 @@ impl Fence {
     pub fn wait(&mut self) -> SrResult<()> {
         if !self.fence_waited {
             unsafe {
-                self.device.inner().wait_for_fences(&[self.handle], true, u64::MAX)?;
+                self.device
+                    .inner()
+                    .wait_for_fences(&[self.handle], true, u64::MAX)?;
             }
             self.fence_waited = true;
         }
 
         Ok(())
     }
-    pub unsafe fn inner(&self) -> vk::Fence { self.handle }
+    pub unsafe fn inner(&self) -> vk::Fence {
+        self.handle
+    }
 }
 
 impl Drop for Fence {
@@ -58,13 +69,12 @@ impl Drop for Fence {
         // don't panic in drop, if possible
         match self.wait() {
             Ok(()) => {}
-            Err(e) => {
-                match e.get_source() {
-                    Some(ErrorSource::VULKAN(e)) => log::warn!("VkWaitForFences returned {e:?} in Fence::drop"),
-                    _ => log::error!("VkWaitForFences returned {e} in Fence::drop"),
+            Err(e) => match e.get_source() {
+                Some(ErrorSource::VULKAN(e)) => {
+                    log::warn!("VkWaitForFences returned {e:?} in Fence::drop")
                 }
-
-            }
+                _ => log::error!("VkWaitForFences returned {e} in Fence::drop"),
+            },
         }
         unsafe { self.device.inner().destroy_fence(self.handle, None) };
     }

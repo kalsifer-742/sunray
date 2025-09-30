@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::{error::*, vulkan_abstraction};
-use ash::{vk};
+use ash::vk;
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 1;
 
@@ -18,10 +18,7 @@ impl Queue {
                 .get_device_queue(device.queue_family_index(), q_index)
         };
 
-        Ok(Self {
-            queue,
-            device,
-        })
+        Ok(Self { queue, device })
     }
 
     pub fn wait_idle(&self) -> SrResult<()> {
@@ -83,5 +80,7 @@ impl Queue {
     }
 
     #[allow(dead_code)]
-    pub fn inner(&self) -> vk::Queue { self.queue }
+    pub fn inner(&self) -> vk::Queue {
+        self.queue
+    }
 }

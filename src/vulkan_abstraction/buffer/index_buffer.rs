@@ -2,8 +2,8 @@ use std::{any::TypeId, ops::Deref, rc::Rc};
 
 use ash::vk;
 
-use crate::{error::*, vulkan_abstraction};
 use crate::vulkan_abstraction::buffer::Buffer;
+use crate::{error::*, vulkan_abstraction};
 
 pub struct IndexBuffer {
     buffer: Buffer,
@@ -12,9 +12,11 @@ pub struct IndexBuffer {
 }
 impl IndexBuffer {
     //build an index buffer with flags for usage in a blas
-    pub fn new_for_blas_from_data<T : 'static + Copy>(core: Rc<vulkan_abstraction::Core>, data: &[T]) -> SrResult<Self> {
-        let usage_flags =
-            vk::BufferUsageFlags::TRANSFER_DST
+    pub fn new_for_blas_from_data<T: 'static + Copy>(
+        core: Rc<vulkan_abstraction::Core>,
+        data: &[T],
+    ) -> SrResult<Self> {
+        let usage_flags = vk::BufferUsageFlags::TRANSFER_DST
             | vk::BufferUsageFlags::INDEX_BUFFER
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
             | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
@@ -22,41 +24,76 @@ impl IndexBuffer {
         let idx_type = match get_index_type::<T>() {
             Some(idx_type) => idx_type,
             None => {
-                return Err(SrError::new(None, String::from("attempting to construct IndexBuffer from invalid type")))
-            },
+                return Err(SrError::new(
+                    None,
+                    String::from("attempting to construct IndexBuffer from invalid type"),
+                ));
+            }
         };
 
-        let buffer = Buffer::new_from_data(core, data, gpu_allocator::MemoryLocation::GpuOnly, usage_flags, "index buffer for BLAS usage")?;
+        let buffer = Buffer::new_from_data(
+            core,
+            data,
+            gpu_allocator::MemoryLocation::GpuOnly,
+            usage_flags,
+            "index buffer for BLAS usage",
+        )?;
 
-        Ok(Self { buffer, len: data.len(), idx_type })
+        Ok(Self {
+            buffer,
+            len: data.len(),
+            idx_type,
+        })
     }
-    pub fn new_for_blas<T : 'static>(core: Rc<vulkan_abstraction::Core>, len: usize) -> SrResult<Self> {
-        let usage_flags = 
-            vk::BufferUsageFlags::TRANSFER_DST
+    pub fn new_for_blas<T: 'static>(
+        core: Rc<vulkan_abstraction::Core>,
+        len: usize,
+    ) -> SrResult<Self> {
+        let usage_flags = vk::BufferUsageFlags::TRANSFER_DST
             | vk::BufferUsageFlags::INDEX_BUFFER
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
             | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
-        
+
         let idx_type = match get_index_type::<T>() {
             Some(idx_type) => idx_type,
             None => {
-                return Err(SrError::new(None, String::from("attempting to construct IndexBuffer from invalid type")))
-            },
+                return Err(SrError::new(
+                    None,
+                    String::from("attempting to construct IndexBuffer from invalid type"),
+                ));
+            }
         };
 
-        let buffer = Buffer::new::<T>(core, len, gpu_allocator::MemoryLocation::GpuOnly, usage_flags, "index buffer for BLAS usage")?;
+        let buffer = Buffer::new::<T>(
+            core,
+            len,
+            gpu_allocator::MemoryLocation::GpuOnly,
+            usage_flags,
+            "index buffer for BLAS usage",
+        )?;
 
-        Ok(Self { buffer, len, idx_type })
+        Ok(Self {
+            buffer,
+            len,
+            idx_type,
+        })
     }
     #[allow(dead_code)]
-    pub fn buffer(&self) -> &Buffer { &self.buffer }
-    pub fn len(&self) -> usize { self.len }
-    pub fn index_type(&self) -> vk::IndexType { self.idx_type }
-
+    pub fn buffer(&self) -> &Buffer {
+        &self.buffer
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn index_type(&self) -> vk::IndexType {
+        self.idx_type
+    }
 }
 impl Deref for IndexBuffer {
     type Target = Buffer;
-    fn deref(&self) -> &Self::Target { &self.buffer }
+    fn deref(&self) -> &Self::Target {
+        &self.buffer
+    }
 }
 
 fn get_index_type<T: 'static>() -> Option<vk::IndexType> {

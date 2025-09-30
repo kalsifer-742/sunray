@@ -56,7 +56,7 @@ impl Buffer {
             size,
             gpu_allocator::MemoryLocation::CpuToGpu,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            "staging buffer"
+            "staging buffer",
         )
     }
 
@@ -144,7 +144,7 @@ impl Buffer {
         name: &'static str,
     ) -> SrResult<Self> {
         if len == 0 {
-            return Ok(Self::new_null(core))
+            return Ok(Self::new_null(core));
         }
 
         let device = core.device().inner();
@@ -160,16 +160,18 @@ impl Buffer {
 
         let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
         // fix alignment
-        let mem_requirements = mem_requirements.alignment(mem_requirements.alignment.max(alignment));
+        let mem_requirements =
+            mem_requirements.alignment(mem_requirements.alignment.max(alignment));
 
-        let allocation = core.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-            name,
-            requirements: mem_requirements,
-            location: memory_location,
-            linear: true, // Buffers are always linear
-            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-        })?;
-
+        let allocation =
+            core.allocator_mut()
+                .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                    name,
+                    requirements: mem_requirements,
+                    location: memory_location,
+                    linear: true, // Buffers are always linear
+                    allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+                })?;
 
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }?;
 
@@ -188,14 +190,18 @@ impl Buffer {
         if !self.is_null() {
             let slice = self.allocation.mapped_slice_mut().unwrap();
 
-            let ret = unsafe { std::slice::from_raw_parts_mut(slice.as_ptr() as *mut V, slice.len() / std::mem::size_of::<V>()) };
+            let ret = unsafe {
+                std::slice::from_raw_parts_mut(
+                    slice.as_ptr() as *mut V,
+                    slice.len() / std::mem::size_of::<V>(),
+                )
+            };
 
             Ok(ret)
         } else {
             Ok(&mut [])
         }
     }
-
 
     // mainly useful to copy from a staging buffer to a device buffer
     pub fn clone_buffer(
@@ -207,11 +213,17 @@ impl Buffer {
             return Ok(());
         }
         if dst.is_null() {
-            return Err(SrError::new(None, String::from("attempted to clone from a non-null buffer to a null buffer")));
+            return Err(SrError::new(
+                None,
+                String::from("attempted to clone from a non-null buffer to a null buffer"),
+            ));
         }
 
         let device = core.device().inner();
-        let bufcpy_cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
+        let bufcpy_cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(
+            core.cmd_pool(),
+            core.device().inner(),
+        )?;
 
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -236,7 +248,9 @@ impl Buffer {
 
         Ok(())
     }
-    pub fn is_null(&self) -> bool { self.buffer == vk::Buffer::null() }
+    pub fn is_null(&self) -> bool {
+        self.buffer == vk::Buffer::null()
+    }
 
     pub fn get_device_address(&self) -> vk::DeviceAddress {
         if self.is_null() {
@@ -265,10 +279,15 @@ impl Drop for Buffer {
         }
 
         //need to take ownership to pass to free
-        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+        let allocation = std::mem::replace(
+            &mut self.allocation,
+            gpu_allocator::vulkan::Allocation::default(),
+        );
         match self.core.allocator_mut().free(allocation) {
             Ok(()) => {}
-            Err(e) => log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Buffer::drop"),
+            Err(e) => log::error!(
+                "gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Buffer::drop"
+            ),
         }
     }
 }

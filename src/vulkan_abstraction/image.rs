@@ -46,13 +46,16 @@ impl Image {
 
             let byte_size = mem_reqs.size as usize;
 
-            let allocation = core.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name,
-                requirements: mem_reqs,
-                location,
-                linear: true, // Should be ok?
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })?;
+            let allocation =
+                core.allocator_mut()
+                    .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                        name,
+                        requirements: mem_reqs,
+                        location,
+                        linear: true, // Should be ok?
+                        allocation_scheme:
+                            gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+                    })?;
 
             (allocation, byte_size)
         };
@@ -138,10 +141,15 @@ impl Drop for Image {
         }
 
         //need to take ownership to pass to free
-        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+        let allocation = std::mem::replace(
+            &mut self.allocation,
+            gpu_allocator::vulkan::Allocation::default(),
+        );
         match self.core.allocator_mut().free(allocation) {
             Ok(()) => {}
-            Err(e) => log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop"),
+            Err(e) => log::error!(
+                "gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop"
+            ),
         }
     }
 }

@@ -1,11 +1,15 @@
 pub mod camera;
 pub mod error;
+pub mod scene;
 pub mod vulkan_abstraction;
+
+pub use camera::*;
+use error::*;
+pub use scene::*;
 
 use nalgebra as na;
 use std::{collections::HashMap, rc::Rc};
 
-use crate::error::*;
 use ash::vk;
 
 struct UniformBufferContents {
@@ -270,13 +274,17 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn load_file(&mut self, path: &str) -> SrResult<()> {
-        let gltf = vulkan_abstraction::Gltf::new(path)?;
-        // TODO: insert directly into buffer
+    pub fn load_gltf(&mut self, path: &str) -> SrResult<()> {
+        let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
         let (default_scene_index, scenes) = gltf.create_scenes()?;
-        let deault_scene = &scenes[default_scene_index];
+        let default_scene = &scenes[default_scene_index];
 
-        self.load_scene(deault_scene)?;
+        self.load_scene(default_scene)?;
+        Ok(())
+    }
+
+    pub fn load_scene(&mut self, scene: &Scene) -> SrResult<()> {
+        scene.load(&self.core, &mut self.tlas, &mut self.blases)?;
 
         //TODO: update insted of recreating
         self.clear_image_dependent_data();
@@ -284,7 +292,7 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn set_camera(&mut self, camera: camera::Camera) -> SrResult<()> {
+    pub fn set_camera(&mut self, camera: crate::Camera) -> SrResult<()> {
         let eye = camera.position();
         let target = camera.target();
         let up = &na::vector![0.0, 1.0, 0.0];

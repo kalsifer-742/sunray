@@ -1,26 +1,26 @@
-use crate::error::SrResult;
-
-#[derive(Clone, Copy, Debug)]
-pub struct Vertex {
-    #[allow(unused)]
-    pub position: [f32; 3],
-}
+use crate::{error::SrResult, vulkan_abstraction};
 
 pub struct Mesh {
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
+    vertex_buffer: vulkan_abstraction::VertexBuffer,
+    index_buffer: vulkan_abstraction::IndexBuffer,
 }
 
 impl Mesh {
-    pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>) -> SrResult<Self> {
-        Ok(Self { vertices, indices })
+    pub fn new(
+        vertex_buffer: vulkan_abstraction::VertexBuffer,
+        index_buffer: vulkan_abstraction::IndexBuffer,
+    ) -> SrResult<Self> {
+        Ok(Self {
+            vertex_buffer,
+            index_buffer,
+        })
     }
 
-    pub fn vertices(&self) -> &[Vertex] {
-        &self.vertices
+    pub fn vertex_buffer(&self) -> &vulkan_abstraction::VertexBuffer {
+        &self.vertex_buffer
     }
 
-    pub fn indices(&self) -> &[u32] {
-        &self.indices
+    pub fn index_buffer(&self) -> &vulkan_abstraction::IndexBuffer {
+        &self.index_buffer
     }
 }

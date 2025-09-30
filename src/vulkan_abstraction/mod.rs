@@ -7,7 +7,6 @@ pub mod gltf;
 pub mod image;
 pub mod queue;
 pub mod ray_tracing_pipeline;
-pub mod scene;
 pub mod shader_binding_table;
 pub mod synchronization;
 
@@ -16,10 +15,8 @@ pub use buffer::*;
 pub use cmd_pool::*;
 pub use core::*;
 pub use descriptor_set::*;
-pub use gltf::*;
 pub use image::*;
 pub use queue::*;
 pub use ray_tracing_pipeline::*;
-pub use scene::*;
 pub use shader_binding_table::*;
 pub use synchronization::*;

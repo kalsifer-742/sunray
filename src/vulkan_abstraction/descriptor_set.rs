@@ -1,4 +1,4 @@
-use std::{rc::Rc};
+use std::rc::Rc;
 
 use ash::vk;
 
@@ -47,14 +47,24 @@ impl DescriptorSetLayout {
             device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
         }?;
 
-        Ok(Self{ descriptor_set_layout, core })
+        Ok(Self {
+            descriptor_set_layout,
+            core,
+        })
     }
 
-    pub fn inner(&self) -> vk::DescriptorSetLayout { self.descriptor_set_layout }
+    pub fn inner(&self) -> vk::DescriptorSetLayout {
+        self.descriptor_set_layout
+    }
 }
 impl Drop for DescriptorSetLayout {
     fn drop(&mut self) {
-        unsafe { self.core.device().inner().destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
+        unsafe {
+            self.core
+                .device()
+                .inner()
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None)
+        };
     }
 }
 
@@ -95,7 +105,6 @@ impl DescriptorSets {
 
         let descriptor_set_layouts = [descriptor_set_layout.inner()];
 
-
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&descriptor_set_layouts);
@@ -120,11 +129,9 @@ impl DescriptorSets {
         );
 
         // write image to descriptor set
-        let descriptor_image_infos = [
-            vk::DescriptorImageInfo::default()
-                .image_view(*output_image_view)
-                .image_layout(vk::ImageLayout::GENERAL)
-        ];
+        let descriptor_image_infos = [vk::DescriptorImageInfo::default()
+            .image_view(*output_image_view)
+            .image_layout(vk::ImageLayout::GENERAL)];
         descriptor_writes.push(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
@@ -135,22 +142,19 @@ impl DescriptorSets {
         );
 
         // write uniform buffer to descriptor set
-        let descriptor_buffer_infos = [
-            vk::DescriptorBufferInfo::default()
-                .buffer(uniform_buffer.inner())
-                .range(vk::WHOLE_SIZE)
-        ];
+        let descriptor_buffer_infos = [vk::DescriptorBufferInfo::default()
+            .buffer(uniform_buffer.inner())
+            .range(vk::WHOLE_SIZE)];
         descriptor_writes.push(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(&descriptor_buffer_infos)
                 .dst_set(descriptor_sets[0])
                 .dst_binding(DescriptorSetLayout::UNIFORM_BUFFER_BINDING)
-                .descriptor_count(1)
+                .descriptor_count(1),
         );
 
         assert_eq!(descriptor_writes.len(), 3);
-
 
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
 
@@ -171,6 +175,11 @@ impl Drop for DescriptorSets {
         //only do this if you set VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
         //unsafe { self.core.device().free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets) }.unwrap();
 
-        unsafe { self.core.device().inner().destroy_descriptor_pool(self.descriptor_pool, None) };
+        unsafe {
+            self.core
+                .device()
+                .inner()
+                .destroy_descriptor_pool(self.descriptor_pool, None)
+        };
     }
 }

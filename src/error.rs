@@ -7,7 +7,7 @@ pub type SrResult<T> = std::result::Result<T, SrError>;
 pub enum ErrorSource {
     VULKAN(vk::Result),
     GLTF(gltf::Error),
-    ALLOCATOR(gpu_allocator::AllocationError)
+    ALLOCATOR(gpu_allocator::AllocationError),
 }
 
 #[derive(Debug)]
