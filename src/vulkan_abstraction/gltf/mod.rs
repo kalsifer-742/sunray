@@ -94,3 +94,67 @@ impl Gltf {
         Ok((transform, mesh))
     }
 }
+
+    fn load_scene(&mut self, scene: &vulkan_abstraction::Scene) -> SrResult<()> {
+        self.blases.clear();
+
+        let mut blas_instances = vec![];
+        for node in scene.nodes() {
+            let local_transform = node.transform();
+            self.load_node(node, local_transform, &mut blas_instances)?;
+        }
+
+        let blas_instances = blas_instances
+            .into_iter()
+            .map(|(index, transform)| vulkan_abstraction::BlasInstance {
+                blas: &self.blases[index],
+                transform: Self::to_vk_transform(transform),
+            })
+            .collect::<Vec<_>>();
+        self.tlas.rebuild(&blas_instances)?;
+
+        Ok(())
+    }
+
+    fn load_node(
+        &mut self,
+        node: &vulkan_abstraction::Node,
+        transform: &na::Matrix4<f32>,
+        blas_instances: &mut Vec<(usize, na::Matrix4<f32>)>,
+    ) -> SrResult<()> {
+        let local_transform = node.transform() * transform;
+
+        // TODO: avoid creating new blas for alredy seen meshes
+        if node.mesh().is_some() {
+            let (vertex_buffer, index_buffer) = node.load_mesh_into_gpu_memory(&self.core)?;
+            let blas =
+                vulkan_abstraction::BLAS::new(Rc::clone(&self.core), vertex_buffer, index_buffer)?;
+            self.blases.push(blas);
+
+            blas_instances.push((self.blases.len() - 1, local_transform));
+        }
+
+        if let Some(children) = node.children() {
+            for child in children {
+                self.load_node(child, &local_transform, blas_instances)?
+            }
+        }
+
+        Ok(())
+    }
+
+    fn to_vk_transform(transform: na::Matrix4<f32>) -> vk::TransformMatrixKHR {
+        let r0 = transform.row(0);
+        let r1 = transform.row(1);
+        let r2 = transform.row(2);
+        let r3 = transform.row(3);
+
+        #[rustfmt::skip]
+        let matrix = [
+            r0[0], r1[0], r2[0], r3[0],
+            r0[1], r1[1], r2[1], r3[1],
+            r0[2], r1[2], r2[2], r3[2],
+        ];
+
+        vk::TransformMatrixKHR { matrix }
+    }
