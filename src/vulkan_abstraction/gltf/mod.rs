@@ -6,9 +6,11 @@ use nalgebra as na;
 
 pub mod mesh;
 pub mod node;
+pub mod primitive;
 
 pub use mesh::*;
 pub use node::*;
+pub use primitive::*;
 
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
@@ -89,34 +91,40 @@ impl Gltf {
         // TODO: this code does not manage multiple nodes pointing to the same meshes
         // fix proposal: check for the mesh id
         if let Some(gltf_mesh) = gltf_node.mesh() {
-            let mut vertices = vec![];
-            let mut indices = vec![];
+            let mut primitives = vec![];
 
-            for (_i, primitive) in gltf_mesh.primitives().enumerate() {
+            for primitive in gltf_mesh.primitives() {
                 let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
                 // get vertices positions
-                reader.read_positions().unwrap().for_each(|position| {
-                    vertices.push(vulkan_abstraction::gltf::Vertex { position })
-                });
+                let vertices = reader
+                    .read_positions()
+                    .unwrap()
+                    .map(|position| vulkan_abstraction::gltf::Vertex { position })
+                    .collect::<Vec<_>>();
 
                 // get vertices index
-                let indexes = reader.read_indices().unwrap().into_u32();
-                indexes.clone().for_each(|i| indices.push(i));
+                let indices = reader
+                    .read_indices()
+                    .unwrap()
+                    .into_u32()
+                    .collect::<Vec<_>>();
+
+                let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data::<
+                    Vertex,
+                >(Rc::clone(&self.core), &vertices)?;
+                let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
+                    Rc::clone(&self.core),
+                    &indices,
+                )?;
+
+                primitives.push(vulkan_abstraction::gltf::Primitive::new(
+                    vertex_buffer,
+                    index_buffer,
+                )?);
             }
 
-            let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data::<Vertex>(
-                Rc::clone(&self.core),
-                &vertices,
-            )?;
-            let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
-                Rc::clone(&self.core),
-                &indices,
-            )?;
-            mesh = Some(vulkan_abstraction::gltf::Mesh::new(
-                vertex_buffer,
-                index_buffer,
-            )?);
+            mesh = Some(vulkan_abstraction::gltf::Mesh::new(primitives)?);
         }
 
         Ok((transform, mesh))

@@ -31,3 +31,7 @@
 ### Miscelleaneus
 
 - [Semantic Versioning 2.0.0](https://semver.org/)
+
+### Performance
+
+- https://zeux.io/2020/02/27/writing-an-efficient-vulkan-renderer/

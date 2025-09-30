@@ -62,25 +62,27 @@ impl Scene {
 
         // TODO: avoid creating new blas for alredy seen meshes
         if let Some(mesh) = node.mesh() {
-            let blas = vulkan_abstraction::BLAS::new(
-                core.clone(),
-                mesh.vertex_buffer(),
-                mesh.index_buffer(),
-            )?;
-            blases.push(blas);
+            for primitive in mesh.primitives() {
+                let blas = vulkan_abstraction::BLAS::new(
+                    core.clone(),
+                    primitive.vertex_buffer(),
+                    primitive.index_buffer(),
+                )?;
+                blases.push(blas);
 
-            // the first idea that could come to your mind is to create a BlasInstance here directly.
-            // Apart from having to manage lifetimes it is still not going to work because:
-            // - &blases[blases.len()]
-            // creates an immutable borrow of blases when a mutable borrow already exist - compiler error!
-            // - blases.last() - compiler error!
-            // - blases.last_mut()
-            // creates another mutable borrow when anoter mutable borrow already exists
-            // but only one mutable borrow can exist at every time - compile error!
-            //
-            // tl;dr don't waste time making lifetimes work
-            let index = blases.len() - 1;
-            blas_instances_info.push((index, transform));
+                // the first idea that could come to your mind is to create a BlasInstance here directly.
+                // Apart from having to manage lifetimes it is still not going to work because:
+                // - &blases[blases.len()]
+                // creates an immutable borrow of blases when a mutable borrow already exist - compiler error!
+                // - blases.last() - compiler error!
+                // - blases.last_mut()
+                // creates another mutable borrow when anoter mutable borrow already exists
+                // but only one mutable borrow can exist at every time - compile error!
+                //
+                // tl;dr don't waste time making lifetimes work
+                let index = blases.len() - 1;
+                blas_instances_info.push((index, transform));
+            }
         }
 
         if let Some(children) = node.children() {

@@ -49,7 +49,10 @@ fn render_and_save() -> SrResult<()> {
 
     renderer.load_gltf("assets/Lantern.glb")?;
 
-    let camera = Camera::default().set_position(na::Point3::new(10.0, 10.0, 10.0));
+    let camera = Camera::default()
+        .set_position(na::Point3::new(10.0, 10.0, 10.0))
+        .set_target(na::Point3::new(0.0, 10.0, 0.0))
+        .set_fov(90.0);
     renderer.set_camera(camera)?;
 
     let image_buf = renderer.render_to_host_memory().unwrap();

@@ -1,26 +1,15 @@
 use crate::{error::SrResult, vulkan_abstraction};
 
 pub struct Mesh {
-    vertex_buffer: vulkan_abstraction::VertexBuffer,
-    index_buffer: vulkan_abstraction::IndexBuffer,
+    primitives: Vec<vulkan_abstraction::gltf::Primitive>,
 }
 
 impl Mesh {
-    pub fn new(
-        vertex_buffer: vulkan_abstraction::VertexBuffer,
-        index_buffer: vulkan_abstraction::IndexBuffer,
-    ) -> SrResult<Self> {
-        Ok(Self {
-            vertex_buffer,
-            index_buffer,
-        })
+    pub fn new(primitives: Vec<vulkan_abstraction::gltf::Primitive>) -> SrResult<Self> {
+        Ok(Self { primitives })
     }
 
-    pub fn vertex_buffer(&self) -> &vulkan_abstraction::VertexBuffer {
-        &self.vertex_buffer
-    }
-
-    pub fn index_buffer(&self) -> &vulkan_abstraction::IndexBuffer {
-        &self.index_buffer
+    pub fn primitives(&self) -> &Vec<vulkan_abstraction::gltf::Primitive> {
+        &self.primitives
     }
 }
