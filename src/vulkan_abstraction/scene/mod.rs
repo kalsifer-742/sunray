@@ -29,7 +29,8 @@ impl Default for Scene {
             },
         ];
         let indices = vec![0, 1, 2];
-        let mesh = vulkan_abstraction::Mesh::new(vertices, indices).unwrap();
+        let primitive = vulkan_abstraction::Primitive { vertices, indices };
+        let mesh = vulkan_abstraction::Mesh::new(vec![primitive]).unwrap();
         let nodes = vec![vulkan_abstraction::Node::new(transform, Some(mesh), None).unwrap()];
 
         Self { nodes }

@@ -71,24 +71,28 @@ impl Gltf {
         // TODO: this code does not manage multiple nodes pointing to the same meshes
         // fix proposal: check for the mesh id
         if let Some(gltf_mesh) = gltf_node.mesh() {
-            let mut vertices = vec![];
-            let mut indices = vec![];
+            let mut primitives = vec![];
 
             for (_i, primitive) in gltf_mesh.primitives().enumerate() {
                 let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
                 // get vertices positions
-                reader
-                    .read_positions()
+                let vertices =
+                    reader.read_positions()
                     .unwrap()
-                    .for_each(|position| vertices.push(vulkan_abstraction::Vertex { position }));
+                    .map(|position| vulkan_abstraction::Vertex { position })
+                    .collect::<Vec<_>>();
 
                 // get vertices index
-                let indexes = reader.read_indices().unwrap().into_u32();
-                indexes.clone().for_each(|i| indices.push(i));
+                let indices =
+                    reader.read_indices().unwrap()
+                    .into_u32()
+                    .collect::<Vec<_>>();
+
+                primitives.push(vulkan_abstraction::Primitive { vertices, indices })
             }
 
-            mesh = Some(vulkan_abstraction::Mesh::new(vertices, indices)?);
+            mesh = Some(vulkan_abstraction::Mesh::new(primitives)?);
         }
 
         Ok((transform, mesh))

@@ -274,9 +274,9 @@ impl Renderer {
         let gltf = vulkan_abstraction::Gltf::new(path)?;
         // TODO: insert directly into buffer
         let (default_scene_index, scenes) = gltf.create_scenes()?;
-        let deault_scene = &scenes[default_scene_index];
+        let default_scene = &scenes[default_scene_index];
 
-        self.load_scene(deault_scene)?;
+        self.load_scene(default_scene)?;
 
         //TODO: update insted of recreating
         self.clear_image_dependent_data();
@@ -315,10 +315,12 @@ impl Renderer {
 
         // TODO: avoid creating new blas for alredy seen meshes
         if node.mesh().is_some() {
-            let (vertex_buffer, index_buffer) = node.load_mesh_into_gpu_memory(&self.core)?;
-            let blas =
-                vulkan_abstraction::BLAS::new(Rc::clone(&self.core), vertex_buffer, index_buffer)?;
-            self.blases.push(blas);
+            let mesh_primitives = node.load_mesh_into_gpu_memory(&self.core)?;
+
+            let mut mesh_primitive_blases = mesh_primitives.into_iter()
+                .map(|(vertex_buffer, index_buffer)| vulkan_abstraction::BLAS::new(Rc::clone(&self.core), vertex_buffer, index_buffer))
+                .collect::<SrResult<Vec<_>>>()?;
+            self.blases.append(&mut mesh_primitive_blases);
 
             blas_instances.push((self.blases.len() - 1, local_transform));
         }

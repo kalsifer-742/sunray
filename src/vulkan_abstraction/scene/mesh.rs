@@ -6,21 +6,21 @@ pub struct Vertex {
     pub position: [f32; 3],
 }
 
+pub struct Primitive {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+}
+
 pub struct Mesh {
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
+    primitives: Vec<Primitive>,
 }
 
 impl Mesh {
-    pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>) -> SrResult<Self> {
-        Ok(Self { vertices, indices })
+    pub fn new(primitives: Vec<Primitive>) -> SrResult<Self> {
+        Ok(Self { primitives })
     }
 
-    pub fn vertices(&self) -> &[Vertex] {
-        &self.vertices
-    }
-
-    pub fn indices(&self) -> &[u32] {
-        &self.indices
+    pub fn primitives(&self) -> &[Primitive] {
+        &self.primitives
     }
 }

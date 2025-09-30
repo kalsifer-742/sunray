@@ -51,21 +51,26 @@ impl Node {
     pub fn load_mesh_into_gpu_memory(
         &self,
         core: &Rc<vulkan_abstraction::Core>,
-    ) -> SrResult<(
-        vulkan_abstraction::VertexBuffer,
-        vulkan_abstraction::IndexBuffer,
-    )> {
+    ) -> SrResult<
+        Vec<(
+            vulkan_abstraction::VertexBuffer,
+            vulkan_abstraction::IndexBuffer,
+        )>
+    > {
         let mesh = self.mesh.as_ref().unwrap();
 
-        let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(
-            Rc::clone(&core),
-            mesh.vertices(),
-        )?;
-        let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
-            Rc::clone(&core),
-            mesh.indices(),
-        )?;
+        mesh.primitives().iter().map(|primitive| {
+            let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(
+                Rc::clone(&core),
+                &primitive.vertices,
+            )?;
 
-        Ok((vertex_buffer, index_buffer))
+            let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
+                Rc::clone(&core),
+                &primitive.indices,
+            )?;
+
+            Ok((vertex_buffer, index_buffer))
+        }).collect()
     }
 }
