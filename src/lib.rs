@@ -310,7 +310,7 @@ impl Renderer {
         transform: &na::Matrix4<f32>,
         blas_instances: &mut Vec<(usize, na::Matrix4<f32>)>,
     ) -> SrResult<()> {
-        let local_transform = node.transform() * transform;
+        let local_transform = transform * node.transform();
 
         // TODO: avoid creating new blas for alredy seen meshes
         if node.mesh().is_some() {
@@ -323,8 +323,6 @@ impl Renderer {
                 self.blases.push(mesh_primitive_blas);
                 blas_instances.push((self.blases.len() - 1, local_transform));
             }
-
-            log::info!("blas_instances.push({}, {})", self.blases.len() - 1, local_transform);
         }
 
         if let Some(children) = node.children() {
@@ -337,10 +335,10 @@ impl Renderer {
     }
 
     fn to_vk_transform(transform: na::Matrix4<f32>) -> vk::TransformMatrixKHR {
-        let r0 = transform.row(0);
-        let r1 = transform.row(1);
-        let r2 = transform.row(2);
-        let r3 = transform.row(3);
+        let r0 = transform.column(0);
+        let r1 = transform.column(1);
+        let r2 = transform.column(2);
+        let r3 = transform.column(3);
 
         #[rustfmt::skip]
         let matrix = [

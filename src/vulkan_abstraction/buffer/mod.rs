@@ -236,14 +236,14 @@ impl Buffer {
 
         Ok(())
     }
-    pub fn is_null(&self) -> bool { self.buffer == vk::Buffer::null() }
 
     pub fn get_device_address(&self) -> vk::DeviceAddress {
         if self.is_null() {
             return 0 as vk::DeviceAddress;
         }
 
-        let buffer_device_address_info = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
+        let buffer_device_address_info = vk::BufferDeviceAddressInfo::default()
+            .buffer(self.buffer);
         unsafe {
             self.core
                 .device()
@@ -252,9 +252,9 @@ impl Buffer {
         }
     }
 
-    pub fn inner(&self) -> vk::Buffer {
-        self.buffer
-    }
+    pub fn is_null(&self) -> bool { self.buffer == vk::Buffer::null() }
+
+    pub fn inner(&self) -> vk::Buffer { self.buffer }
 }
 
 impl Drop for Buffer {

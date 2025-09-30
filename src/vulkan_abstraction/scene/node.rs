@@ -65,7 +65,7 @@ impl Node {
                 &primitive.vertices,
             )?;
 
-            let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
+            let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data(
                 Rc::clone(&core),
                 &primitive.indices,
             )?;

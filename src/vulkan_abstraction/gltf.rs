@@ -92,8 +92,6 @@ impl Gltf {
                 primitives.push(vulkan_abstraction::Primitive { vertices, indices })
             }
 
-            log::info!("primitives.len() = {}", primitives.len());
-
             mesh = Some(vulkan_abstraction::Mesh::new(primitives)?);
         }
 
