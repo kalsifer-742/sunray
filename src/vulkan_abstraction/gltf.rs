@@ -73,7 +73,7 @@ impl Gltf {
         if let Some(gltf_mesh) = gltf_node.mesh() {
             let mut primitives = vec![];
 
-            for (_i, primitive) in gltf_mesh.primitives().enumerate() {
+            for primitive in gltf_mesh.primitives() {
                 let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
                 // get vertices positions
@@ -91,6 +91,8 @@ impl Gltf {
 
                 primitives.push(vulkan_abstraction::Primitive { vertices, indices })
             }
+
+            log::info!("primitives.len() = {}", primitives.len());
 
             mesh = Some(vulkan_abstraction::Mesh::new(primitives)?);
         }

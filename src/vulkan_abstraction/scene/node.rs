@@ -4,7 +4,7 @@ use nalgebra as na;
 
 use crate::{
     error::SrResult,
-    vulkan_abstraction::{self},
+    vulkan_abstraction,
 };
 
 pub struct Node {

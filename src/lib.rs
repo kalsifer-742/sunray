@@ -289,8 +289,7 @@ impl Renderer {
 
         let mut blas_instances = vec![];
         for node in scene.nodes() {
-            let local_transform = node.transform();
-            self.load_node(node, local_transform, &mut blas_instances)?;
+            self.load_node(node, &na::Matrix4::identity(), &mut blas_instances)?;
         }
 
         let blas_instances = blas_instances
@@ -317,12 +316,15 @@ impl Renderer {
         if node.mesh().is_some() {
             let mesh_primitives = node.load_mesh_into_gpu_memory(&self.core)?;
 
-            let mut mesh_primitive_blases = mesh_primitives.into_iter()
+            let mesh_primitive_blases = mesh_primitives.into_iter()
                 .map(|(vertex_buffer, index_buffer)| vulkan_abstraction::BLAS::new(Rc::clone(&self.core), vertex_buffer, index_buffer))
                 .collect::<SrResult<Vec<_>>>()?;
-            self.blases.append(&mut mesh_primitive_blases);
+            for mesh_primitive_blas in mesh_primitive_blases.into_iter() {
+                self.blases.push(mesh_primitive_blas);
+                blas_instances.push((self.blases.len() - 1, local_transform));
+            }
 
-            blas_instances.push((self.blases.len() - 1, local_transform));
+            log::info!("blas_instances.push({}, {})", self.blases.len() - 1, local_transform);
         }
 
         if let Some(children) = node.children() {
