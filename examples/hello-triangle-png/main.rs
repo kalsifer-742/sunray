@@ -47,7 +47,7 @@ fn render_and_save() -> SrResult<()> {
     let image_format = get_vk_format(ExtendedColorType::Rgba8);
     let mut renderer = Renderer::new(image_extent, image_format)?;
 
-    renderer.load_gltf("assets/Lantern.glb")?;
+    renderer.load_gltf("examples/assets/Lantern.glb")?;
 
     let camera = Camera::default()
         .set_position(na::Point3::new(10.0, 10.0, 10.0))

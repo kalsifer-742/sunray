@@ -70,7 +70,7 @@ impl App {
             &create_surface,
         )?;
 
-        renderer.load_gltf("assets/Lantern.glb")?;
+        renderer.load_gltf("examples/assets/Lantern.glb")?;
 
         //take ownership of the surface
         let surface =
@@ -295,7 +295,11 @@ impl App {
         let dist = 30.0;
         let position = na::Point3::new(dist * time.cos(), y, dist * time.sin());
         let fov_y = 45.0;
-        self.res_mut().renderer.set_camera(Camera::new(position, na::Point3::new(0.0, y, 0.0), fov_y)?)?;
+        self.res_mut().renderer.set_camera(Camera::new(
+            position,
+            na::Point3::new(0.0, y, 0.0),
+            fov_y,
+        )?)?;
 
         let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
 
