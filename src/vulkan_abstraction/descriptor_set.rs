@@ -11,14 +11,23 @@ pub struct DescriptorSetLayout {
 
     core: Rc<vulkan_abstraction::Core>,
 }
+
+
 impl DescriptorSetLayout {
     pub const TLAS_BINDING: u32 = 0;
-    pub const IMAGE_BINDING: u32 = 1;
-    pub const UNIFORM_BUFFER_BINDING: u32 = 2;
+    pub const OUTPUT_IMAGE_BINDING: u32 = 1;
+    pub const MATRICES_UNIFORM_BUFFER_BINDING: u32 = 2;
+    pub const MESHES_INFO_STORAGE_BUFFER_BINDING: u32 = 3;
+    pub const MATERIALS_STORAGE_BUFFER_BINDING: u32 = 4;
+    pub const SAMPLERS_BINDING: u32 = 5;
+    pub const NUMBER_OF_BINDINGS: usize = 6;
+
+    pub const NUMBER_OF_SAMPLERS : u32 = 1024;
 
     pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let device = core.device().inner();
 
+        // TODO: check the stage_flags for each binding
         let descriptor_set_layout_bindings = [
             // TLAS layout binding
             vk::DescriptorSetLayoutBinding::default()
@@ -28,15 +37,33 @@ impl DescriptorSetLayout {
                 .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
             // output image layout binding
             vk::DescriptorSetLayoutBinding::default()
-                .binding(Self::IMAGE_BINDING)
+                .binding(Self::OUTPUT_IMAGE_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-            // uniform buffer layout binding
+            // matrices uniform buffer layout binding
             vk::DescriptorSetLayoutBinding::default()
-                .binding(Self::UNIFORM_BUFFER_BINDING)
+                .binding(Self::MATRICES_UNIFORM_BUFFER_BINDING)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::ALL),
+            // meshes info uniform buffer layout binding
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(Self::MESHES_INFO_STORAGE_BUFFER_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::ALL),
+            // materials storage buffer layout binding
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(Self::MATERIALS_STORAGE_BUFFER_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::ALL),
+            // samplers buffer layout binding
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(Self::SAMPLERS_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(Self::NUMBER_OF_SAMPLERS)
                 .stage_flags(vk::ShaderStageFlags::ALL),
         ];
 
@@ -70,10 +97,15 @@ impl DescriptorSets {
         core: Rc<vulkan_abstraction::Core>,
         descriptor_set_layout: &vulkan_abstraction::DescriptorSetLayout,
         tlas: &TLAS,
-        output_image_view: &vk::ImageView,
-        uniform_buffer: &vulkan_abstraction::Buffer,
+        output_image_view: vk::ImageView,
+        matrices_uniform_buffer: &vulkan_abstraction::Buffer,
+        meshes_info_uniform_buffer: &vulkan_abstraction::Buffer,
+        materials_storage_buffer: &vulkan_abstraction::Buffer,
+        samplers: &[vk::Sampler],
+        sampler_image_views: &[vk::ImageView],
     ) -> SrResult<Self> {
         let device = core.device().inner();
+        // vk::DescriptorType::COMBI;
         let descriptor_pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
@@ -84,14 +116,19 @@ impl DescriptorSets {
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(2),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(DescriptorSetLayout::NUMBER_OF_SAMPLERS),
         ];
 
         let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&descriptor_pool_sizes)
             .max_sets(1);
 
-        let descriptor_pool =
-            unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None) }?;
+        let descriptor_pool = unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None) }?;
 
         let descriptor_set_layouts = [descriptor_set_layout.inner()];
 
@@ -100,8 +137,7 @@ impl DescriptorSets {
             .descriptor_pool(descriptor_pool)
             .set_layouts(&descriptor_set_layouts);
 
-        let descriptor_sets =
-            unsafe { device.allocate_descriptor_sets(&descriptor_set_allocate_info) }?;
+        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&descriptor_set_allocate_info) }?;
 
         let mut descriptor_writes = Vec::new();
 
@@ -114,15 +150,15 @@ impl DescriptorSets {
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .push_next(&mut write_descriptor_set_acceleration_structure)
+                .descriptor_count(1)
                 .dst_set(descriptor_sets[0])
                 .dst_binding(DescriptorSetLayout::TLAS_BINDING)
-                .descriptor_count(1),
         );
 
         // write image to descriptor set
         let descriptor_image_infos = [
             vk::DescriptorImageInfo::default()
-                .image_view(*output_image_view)
+                .image_view(output_image_view)
                 .image_layout(vk::ImageLayout::GENERAL)
         ];
         descriptor_writes.push(
@@ -130,14 +166,13 @@ impl DescriptorSets {
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(&descriptor_image_infos)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(DescriptorSetLayout::IMAGE_BINDING)
-                .descriptor_count(1),
+                .dst_binding(DescriptorSetLayout::OUTPUT_IMAGE_BINDING)
         );
 
-        // write uniform buffer to descriptor set
+        // write matrices uniform buffer to descriptor set
         let descriptor_buffer_infos = [
             vk::DescriptorBufferInfo::default()
-                .buffer(uniform_buffer.inner())
+                .buffer(matrices_uniform_buffer.inner())
                 .range(vk::WHOLE_SIZE)
         ];
         descriptor_writes.push(
@@ -145,12 +180,61 @@ impl DescriptorSets {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(&descriptor_buffer_infos)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(DescriptorSetLayout::UNIFORM_BUFFER_BINDING)
-                .descriptor_count(1)
+                .dst_binding(DescriptorSetLayout::MATRICES_UNIFORM_BUFFER_BINDING)
         );
 
-        assert_eq!(descriptor_writes.len(), 3);
+        // write meshes info uniform buffer to descriptor set
+        let descriptor_buffer_infos = [
+            vk::DescriptorBufferInfo::default()
+                .buffer(meshes_info_uniform_buffer.inner())
+                .range(vk::WHOLE_SIZE)
+        ];
+        descriptor_writes.push(
+            vk::WriteDescriptorSet::default()
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&descriptor_buffer_infos)
+                .dst_set(descriptor_sets[0])
+                .dst_binding(DescriptorSetLayout::MESHES_INFO_STORAGE_BUFFER_BINDING)
+        );
 
+        // write materials storage buffer to descriptor set
+        let descriptor_buffer_infos = [
+            vk::DescriptorBufferInfo::default()
+                .buffer(materials_storage_buffer.inner())
+                .range(vk::WHOLE_SIZE)
+        ];
+        descriptor_writes.push(
+            vk::WriteDescriptorSet::default()
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&descriptor_buffer_infos)
+                .dst_set(descriptor_sets[0])
+                .dst_binding(DescriptorSetLayout::MATERIALS_STORAGE_BUFFER_BINDING)
+        );
+
+        // write samplers to descriptor set
+        assert!(samplers.len() == DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize);
+        assert_eq!(samplers.len(), sampler_image_views.len());
+
+        let descriptor_sampler_infos =
+            std::iter::zip(samplers, sampler_image_views)
+            .map(|(sampler, image_view)|
+                vk::DescriptorImageInfo::default()
+                    .sampler(*sampler)
+                    .image_view(*image_view)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            )
+            .collect::<Vec<_>>();
+
+        if samplers.len() != 0 {
+
+            descriptor_writes.push(
+                vk::WriteDescriptorSet::default()
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&descriptor_sampler_infos)
+                    .dst_set(descriptor_sets[0])
+                    .dst_binding(DescriptorSetLayout::SAMPLERS_BINDING)
+            );
+        }
 
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
 

@@ -19,13 +19,13 @@ impl Default for Scene {
         let transform = na::Matrix4::identity();
         let vertices = vec![
             vulkan_abstraction::Vertex {
-                position: [-1.0, -0.5, 0.0],
+                position: [-1.0, -0.5, 0.0], ..Default::default()
             },
             vulkan_abstraction::Vertex {
-                position: [1.0, -0.5, 0.0],
+                position: [1.0, -0.5, 0.0], .. Default::default()
             },
             vulkan_abstraction::Vertex {
-                position: [0.0, 1.0, 0.0],
+                position: [0.0, 1.0, 0.0], ..Default::default()
             },
         ];
         let indices = vec![0, 1, 2];

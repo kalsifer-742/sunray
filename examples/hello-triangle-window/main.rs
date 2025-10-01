@@ -257,7 +257,9 @@ impl App {
     fn draw(&mut self) -> sunray::error::SrResult<()> {
         // update frame data:
         let time = self.time_elapsed();
-        self.res_mut().renderer.set_camera(Camera::new(na::Point3::new(-15.0 * time.cos(), 15.0, 15.0 * time.sin()), na::Point3::new(0.0, 15.0, 0.0), 90.0)?)?;
+        let y = 13.0;
+        let dist = 30.0;
+        self.res_mut().renderer.set_camera(Camera::new(na::Point3::new(dist * time.cos(), y, dist * time.sin()), na::Point3::new(0.0, y, 0.0), 45.0)?)?;
 
         let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
 

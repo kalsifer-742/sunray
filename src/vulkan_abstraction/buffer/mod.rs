@@ -60,16 +60,26 @@ impl Buffer {
         )
     }
 
-    #[allow(dead_code)]
-    pub fn new_uniform<T>(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
+    pub fn new_uniform<T>(core: Rc<vulkan_abstraction::Core>, len: usize) -> SrResult<Self> {
         Self::new::<T>(
             core,
-            1,
+            len,
             gpu_allocator::MemoryLocation::CpuToGpu,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             "uniform buffer",
         )
     }
+
+    pub fn new_storage_from_data<T: Copy>(core: Rc<vulkan_abstraction::Core>, data: &[T], name: &'static str) -> SrResult<Self> {
+        Self::new_from_data::<T>(
+            core,
+            data,
+            gpu_allocator::MemoryLocation::GpuOnly,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            name,
+        )
+    }
+
 
     pub fn new_staging_from_data<T: Copy>(
         core: Rc<vulkan_abstraction::Core>,
@@ -104,7 +114,7 @@ impl Buffer {
             Rc::clone(&core),
             data.len(),
             mem_location,
-            buffer_usage_flags,
+            buffer_usage_flags | vk::BufferUsageFlags::TRANSFER_DST,
             name,
         )?;
         Self::clone_buffer(&core, &staging_buffer, &buffer)?;
@@ -211,12 +221,12 @@ impl Buffer {
         }
 
         let device = core.device().inner();
-        let bufcpy_cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
+        let cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
 
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-        unsafe { device.begin_command_buffer(bufcpy_cmd_buf, &begin_info) }?;
+        unsafe { device.begin_command_buffer(cmd_buf, &begin_info) }?;
 
         debug_assert!(src.byte_size() <= dst.byte_size());
 
@@ -226,13 +236,13 @@ impl Buffer {
             .src_offset(0)
             .dst_offset(0)];
 
-        unsafe { device.cmd_copy_buffer(bufcpy_cmd_buf, src.inner(), dst.inner(), &regions) };
+        unsafe { device.cmd_copy_buffer(cmd_buf, src.inner(), dst.inner(), &regions) };
 
-        unsafe { device.end_command_buffer(bufcpy_cmd_buf) }?;
+        unsafe { device.end_command_buffer(cmd_buf) }?;
 
-        core.queue().submit_sync(bufcpy_cmd_buf)?;
+        core.queue().submit_sync(cmd_buf)?;
 
-        unsafe { device.free_command_buffers(**core.cmd_pool(), &[bufcpy_cmd_buf]) };
+        unsafe { device.free_command_buffers(core.cmd_pool().inner(), &[cmd_buf]) };
 
         Ok(())
     }

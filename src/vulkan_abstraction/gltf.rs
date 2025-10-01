@@ -80,7 +80,7 @@ impl Gltf {
                 let vertices =
                     reader.read_positions()
                     .unwrap()
-                    .map(|position| vulkan_abstraction::Vertex { position })
+                    .map(|position| vulkan_abstraction::Vertex { position, ..Default::default() })
                     .collect::<Vec<_>>();
 
                 // get vertices index

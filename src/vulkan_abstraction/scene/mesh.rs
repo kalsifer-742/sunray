@@ -1,9 +1,11 @@
 use crate::error::SrResult;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
 pub struct Vertex {
     #[allow(unused)]
     pub position: [f32; 3],
+    pub tex_coords: [f32; 2],
 }
 
 pub struct Primitive {
