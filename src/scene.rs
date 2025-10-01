@@ -1,9 +1,6 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
-use crate::{
-    error::SrResult,
-    vulkan_abstraction::{self},
-};
+use crate::{error::SrResult, vulkan_abstraction};
 
 use ash::vk;
 use nalgebra as na;
@@ -28,14 +25,27 @@ impl Scene {
         core: &Rc<vulkan_abstraction::Core>,
         tlas: &mut vulkan_abstraction::TLAS,
         blases: &mut Vec<vulkan_abstraction::BLAS>,
+        scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
     ) -> SrResult<()> {
         blases.clear();
 
         let mut blas_instances_info: Vec<BlasInstanceInfo> = vec![];
+        let mut primitives_blas_index: HashMap<
+            vulkan_abstraction::gltf::PrimitiveUniqueKey,
+            usize,
+        > = HashMap::new();
         for node in self.nodes() {
             // the root nodes do not have a parent transform to apply
             let transform = na::Matrix4::identity();
-            self.load_node(node, transform, core, blases, &mut blas_instances_info)?;
+            self.load_node(
+                node,
+                transform,
+                core,
+                blases,
+                &mut blas_instances_info,
+                &mut primitives_blas_index,
+                scene_data,
+            )?;
         }
 
         let blas_instances = blas_instances_info
@@ -57,18 +67,34 @@ impl Scene {
         core: &Rc<vulkan_abstraction::Core>,
         blases: &mut Vec<vulkan_abstraction::BLAS>,
         blas_instances_info: &mut Vec<BlasInstanceInfo>,
+        primitives_blas_index: &mut HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, usize>,
+        scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
     ) -> SrResult<()> {
         let transform = parent_transform * node.transform();
 
         // TODO: avoid creating new blas for alredy seen meshes
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
-                let blas = vulkan_abstraction::BLAS::new(
-                    core.clone(),
-                    primitive.vertex_buffer(),
-                    primitive.index_buffer(),
-                )?;
-                blases.push(blas);
+                let primitive_unique_key = primitive.unique_key;
+
+                let blas_index = match primitives_blas_index.get(&primitive_unique_key) {
+                    Some(blas_index) => *blas_index,
+                    None => {
+                        let primitive_data = scene_data.remove(&primitive_unique_key).unwrap();
+
+                        let blas = vulkan_abstraction::BLAS::new(
+                            core.clone(),
+                            primitive_data.vertex_buffer,
+                            primitive_data.index_buffer,
+                        )?;
+                        blases.push(blas);
+
+                        let blas_index = blases.len() - 1;
+                        primitives_blas_index.insert(primitive_unique_key, blas_index);
+
+                        blas_index
+                    }
+                };
 
                 // the first idea that could come to your mind is to create a BlasInstance here directly.
                 // Apart from having to manage lifetimes it is still not going to work because:
@@ -80,14 +106,21 @@ impl Scene {
                 // but only one mutable borrow can exist at every time - compile error!
                 //
                 // tl;dr don't waste time making lifetimes work
-                let index = blases.len() - 1;
-                blas_instances_info.push((index, transform));
+                blas_instances_info.push((blas_index, transform));
             }
         }
 
         if let Some(children) = node.children() {
             for child in children {
-                self.load_node(child, transform, core, blases, blas_instances_info)? // mut borrow
+                self.load_node(
+                    child,
+                    transform,
+                    core,
+                    blases,
+                    blas_instances_info,
+                    primitives_blas_index,
+                    scene_data,
+                )? // mut borrow
             }
         }
 

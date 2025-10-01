@@ -12,14 +12,18 @@ pub struct BlasInstance<'a> {
 // Bottom-Level Acceleration Structure
 pub struct BLAS {
     blas: vulkan_abstraction::AccelerationStructure,
+    #[allow(unused)]
+    vertex_buffer: vulkan_abstraction::VertexBuffer,
+    #[allow(unused)]
+    index_buffer: vulkan_abstraction::IndexBuffer,
 }
 
 impl BLAS {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         // transform_buffer: vulkan_abstraction::Buffer,
-        vertex_buffer: &vulkan_abstraction::VertexBuffer,
-        index_buffer: &vulkan_abstraction::IndexBuffer,
+        vertex_buffer: vulkan_abstraction::VertexBuffer,
+        index_buffer: vulkan_abstraction::IndexBuffer,
     ) -> SrResult<Self> {
         /*
          * Building the BLAS is mostly a 3 step process (with some complications):
@@ -75,7 +79,11 @@ impl BLAS {
             false,
         )?;
 
-        Ok(Self { blas })
+        Ok(Self {
+            blas,
+            vertex_buffer,
+            index_buffer,
+        })
     }
 
     pub fn inner(&self) -> vk::AccelerationStructureKHR {

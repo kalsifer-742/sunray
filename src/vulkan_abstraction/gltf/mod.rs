@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{error::SrResult, vulkan_abstraction};
 
@@ -11,6 +11,9 @@ pub mod primitive;
 pub use mesh::*;
 pub use node::*;
 pub use primitive::*;
+
+pub type PrimitiveDataMap =
+    HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, vulkan_abstraction::gltf::PrimitiveData>;
 
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
@@ -37,7 +40,7 @@ impl Gltf {
         })
     }
 
-    pub fn create_scenes(&self) -> SrResult<(usize, Vec<crate::Scene>)> {
+    pub fn create_scenes(&self) -> SrResult<(usize, Vec<crate::Scene>, Vec<PrimitiveDataMap>)> {
         // find the defualt scene index
         let default_scene_index = match self.document.default_scene() {
             Some(s) => s.index(),
@@ -45,28 +48,35 @@ impl Gltf {
         };
 
         let mut scenes = vec![];
+        let mut primitive_data_maps = vec![];
         // load all scenes by default
         for gltf_scene in self.document.scenes() {
             let mut nodes = vec![];
+            let mut primitive_data_map: PrimitiveDataMap = PrimitiveDataMap::new();
             for gltf_node in gltf_scene.nodes() {
-                let node = self.explore(&gltf_node)?;
+                let node = self.explore(&gltf_node, &mut primitive_data_map)?;
                 nodes.push(node);
             }
             scenes.push(crate::Scene::new(nodes)?);
+            primitive_data_maps.push(primitive_data_map);
         }
 
-        Ok((default_scene_index, scenes))
+        Ok((default_scene_index, scenes, primitive_data_maps))
     }
 
-    fn explore(&self, gltf_node: &gltf::Node) -> SrResult<vulkan_abstraction::gltf::Node> {
-        let (transform, mesh) = self.process_node(gltf_node)?;
+    fn explore(
+        &self,
+        gltf_node: &gltf::Node,
+        primitive_data_map: &mut PrimitiveDataMap,
+    ) -> SrResult<vulkan_abstraction::gltf::Node> {
+        let (transform, mesh) = self.process_node(gltf_node, primitive_data_map)?;
 
         let children = if gltf_node.children().len() == 0 {
             None
         } else {
             let mut children = vec![];
             for gltf_child in gltf_node.children() {
-                let child = self.explore(&gltf_child)?;
+                let child = self.explore(&gltf_child, primitive_data_map)?;
                 children.push(child);
             }
 
@@ -81,6 +91,7 @@ impl Gltf {
     fn process_node(
         &self,
         gltf_node: &gltf::Node,
+        primitive_data_map: &mut PrimitiveDataMap,
     ) -> SrResult<(na::Matrix4<f32>, Option<vulkan_abstraction::gltf::Mesh>)> {
         // the trasnform can also be given decomposed in: translation, rotation and scale
         // but the gltf crate takes care of this:
@@ -89,41 +100,85 @@ impl Gltf {
         let mut mesh = None;
 
         // TODO: this code does not manage multiple nodes pointing to the same meshes
-        // fix proposal: check for the mesh id
+        // fix proposal: check for the primitive id
         if let Some(gltf_mesh) = gltf_node.mesh() {
             let mut primitives = vec![];
 
-            for primitive in gltf_mesh.primitives() {
-                let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
-
-                // get vertices positions
-                let vertices = reader
-                    .read_positions()
+            //TODO: check for primitive support
+            for (i, primitive) in gltf_mesh.primitives().enumerate() {
+                let vertex_position_accessor_index = primitive
+                    .attributes() // ATTRIBUTES are required in the spec
+                    .filter(|(semantic, _)| *semantic == gltf::Semantic::Positions) // POSITION is always defined
+                    .next()
                     .unwrap()
-                    .map(|position| vulkan_abstraction::gltf::Vertex { position })
-                    .collect::<Vec<_>>();
+                    .1
+                    .index();
 
-                // get vertices index
-                let indices = reader
-                    .read_indices()
-                    .unwrap()
-                    .into_u32()
-                    .collect::<Vec<_>>();
+                let indices_accessor_index = match primitive.indices() {
+                    Some(accessor) => accessor.index(),
+                    None => i, // this is a cheap fix in the case that the primitive is a non-indexed geometry
+                };
 
-                let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data::<
-                    Vertex,
-                >(Rc::clone(&self.core), &vertices)?;
-                let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
-                    Rc::clone(&self.core),
-                    &indices,
-                )?;
+                let primitive_unique_key = (vertex_position_accessor_index, indices_accessor_index);
 
-                primitives.push(vulkan_abstraction::gltf::Primitive::new(
-                    vertex_buffer,
-                    index_buffer,
-                )?);
+                if !primitive_data_map.contains_key(&primitive_unique_key) {
+                    let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
+
+                    let vertex_buffer = {
+                        // get vertices positions
+                        let vertices = reader
+                            .read_positions()
+                            .unwrap()
+                            .map(|position| vulkan_abstraction::gltf::Vertex { position })
+                            .collect::<Vec<_>>();
+
+                        let vertex_buffer =
+                            vulkan_abstraction::VertexBuffer::new_for_blas_from_data::<Vertex>(
+                                Rc::clone(&self.core),
+                                &vertices,
+                            )?;
+
+                        vertex_buffer
+                    };
+
+                    let index_buffer = {
+                        let indices = if primitive.indices().is_some() {
+                            // get vertices index
+                            let indices = reader
+                                .read_indices()
+                                .unwrap()
+                                .into_u32()
+                                .collect::<Vec<_>>();
+
+                            indices
+                        } else {
+                            // if the primitive is a non-indexed geometry we create the indices
+                            let indices = (0..vertex_buffer.len() as u32 / 3).collect::<Vec<_>>();
+
+                            indices
+                        };
+
+                        let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<
+                            u32,
+                        >(
+                            Rc::clone(&self.core), &indices
+                        )?;
+
+                        index_buffer
+                    };
+
+                    let primitive_data = vulkan_abstraction::gltf::PrimitiveData {
+                        vertex_buffer,
+                        index_buffer,
+                    };
+
+                    primitive_data_map.insert(primitive_unique_key, primitive_data);
+                }
+
+                primitives.push(vulkan_abstraction::gltf::Primitive {
+                    unique_key: primitive_unique_key,
+                });
             }
-
             mesh = Some(vulkan_abstraction::gltf::Mesh::new(primitives)?);
         }
 

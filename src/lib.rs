@@ -276,15 +276,20 @@ impl Renderer {
 
     pub fn load_gltf(&mut self, path: &str) -> SrResult<()> {
         let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
-        let (default_scene_index, scenes) = gltf.create_scenes()?;
-        let default_scene = &scenes[default_scene_index];
+        let (default_scene_index, scenes, mut scenes_data) = gltf.create_scenes()?;
+        let scene_data = scenes_data.get_mut(default_scene_index).unwrap();
+        let default_scene = scenes.get(default_scene_index).unwrap();
 
-        self.load_scene(default_scene)?;
+        self.load_scene(default_scene, scene_data)?;
         Ok(())
     }
 
-    pub fn load_scene(&mut self, scene: &Scene) -> SrResult<()> {
-        scene.load(&self.core, &mut self.tlas, &mut self.blases)?;
+    pub fn load_scene(
+        &mut self,
+        scene: &Scene,
+        scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
+    ) -> SrResult<()> {
+        scene.load(&self.core, &mut self.tlas, &mut self.blases, scene_data)?;
 
         //TODO: update insted of recreating
         self.clear_image_dependent_data();
