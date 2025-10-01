@@ -18,7 +18,7 @@ pub type PrimitiveDataMap =
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
     #[allow(unused)]
-    position: [f32; 3],
+    pub position: [f32; 3],
 }
 
 pub struct Gltf {

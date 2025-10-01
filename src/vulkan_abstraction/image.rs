@@ -8,11 +8,14 @@ pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
     image: vk::Image,
     allocation: gpu_allocator::vulkan::Allocation,
-    byte_size: usize,
+    byte_size: u64,
     image_view: vk::ImageView,
     image_subresource_range: vk::ImageSubresourceRange,
     extent: vk::Extent3D,
     format: vk::Format,
+
+    // can be null
+    sampler: vk::Sampler,
 }
 
 impl Image {
@@ -44,18 +47,15 @@ impl Image {
         let (allocation, byte_size) = {
             let mem_reqs = unsafe { core.device().inner().get_image_memory_requirements(image) };
 
-            let byte_size = mem_reqs.size as usize;
+            let byte_size = mem_reqs.size;
 
-            let allocation =
-                core.allocator_mut()
-                    .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                        name,
-                        requirements: mem_reqs,
-                        location,
-                        linear: true, // Should be ok?
-                        allocation_scheme:
-                            gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-                    })?;
+            let allocation = core.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                name,
+                requirements: mem_reqs,
+                location,
+                linear: tiling == vk::ImageTiling::LINEAR,
+                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            })?;
 
             (allocation, byte_size)
         };
@@ -98,6 +98,8 @@ impl Image {
             image_subresource_range,
             extent,
             format,
+
+            sampler: vk::Sampler::null()
         })
     }
 
@@ -105,11 +107,92 @@ impl Image {
         Ok(self.allocation.mapped_slice().unwrap())
     }
 
-    pub fn image_view(&self) -> &vk::ImageView {
-        &self.image_view
+    // copies from a staging buffermainly useful to copy from a staging buffer to a device buffer
+    // note that this function internally changes the image's layout to TRANSFER_DST_OPTIMAL
+    pub fn copy_from_buffer(
+        &mut self,
+        src: &vulkan_abstraction::Buffer,
+    ) -> SrResult<()> {
+        if src.is_null() {
+            return Ok(());
+        }
+
+        let device = self.core.device().inner();
+        let cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(self.core.cmd_pool(), device)?;
+
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            device.begin_command_buffer(cmd_buf, &begin_info)?;
+
+            vulkan_abstraction::synchronization::cmd_image_memory_barrier(
+                &self.core, cmd_buf,
+                self.image,
+                vk::PipelineStageFlags::ALL_COMMANDS, vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE,
+                vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL
+            );
+
+            let region = vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1)
+                )
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(self.extent);
+
+            device.cmd_copy_buffer_to_image(cmd_buf, src.inner(), self.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+
+
+            device.end_command_buffer(cmd_buf) ?;
+        }
+
+        self.core.queue().submit_sync(cmd_buf)?;
+
+        unsafe { device.free_command_buffers(self.core.cmd_pool().inner(), &[cmd_buf]) };
+
+        Ok(())
+    }
+    pub fn with_sampler(mut self) -> SrResult<Self> {
+        let create_info = vk::SamplerCreateInfo::default()
+            .flags(vk::SamplerCreateFlags::empty())
+            // linear filtering both for magnification and minification
+            .min_filter(vk::Filter::LINEAR)
+            .mag_filter(vk::Filter::LINEAR)
+            // repeat (tile) the texture on all axes
+            .address_mode_u(vk::SamplerAddressMode::REPEAT) // repeat
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            // use supported anisotropy
+            // TODO: does this make sense for raytracing?
+            .anisotropy_enable(true)
+            .max_anisotropy(self.core.device().properties().limits.max_sampler_anisotropy)
+            // use normalized ([0,1] range) coordinates
+            .unnormalized_coordinates(false)
+            // no need for a comparison function ("mainly used for percentage-closer filtering on shadow maps")
+            .compare_enable(false)
+            .compare_op(vk::CompareOp::ALWAYS)
+            // mipmapping
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.0)
+            .min_lod(0.0)
+            .max_lod(0.0)
+            ;
+        self.sampler = unsafe { self.core.device().inner().create_sampler(&create_info, None) }?;
+        Ok(self)
     }
 
-    pub fn byte_size(&self) -> usize {
+    pub fn image_view(&self) -> vk::ImageView {
+        self.image_view
+    }
+
+    pub fn byte_size(&self) -> u64 {
         self.byte_size
     }
 
@@ -128,11 +211,20 @@ impl Image {
     pub fn inner(&self) -> vk::Image {
         self.image
     }
+
+    pub fn sampler(&self) -> vk::Sampler {
+        assert_ne!(self.sampler, vk::Sampler::null());
+        self.sampler
+    }
 }
 
 impl Drop for Image {
     fn drop(&mut self) {
         let device = self.core.device().inner();
+
+        unsafe {
+            device.destroy_sampler(self.sampler, None);
+        }
         unsafe {
             device.destroy_image_view(self.image_view, None);
         }

@@ -12,10 +12,25 @@ use std::{collections::HashMap, rc::Rc};
 
 use ash::vk;
 
-struct UniformBufferContents {
+struct MatricesUniformBufferContents {
     pub view_inverse: na::Matrix4<f32>,
     pub proj_inverse: na::Matrix4<f32>,
 }
+
+#[allow(unused)]
+#[derive(Clone, Copy)]
+struct MeshesInfoStorageBufferContents {
+    vertex_buffer: vk::DeviceAddress,
+    index_buffer: vk::DeviceAddress,
+    material_index: u32,
+}
+
+#[allow(unused)]
+#[derive(Clone, Copy)]
+struct MaterialsStorageBufferContents {
+    texture_index: u32,
+}
+
 
 struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
@@ -30,7 +45,9 @@ struct ImageDependentData {
 pub struct Renderer {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
-    uniform_buffer: vulkan_abstraction::Buffer,
+    matrices_uniform_buffer: vulkan_abstraction::Buffer,
+    meshes_info_storage_buffer: vulkan_abstraction::Buffer,
+    materials_storage_buffer: vulkan_abstraction::Buffer,
     blases: Vec<vulkan_abstraction::BLAS>,
     #[allow(unused)]
     tlas: vulkan_abstraction::TLAS,
@@ -41,6 +58,8 @@ pub struct Renderer {
     descriptor_set_layout: vulkan_abstraction::DescriptorSetLayout,
     image_extent: vk::Extent3D,
     image_format: vk::Format,
+
+    fallback_texture_image: vulkan_abstraction::Image,
 
     core: Rc<vulkan_abstraction::Core>,
 }
@@ -139,8 +158,17 @@ impl Renderer {
         let blases = vec![];
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[])?;
 
-        let uniform_buffer =
-            vulkan_abstraction::Buffer::new_uniform::<UniformBufferContents>(Rc::clone(&core))?;
+        let matrices_uniform_buffer = vulkan_abstraction::Buffer::new_uniform::<MatricesUniformBufferContents>(Rc::clone(&core), 1)?;
+        let meshes_info_storage_buffer = vulkan_abstraction::Buffer::new_storage_from_data(
+            Rc::clone(&core),
+            &[ MeshesInfoStorageBufferContents{ vertex_buffer: vk::DeviceAddress::default(), index_buffer: vk::DeviceAddress::default(), material_index: 0 } ],
+            "meshes info storage buffer",
+        )?;
+        let materials_storage_buffer = vulkan_abstraction::Buffer::new_storage_from_data(
+            Rc::clone(&core),
+            &[ MaterialsStorageBufferContents { texture_index: 0 } ],
+            "materials storage buffer",
+        )?;
 
         let descriptor_set_layout = vulkan_abstraction::DescriptorSetLayout::new(Rc::clone(&core))?;
 
@@ -156,6 +184,38 @@ impl Renderer {
 
         let image_dependant_data = HashMap::new();
 
+        let fallback_texture_image = {
+            let mut image = vulkan_abstraction::Image::new(
+                Rc::clone(&core),
+                    vk::Extent3D { width: 64, height: 64, depth: 1 },
+                    vk::Format::R8G8B8A8_UNORM,
+                    vk::ImageTiling::OPTIMAL,
+                    gpu_allocator::MemoryLocation::GpuOnly,
+                    vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                    "fallback texture image"
+                )?
+                .with_sampler()?;
+
+            let image_data =
+                (0..image.extent().height*image.extent().width).map(|index| {
+                    let row_index = index / image.extent().width;
+                    let col_index = index % image.extent().height;
+                    if row_index + col_index % 2 == 0 {
+                        [0.0, 0.0, 0.0, 1.0] // black
+                    } else {
+                        [1.0, 0.0, 1.0, 1.0] // fucsia
+                    }
+                }).collect::<Vec<[f32;4]>>();
+
+            let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(
+                Rc::clone(&core),
+                &image_data,
+            )?;
+            image.copy_from_buffer(&staging_buffer)?;
+
+            image
+        };
+
         Ok((
             Self {
                 image_dependant_data,
@@ -165,9 +225,13 @@ impl Renderer {
                 descriptor_set_layout,
                 blases,
                 tlas,
-                uniform_buffer,
+                matrices_uniform_buffer,
+                meshes_info_storage_buffer,
+                materials_storage_buffer,
                 image_extent,
                 image_format,
+
+                fallback_texture_image,
 
                 core,
             },
@@ -196,7 +260,11 @@ impl Renderer {
                 &self.descriptor_set_layout,
                 &self.tlas,
                 raytrace_result_image.image_view(),
-                &self.uniform_buffer,
+                &self.matrices_uniform_buffer,
+                &self.meshes_info_storage_buffer,
+                &self.materials_storage_buffer,
+                &[ self.fallback_texture_image.sampler(); vulkan_abstraction::DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize ],
+                &[ self.fallback_texture_image.image_view(); vulkan_abstraction::DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize ],
             )?;
 
             let blit_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
@@ -307,12 +375,12 @@ impl Renderer {
         //clip_space: normalised coordinates adding perspective
         let projection = na::Perspective3::new(
             self.image_extent.width as f32 / self.image_extent.height as f32,
-            camera.fov() * 3.14 / std::f32::consts::PI,
+            camera.fov_y() * 3.14 / std::f32::consts::PI,
             0.1,   //render everything after this distance
             100.0, //discard everything after this distance
         );
 
-        let mem = self.uniform_buffer.map::<crate::UniformBufferContents>()?;
+        let mem = self.matrices_uniform_buffer.map::<crate::MatricesUniformBufferContents>()?;
         mem[0].view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
         mem[0].proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
 
