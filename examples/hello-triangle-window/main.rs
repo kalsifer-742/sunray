@@ -2,9 +2,17 @@ use std::rc::Rc;
 
 use ash::vk;
 use nalgebra as na;
-use sunray::{error::{ErrorSource, SrResult}, vulkan_abstraction, camera::Camera};
+use sunray::{
+    camera::Camera,
+    error::{ErrorSource, SrResult},
+    vulkan_abstraction,
+};
 use winit::{
-    application::ApplicationHandler, event::WindowEvent, event_loop::{self, ControlFlow, EventLoop}, raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle}, window::Window
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::{self, ControlFlow, EventLoop},
+    raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle},
+    window::Window,
 };
 
 mod surface;
@@ -37,7 +45,7 @@ struct App {
 ///
 /// Apparently 2 is the most common choice. Empirically it seems like the performance doesn't really
 /// get any better with a higher number, but it does get measurably worse with only 1.
-const MAX_FRAMES_IN_FLIGHT : usize = 2;
+const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 impl App {
     fn build_resources(&mut self, size: (u32, u32)) -> SrResult<()> {
@@ -62,27 +70,22 @@ impl App {
             &create_surface,
         )?;
 
-        renderer.load_file("assets/Lantern.glb")?;
+        renderer.load_gltf("assets/Lantern.glb")?;
 
         //take ownership of the surface
-        let surface = surface::Surface::new(
-            renderer.core().entry(),
-            renderer.core().instance(),
-            surface,
-        );
+        let surface =
+            surface::Surface::new(renderer.core().entry(), renderer.core().instance(), surface);
 
-
-        let swapchain = swapchain::Swapchain::new(
-            Rc::clone(renderer.core()),
-            surface.inner(),
-            size,
-        )?;
+        let swapchain =
+            swapchain::Swapchain::new(Rc::clone(renderer.core()), surface.inner(), size)?;
 
         renderer.build_image_dependent_data(swapchain.images())?;
 
         let core = renderer.core();
 
-        let img_barrier_to_present_cmd_bufs = swapchain.images().iter()
+        let img_barrier_to_present_cmd_bufs = swapchain
+            .images()
+            .iter()
             .map(|image| -> SrResult<vulkan_abstraction::CmdBuffer> {
                 let cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&core))?;
 
@@ -90,7 +93,9 @@ impl App {
                     let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
                         .flags(vk::CommandBufferUsageFlags::empty());
 
-                    core.device().inner().begin_command_buffer(cmd_buf.inner(), &cmd_buf_begin_info)?;
+                    core.device()
+                        .inner()
+                        .begin_command_buffer(cmd_buf.inner(), &cmd_buf_begin_info)?;
 
                     vulkan_abstraction::cmd_image_memory_barrier(
                         &core,
@@ -118,7 +123,9 @@ impl App {
             .map(|_| vk::Fence::null())
             .collect::<Vec<_>>();
 
-        let ready_to_present_sems = swapchain.images().iter()
+        let ready_to_present_sems = swapchain
+            .images()
+            .iter()
             .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(&core)))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -136,11 +143,17 @@ impl App {
         };
 
         log::debug!("img_acquired_sems: {}", fmt_handles(&img_acquired_sems));
-        log::debug!("ready_to_present_sems: {}", fmt_handles(&ready_to_present_sems));
+        log::debug!(
+            "ready_to_present_sems: {}",
+            fmt_handles(&ready_to_present_sems)
+        );
 
         self.resources = Some(AppResources {
-            swapchain, surface,
-            img_rendered_fences, img_acquired_sems, ready_to_present_sems,
+            swapchain,
+            surface,
+            img_rendered_fences,
+            img_acquired_sems,
+            ready_to_present_sems,
             img_barrier_to_present_cmd_bufs,
             renderer,
         });
@@ -152,10 +165,25 @@ impl App {
         self.res_mut().renderer.resize(size)?;
 
         // necessary so we can create the swapchain with the correct extent
-        self.res().renderer.core().device().update_surface_support_details(self.res().surface.inner(), self.res().surface.instance());
+        self.res()
+            .renderer
+            .core()
+            .device()
+            .update_surface_support_details(
+                self.res().surface.inner(),
+                self.res().surface.instance(),
+            );
 
         let curr_size = self.res().swapchain.extent();
-        let new_size = swapchain::Swapchain::get_extent(size, &self.res().renderer.core().device().surface_support_details());
+        let new_size = swapchain::Swapchain::get_extent(
+            size,
+            &self
+                .res()
+                .renderer
+                .core()
+                .device()
+                .surface_support_details(),
+        );
 
         if curr_size == new_size {
             return Ok(());
@@ -163,22 +191,21 @@ impl App {
 
         log::debug!("resizing swapchain from {curr_size:?} to {new_size:?}");
 
-
         let core = Rc::clone(self.res().renderer.core());
 
         for fence in self.res_mut().img_rendered_fences.iter_mut() {
             *fence = vk::Fence::null();
         }
 
-
         let surface = self.res().surface.inner();
 
-        self.res_mut().swapchain.rebuild(
-            surface,
-            size,
-        )?;
+        self.res_mut().swapchain.rebuild(surface, size)?;
 
-        self.res_mut().img_barrier_to_present_cmd_bufs = self.res().swapchain.images().iter()
+        self.res_mut().img_barrier_to_present_cmd_bufs = self
+            .res()
+            .swapchain
+            .images()
+            .iter()
             .map(|image| -> SrResult<vulkan_abstraction::CmdBuffer> {
                 let cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&core))?;
 
@@ -186,7 +213,9 @@ impl App {
                     let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
                         .flags(vk::CommandBufferUsageFlags::empty());
 
-                    core.device().inner().begin_command_buffer(cmd_buf.inner(), &cmd_buf_begin_info)?;
+                    core.device()
+                        .inner()
+                        .begin_command_buffer(cmd_buf.inner(), &cmd_buf_begin_info)?;
 
                     vulkan_abstraction::cmd_image_memory_barrier(
                         &core,
@@ -210,7 +239,7 @@ impl App {
     }
 
     fn time_elapsed(&self) -> f32 {
-         std::time::SystemTime::now()
+        std::time::SystemTime::now()
             .duration_since(self.start_time.unwrap())
             .unwrap()
             .as_millis() as f32
@@ -249,7 +278,12 @@ impl App {
 
         let queue = self.res().renderer.core().queue().inner();
 
-        unsafe { self.res().swapchain.device().queue_present(queue, &present_info) }?;
+        unsafe {
+            self.res()
+                .swapchain
+                .device()
+                .queue_present(queue, &present_info)
+        }?;
 
         Ok(())
     }
@@ -259,7 +293,9 @@ impl App {
         let time = self.time_elapsed();
         let y = 13.0;
         let dist = 30.0;
-        self.res_mut().renderer.set_camera(Camera::new(na::Point3::new(dist * time.cos(), y, dist * time.sin()), na::Point3::new(0.0, y, 0.0), 45.0)?)?;
+        let position = na::Point3::new(dist * time.cos(), y, dist * time.sin());
+        let fov_y = 45.0;
+        self.res_mut().renderer.set_camera(Camera::new(position, na::Point3::new(0.0, y, 0.0), fov_y)?)?;
 
         let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
 
@@ -267,17 +303,27 @@ impl App {
         let img_acquired_sem = self.res().img_acquired_sems[frame_index].inner();
         let img_rendered_fence = self.res().img_rendered_fences[frame_index];
         if img_rendered_fence != vk::Fence::null() {
-            unsafe { self.res().renderer.core().device().inner().wait_for_fences(&[img_rendered_fence], true, u64::MAX) }?
+            unsafe {
+                self.res().renderer.core().device().inner().wait_for_fences(
+                    &[img_rendered_fence],
+                    true,
+                    u64::MAX,
+                )
+            }?
         }
         let img_index = self.acquire_next_image(img_acquired_sem)?;
 
         let swapchain_image = self.res().swapchain.images()[img_index];
 
         //render
-        self.res_mut().img_rendered_fences[frame_index] = self.res_mut().renderer.render_to_image(swapchain_image, img_acquired_sem)?;
+        self.res_mut().img_rendered_fences[frame_index] = self
+            .res_mut()
+            .renderer
+            .render_to_image(swapchain_image, img_acquired_sem)?;
 
         // image barrier to transition to PRESENT_SRC
-        let img_barrier_to_present_cmd_buf = &mut self.res_mut().img_barrier_to_present_cmd_bufs[img_index];
+        let img_barrier_to_present_cmd_buf =
+            &mut self.res_mut().img_barrier_to_present_cmd_bufs[img_index];
         img_barrier_to_present_cmd_buf.fence_mut().wait()?;
         img_barrier_to_present_cmd_buf.fence_mut().reset()?;
         let img_barrier_done_fence = img_barrier_to_present_cmd_buf.fence_mut().submit();
@@ -285,34 +331,48 @@ impl App {
         let img_barrier_to_present_cmd_buf_inner = img_barrier_to_present_cmd_buf.inner();
         let ready_to_present_sem = self.res().ready_to_present_sems[img_index].inner();
 
-
         self.res().renderer.core().queue().submit_async(
             img_barrier_to_present_cmd_buf_inner,
-            &[], &[],
-            &[ready_to_present_sem], img_barrier_done_fence,
+            &[],
+            &[],
+            &[ready_to_present_sem],
+            img_barrier_done_fence,
         )?;
-
 
         //present
         self.present(img_index, ready_to_present_sem)?;
-
 
         self.frame_count += 1;
 
         Ok(())
     }
 
-    fn handle_event(&mut self, event_loop: &event_loop::ActiveEventLoop, event: winit::event::WindowEvent) -> SrResult<()> {
+    fn handle_event(
+        &mut self,
+        event_loop: &event_loop::ActiveEventLoop,
+        event: winit::event::WindowEvent,
+    ) -> SrResult<()> {
         match event {
             WindowEvent::CloseRequested => {
                 let run_time = {
                     let end_time = std::time::SystemTime::now();
 
-                    end_time.duration_since(self.start_time.unwrap()).unwrap().as_millis() as f32 / 1000.0
+                    end_time
+                        .duration_since(self.start_time.unwrap())
+                        .unwrap()
+                        .as_millis() as f32
+                        / 1000.0
                 };
                 let fps = self.frame_count as f32 / run_time;
                 log::info!("Frames per second: {fps}");
-                unsafe { self.res().renderer.core().device().inner().device_wait_idle() }?;
+                unsafe {
+                    self.res()
+                        .renderer
+                        .core()
+                        .device()
+                        .inner()
+                        .device_wait_idle()
+                }?;
 
                 event_loop.exit();
             }
@@ -344,13 +404,17 @@ impl App {
                         event_loop.exit();
                     }
                 }
-            },
+            }
         }
     }
 
-    fn res_mut(&mut self) -> &mut AppResources { self.resources.as_mut().unwrap() }
+    fn res_mut(&mut self) -> &mut AppResources {
+        self.resources.as_mut().unwrap()
+    }
 
-    fn res(&self) -> &AppResources { self.resources.as_ref().unwrap() }
+    fn res(&self) -> &AppResources {
+        self.resources.as_ref().unwrap()
+    }
 }
 
 impl ApplicationHandler for App {

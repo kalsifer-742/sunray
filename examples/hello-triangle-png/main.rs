@@ -1,6 +1,7 @@
 use ash::vk;
 use image::{ExtendedColorType, ImageFormat};
-use sunray::{Renderer, camera::Camera, error::SrResult};
+use sunray::{Camera, Renderer, error::SrResult};
+
 use nalgebra as na;
 
 fn get_vk_format(image_format: ExtendedColorType) -> vk::Format {
@@ -46,9 +47,12 @@ fn render_and_save() -> SrResult<()> {
     let image_format = get_vk_format(ExtendedColorType::Rgba8);
     let mut renderer = Renderer::new(image_extent, image_format)?;
 
-    renderer.load_file("assets/Lantern.glb")?;
+    renderer.load_gltf("assets/Lantern.glb")?;
 
-    let camera = Camera::new(na::Point3::new(0.0, 15.0, 15.0), na::Point3::new(0.0, 15.0, 0.0), 90.0)?;
+    let camera = Camera::default()
+        .set_position(na::Point3::new(10.0, 10.0, 10.0))
+        .set_target(na::Point3::new(0.0, 10.0, 0.0))
+        .set_fov(90.0);
     renderer.set_camera(camera)?;
 
     let image_buf = renderer.render_to_host_memory().unwrap();

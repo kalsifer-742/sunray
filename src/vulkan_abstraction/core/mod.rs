@@ -9,8 +9,8 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::ffi::CStr;
 use std::rc::Rc;
 
-use crate::{error::*, CreateSurfaceFn};
 use crate::vulkan_abstraction;
+use crate::{CreateSurfaceFn, error::*};
 use ash::{khr, vk};
 
 #[rustfmt::skip]
@@ -51,12 +51,17 @@ impl Core {
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
         let entry = ash::Entry::linked();
 
-        let instance = vulkan_abstraction::Instance::new(&entry, required_instance_extensions, with_validation_layer, with_gpuav)?;
+        let instance = vulkan_abstraction::Instance::new(
+            &entry,
+            required_instance_extensions,
+            with_validation_layer,
+            with_gpuav,
+        )?;
 
         let surface_support = match create_surface.as_ref() {
             Some(f) => Some((
                 f(&entry, instance.inner())?,
-                khr::surface::Instance::new(&entry, instance.inner())
+                khr::surface::Instance::new(&entry, instance.inner()),
             )),
             None => None,
         };
@@ -68,7 +73,10 @@ impl Core {
         ]
         .map(CStr::as_ptr);
 
-        let mut device_extensions = raytracing_device_extensions.iter().copied().collect::<Vec<_>>();
+        let mut device_extensions = raytracing_device_extensions
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
 
         if surface_support.is_some() {
             device_extensions.push(khr::swapchain::NAME.as_ptr());
@@ -78,7 +86,7 @@ impl Core {
             &instance,
             &device_extensions,
             image_format,
-            &surface_support
+            &surface_support,
         )?);
 
         let allocator = Allocator::new(&AllocatorCreateDesc {
@@ -114,7 +122,7 @@ impl Core {
                 queue: RefCell::new(queue),
                 cmd_pool,
             },
-            surface_support.map(|(s,_)| s)
+            surface_support.map(|(s, _)| s),
         ))
     }
 

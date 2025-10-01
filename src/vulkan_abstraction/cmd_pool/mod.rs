@@ -25,10 +25,7 @@ impl CmdPool {
 
         let cmd_pool = unsafe { device.inner().create_command_pool(&info, None) }?;
 
-        Ok(Self {
-            cmd_pool,
-            device,
-        })
+        Ok(Self { cmd_pool, device })
     }
 
     pub fn inner(&self) -> vk::CommandPool {

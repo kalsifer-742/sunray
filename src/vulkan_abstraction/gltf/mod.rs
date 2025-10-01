@@ -1,25 +1,46 @@
+use std::rc::Rc;
+
 use crate::{error::SrResult, vulkan_abstraction};
 
 use nalgebra as na;
 
+pub mod mesh;
+pub mod node;
+pub mod primitive;
+
+pub use mesh::*;
+pub use node::*;
+pub use primitive::*;
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Vertex {
+    #[allow(unused)]
+    pub position: [f32; 3],
+    pub tex_coords: [f32; 2],
+}
+
+
 pub struct Gltf {
+    core: Rc<vulkan_abstraction::Core>,
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
     _images: Vec<gltf::image::Data>,
 }
 
 impl Gltf {
-    pub fn new(path: &str) -> SrResult<Self> {
+    pub fn new(core: Rc<vulkan_abstraction::Core>, path: &str) -> SrResult<Self> {
         let (document, buffers, _images) = gltf::import(path)?;
 
         Ok(Self {
+            core,
             document,
             buffers,
             _images,
         })
     }
 
-    pub fn create_scenes(&self) -> SrResult<(usize, Vec<vulkan_abstraction::Scene>)> {
+    pub fn create_scenes(&self) -> SrResult<(usize, Vec<crate::Scene>)> {
         // find the defualt scene index
         let default_scene_index = match self.document.default_scene() {
             Some(s) => s.index(),
@@ -34,13 +55,13 @@ impl Gltf {
                 let node = self.explore(&gltf_node)?;
                 nodes.push(node);
             }
-            scenes.push(vulkan_abstraction::Scene::new(nodes)?);
+            scenes.push(crate::Scene::new(nodes)?);
         }
 
         Ok((default_scene_index, scenes))
     }
 
-    fn explore(&self, gltf_node: &gltf::Node) -> SrResult<vulkan_abstraction::Node> {
+    fn explore(&self, gltf_node: &gltf::Node) -> SrResult<vulkan_abstraction::gltf::Node> {
         let (transform, mesh) = self.process_node(gltf_node)?;
 
         let children = if gltf_node.children().len() == 0 {
@@ -55,13 +76,15 @@ impl Gltf {
             Some(children)
         };
 
-        Ok(vulkan_abstraction::Node::new(transform, mesh, children)?)
+        Ok(vulkan_abstraction::gltf::Node::new(
+            transform, mesh, children,
+        )?)
     }
 
     fn process_node(
         &self,
         gltf_node: &gltf::Node,
-    ) -> SrResult<(na::Matrix4<f32>, Option<vulkan_abstraction::Mesh>)> {
+    ) -> SrResult<(na::Matrix4<f32>, Option<vulkan_abstraction::gltf::Mesh>)> {
         // the trasnform can also be given decomposed in: translation, rotation and scale
         // but the gltf crate takes care of this:
         // "If the transform is Decomposed, then the matrix is generated with the equation matrix = translation * rotation * scale."
@@ -77,22 +100,34 @@ impl Gltf {
                 let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
                 // get vertices positions
-                let vertices =
-                    reader.read_positions()
+                let vertices = reader
+                    .read_positions()
                     .unwrap()
-                    .map(|position| vulkan_abstraction::Vertex { position, ..Default::default() })
+                    .map(|position| Vertex { position, ..Default::default() })
                     .collect::<Vec<_>>();
 
                 // get vertices index
-                let indices =
-                    reader.read_indices().unwrap()
+                let indices = reader
+                    .read_indices()
+                    .unwrap()
                     .into_u32()
                     .collect::<Vec<_>>();
 
-                primitives.push(vulkan_abstraction::Primitive { vertices, indices })
+                let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data::<
+                    Vertex,
+                >(Rc::clone(&self.core), &vertices)?;
+                let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
+                    Rc::clone(&self.core),
+                    &indices,
+                )?;
+
+                primitives.push(vulkan_abstraction::gltf::Primitive::new(
+                    vertex_buffer,
+                    index_buffer,
+                )?);
             }
 
-            mesh = Some(vulkan_abstraction::Mesh::new(primitives)?);
+            mesh = Some(vulkan_abstraction::gltf::Mesh::new(primitives)?);
         }
 
         Ok((transform, mesh))

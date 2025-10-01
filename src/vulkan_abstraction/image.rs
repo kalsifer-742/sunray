@@ -233,10 +233,15 @@ impl Drop for Image {
         }
 
         //need to take ownership to pass to free
-        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+        let allocation = std::mem::replace(
+            &mut self.allocation,
+            gpu_allocator::vulkan::Allocation::default(),
+        );
         match self.core.allocator_mut().free(allocation) {
             Ok(()) => {}
-            Err(e) => log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop"),
+            Err(e) => log::error!(
+                "gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop"
+            ),
         }
     }
 }

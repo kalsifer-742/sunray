@@ -12,7 +12,10 @@ pub struct VertexBuffer {
 
 impl VertexBuffer {
     //build a vertex buffer with flags for usage in a blas
-    pub fn new_for_blas_from_data<T: Copy>(core: Rc<vulkan_abstraction::Core>, data: &[T]) -> SrResult<Self> {
+    pub fn new_for_blas_from_data<T: Copy>(
+        core: Rc<vulkan_abstraction::Core>,
+        data: &[T],
+    ) -> SrResult<Self> {
         let usage_flags = vk::BufferUsageFlags::TRANSFER_DST
             | vk::BufferUsageFlags::VERTEX_BUFFER
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS

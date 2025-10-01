@@ -1,4 +1,8 @@
-use std::{cell::{Ref, RefCell}, collections::HashSet, ffi::CStr};
+use std::{
+    cell::{Ref, RefCell},
+    collections::HashSet,
+    ffi::CStr,
+};
 
 use ash::{
     khr,
@@ -23,7 +27,7 @@ impl Device {
         instance: &vulkan_abstraction::Instance,
         device_extensions: &[*const i8],
         image_format: vk::Format,
-        surface_to_support: &Option<(vk::SurfaceKHR, khr::surface::Instance)>
+        surface_to_support: &Option<(vk::SurfaceKHR, khr::surface::Instance)>,
     ) -> SrResult<Self> {
         let instance = instance.inner();
         let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
@@ -55,7 +59,9 @@ impl Device {
             // filter out devices without swapchain support if necessary
             .filter_map(|physical_device| {
                 if let Some((surface, surface_instance)) = &surface_to_support {
-                    let surface_support_details = SurfaceSupportDetails::new(*surface, surface_instance, physical_device).unwrap();
+                    let surface_support_details =
+                        SurfaceSupportDetails::new(*surface, surface_instance, physical_device)
+                            .unwrap();
                     if surface_support_details.check_swapchain_support() {
                         Some((physical_device, Some(RefCell::new(surface_support_details))))
                     } else {
@@ -74,17 +80,19 @@ impl Device {
                 ))
             })
             // try to get a discrete or at least integrated gpu
-            .max_by_key(|(physical_device, _surface_support_details, _queue_family_index)| {
-                let device_type =
-                    unsafe { instance.get_physical_device_properties(*physical_device) }
-                        .device_type;
+            .max_by_key(
+                |(physical_device, _surface_support_details, _queue_family_index)| {
+                    let device_type =
+                        unsafe { instance.get_physical_device_properties(*physical_device) }
+                            .device_type;
 
-                match device_type {
-                    vk::PhysicalDeviceType::DISCRETE_GPU => 2,
-                    vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
-                    _ => 0,
-                }
-            })
+                    match device_type {
+                        vk::PhysicalDeviceType::DISCRETE_GPU => 2,
+                        vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
+                        _ => 0,
+                    }
+                },
+            )
             .ok_or(SrError::new(None, String::from("No suitable GPU found!")))?;
 
         let device = {
@@ -217,7 +225,9 @@ impl Device {
         &self.physical_device_rt_pipeline_properties
     }
 
-    pub fn acceleration_structure_properties(&self) -> &vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'static> {
+    pub fn acceleration_structure_properties(
+        &self,
+    ) -> &vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'static> {
         &self.physical_device_acceleration_structure_properties
     }
 
@@ -230,7 +240,11 @@ impl Device {
     pub fn surface_support_details(&self) -> Ref<'_, SurfaceSupportDetails> {
         self.surface_support_details.as_ref().unwrap().borrow()
     }
-    pub fn update_surface_support_details(&self, surface: vk::SurfaceKHR, surface_instance: &khr::surface::Instance) {
+    pub fn update_surface_support_details(
+        &self,
+        surface: vk::SurfaceKHR,
+        surface_instance: &khr::surface::Instance,
+    ) {
         *self.surface_support_details.as_ref().unwrap().borrow_mut() =
             SurfaceSupportDetails::new(surface, surface_instance, self.physical_device).unwrap();
     }

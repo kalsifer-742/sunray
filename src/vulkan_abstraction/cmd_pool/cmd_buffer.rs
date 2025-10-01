@@ -1,25 +1,48 @@
 use std::rc::Rc;
 
-use ash::vk;
 use crate::{error::*, vulkan_abstraction};
+use ash::vk;
 
 // Device::free_command_buffers must be called on vk::CommandBuffer before it is dropped
-pub fn new_command_buffer_vec(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::Device, len: usize) -> SrResult<Vec<vk::CommandBuffer>> {
+pub fn new_command_buffer_vec(
+    cmd_pool: &vulkan_abstraction::CmdPool,
+    device: &ash::Device,
+    len: usize,
+) -> SrResult<Vec<vk::CommandBuffer>> {
     new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::PRIMARY, len)
 }
-pub fn new_command_buffer_vec_secondary(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::Device, len: usize) -> SrResult<Vec<vk::CommandBuffer>> {
+pub fn new_command_buffer_vec_secondary(
+    cmd_pool: &vulkan_abstraction::CmdPool,
+    device: &ash::Device,
+    len: usize,
+) -> SrResult<Vec<vk::CommandBuffer>> {
     new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::SECONDARY, len)
 }
-pub fn new_command_buffer(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::Device) -> SrResult<vk::CommandBuffer> {
-    let v = new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::PRIMARY,1)?;
-    v.into_iter().next().ok_or_else(|| SrError::new(None, String::from("Error in new_command_buffer")))
+pub fn new_command_buffer(
+    cmd_pool: &vulkan_abstraction::CmdPool,
+    device: &ash::Device,
+) -> SrResult<vk::CommandBuffer> {
+    let v = new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::PRIMARY, 1)?;
+    v.into_iter()
+        .next()
+        .ok_or_else(|| SrError::new(None, String::from("Error in new_command_buffer")))
 }
-pub fn new_command_buffer_secondary(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::Device) -> SrResult<vk::CommandBuffer> {
-    let v = new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::SECONDARY,1)?;
-    v.into_iter().next().ok_or_else(|| SrError::new(None, String::from("Error in new_command_buffer_secondary")))
+pub fn new_command_buffer_secondary(
+    cmd_pool: &vulkan_abstraction::CmdPool,
+    device: &ash::Device,
+) -> SrResult<vk::CommandBuffer> {
+    let v = new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::SECONDARY, 1)?;
+    v.into_iter()
+        .next()
+        .ok_or_else(|| SrError::new(None, String::from("Error in new_command_buffer_secondary")))
 }
 
-fn new_command_buffer_vec_impl(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::Device, level: vk::CommandBufferLevel, len: usize) -> SrResult<Vec<vk::CommandBuffer>> {
+fn new_command_buffer_vec_impl(
+    cmd_pool: &vulkan_abstraction::CmdPool,
+    device: &ash::Device,
+    level: vk::CommandBufferLevel,
+    len: usize,
+) -> SrResult<Vec<vk::CommandBuffer>> {
     let info = vk::CommandBufferAllocateInfo::default()
         .command_pool(cmd_pool.inner())
         .level(level)
@@ -30,7 +53,6 @@ fn new_command_buffer_vec_impl(cmd_pool: &vulkan_abstraction::CmdPool, device: &
     Ok(ret)
 }
 
-
 // this is for now assumed to be a non-ONE_TIME_SUBMIT command buffer
 pub struct CmdBuffer {
     handle: vk::CommandBuffer,
@@ -40,14 +62,27 @@ pub struct CmdBuffer {
 
 impl CmdBuffer {
     pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
-        let handle = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
+        let handle = vulkan_abstraction::cmd_buffer::new_command_buffer(
+            core.cmd_pool(),
+            core.device().inner(),
+        )?;
         let fence = vulkan_abstraction::Fence::new_signaled(Rc::clone(core.device()))?;
-        Ok(Self { core, handle, fence })
+        Ok(Self {
+            core,
+            handle,
+            fence,
+        })
     }
-    pub fn inner(&self) -> vk::CommandBuffer { self.handle }
+    pub fn inner(&self) -> vk::CommandBuffer {
+        self.handle
+    }
 
-    pub fn fence(&self) -> &vulkan_abstraction::Fence { &self.fence }
-    pub fn fence_mut(&mut self) -> &mut vulkan_abstraction::Fence { &mut self.fence }
+    pub fn fence(&self) -> &vulkan_abstraction::Fence {
+        &self.fence
+    }
+    pub fn fence_mut(&mut self) -> &mut vulkan_abstraction::Fence {
+        &mut self.fence
+    }
 }
 
 impl Drop for CmdBuffer {
@@ -55,15 +90,17 @@ impl Drop for CmdBuffer {
         unsafe {
             match self.fence.wait() {
                 Ok(()) => {}
-                Err(e) => {
-                    match e.get_source() {
-                        Some(ErrorSource::VULKAN(e)) => log::warn!("VkWaitForFences returned {e:?} in CmdBuffer::drop"),
-                        _ => log::error!("VkWaitForFences returned {e} in CmdBuffer::drop"),
+                Err(e) => match e.get_source() {
+                    Some(ErrorSource::VULKAN(e)) => {
+                        log::warn!("VkWaitForFences returned {e:?} in CmdBuffer::drop")
                     }
-
-                }
+                    _ => log::error!("VkWaitForFences returned {e} in CmdBuffer::drop"),
+                },
             }
-            self.core.device().inner().free_command_buffers(self.core.cmd_pool().inner(), &[self.handle]);
+            self.core
+                .device()
+                .inner()
+                .free_command_buffers(self.core.cmd_pool().inner(), &[self.handle]);
         }
     }
 }

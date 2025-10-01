@@ -1,6 +1,6 @@
 use std::ffi::c_char;
 
-use ash::{ ext, khr, vk };
+use ash::{ext, khr, vk};
 use winit::raw_window_handle_05::{RawDisplayHandle, RawWindowHandle};
 
 use sunray::error::*;
@@ -17,22 +17,28 @@ pub fn enumerate_required_extensions(
 ) -> SrResult<&'static [*const c_char]> {
     let extensions = match display_handle {
         RawDisplayHandle::Windows(_) => {
-            const WINDOWS_EXTS: [*const c_char; 2] =
-                [khr::surface::NAME.as_ptr(), khr::win32_surface::NAME.as_ptr()];
+            const WINDOWS_EXTS: [*const c_char; 2] = [
+                khr::surface::NAME.as_ptr(),
+                khr::win32_surface::NAME.as_ptr(),
+            ];
 
             &WINDOWS_EXTS
         }
 
         RawDisplayHandle::Wayland(_) => {
-            const WAYLAND_EXTS: [*const c_char; 2] =
-                [khr::surface::NAME.as_ptr(), khr::wayland_surface::NAME.as_ptr()];
+            const WAYLAND_EXTS: [*const c_char; 2] = [
+                khr::surface::NAME.as_ptr(),
+                khr::wayland_surface::NAME.as_ptr(),
+            ];
 
             &WAYLAND_EXTS
         }
 
         RawDisplayHandle::Xlib(_) => {
-            const XLIB_EXTS: [*const c_char; 2] =
-                [khr::surface::NAME.as_ptr(), khr::xlib_surface::NAME.as_ptr()];
+            const XLIB_EXTS: [*const c_char; 2] = [
+                khr::surface::NAME.as_ptr(),
+                khr::xlib_surface::NAME.as_ptr(),
+            ];
 
             &XLIB_EXTS
         }
@@ -45,22 +51,26 @@ pub fn enumerate_required_extensions(
         }
 
         RawDisplayHandle::Android(_) => {
-            const ANDROID_EXTS: [*const c_char; 2] =
-                [khr::surface::NAME.as_ptr(), khr::android_surface::NAME.as_ptr()];
+            const ANDROID_EXTS: [*const c_char; 2] = [
+                khr::surface::NAME.as_ptr(),
+                khr::android_surface::NAME.as_ptr(),
+            ];
 
             &ANDROID_EXTS
         }
 
         RawDisplayHandle::AppKit(_) | RawDisplayHandle::UiKit(_) => {
-            const METAL_EXTS: [*const c_char; 2] =
-                [khr::surface::NAME.as_ptr(), ext::metal_surface::NAME.as_ptr()];
+            const METAL_EXTS: [*const c_char; 2] = [
+                khr::surface::NAME.as_ptr(),
+                ext::metal_surface::NAME.as_ptr(),
+            ];
 
             &METAL_EXTS
         }
 
         _ => {
             return Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT.into());
-        },
+        }
     };
 
     Ok(extensions)
@@ -148,7 +158,7 @@ pub fn create_surface(
 
         #[cfg(target_os = "macos")]
         (RawDisplayHandle::AppKit(_), RawWindowHandle::AppKit(window)) => {
-            use raw_window_metal::{appkit, Layer};
+            use raw_window_metal::{Layer, appkit};
 
             let layer = match appkit::metal_layer_from_handle(window) {
                 Layer::Existing(layer) | Layer::Allocated(layer) => layer.cast(),
@@ -177,5 +187,6 @@ pub fn create_surface(
         }
 
         _ => Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT),
-    }.map_err(SrError::from)
+    }
+    .map_err(SrError::from)
 }

@@ -3,12 +3,13 @@ use std::rc::Rc;
 use crate::{error::SrResult, vulkan_abstraction};
 use ash::vk;
 
-fn aligned_size(value : u32, alignment : u32) -> u32 {
+fn aligned_size(value: u32, alignment: u32) -> u32 {
     (value + alignment - 1) & !(alignment - 1)
 }
 
 pub struct ShaderBindingTable {
-    #[allow(unused)] // never read after construction, except from raygen/miss/hit_region attributes
+    #[allow(unused)]
+    // never read after construction, except from raygen/miss/hit_region attributes
     sbt_buffer: vulkan_abstraction::Buffer,
     raygen_region: vk::StridedDeviceAddressRegionKHR,
     miss_region: vk::StridedDeviceAddressRegionKHR,
@@ -26,9 +27,18 @@ impl ShaderBindingTable {
         let hit_count = 1;
         let handle_count = RAYGEN_COUNT + miss_count + hit_count;
 
-        let handle_size: usize = core.device().rt_pipeline_properties().shader_group_handle_size as usize;
-        let handle_alignment = core.device().rt_pipeline_properties().shader_group_handle_alignment;
-        let base_alignment = core.device().rt_pipeline_properties().shader_group_base_alignment;
+        let handle_size: usize = core
+            .device()
+            .rt_pipeline_properties()
+            .shader_group_handle_size as usize;
+        let handle_alignment = core
+            .device()
+            .rt_pipeline_properties()
+            .shader_group_handle_alignment;
+        let base_alignment = core
+            .device()
+            .rt_pipeline_properties()
+            .shader_group_base_alignment;
         let handle_size_aligned = aligned_size(handle_size as u32, handle_alignment);
 
         let raygen_size = aligned_size(RAYGEN_COUNT * handle_size_aligned, base_alignment);
@@ -50,16 +60,26 @@ impl ShaderBindingTable {
 
         // get the shader handles
         let handles = unsafe {
-            core.rt_pipeline_device().get_ray_tracing_shader_group_handles(rt_pipeline.get_handle(), 0, handle_count, data_size)
+            core.rt_pipeline_device()
+                .get_ray_tracing_shader_group_handles(
+                    rt_pipeline.get_handle(),
+                    0,
+                    handle_count,
+                    data_size,
+                )
         }?;
 
         // Allocate a buffer for storing the SBT.
-        let sbt_buffer_size = (raygen_region.size + miss_region.size + hit_region.size + callable_region.size) as usize;
+        let sbt_buffer_size =
+            (raygen_region.size + miss_region.size + hit_region.size + callable_region.size)
+                as usize;
         let mut sbt_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(core),
             sbt_buffer_size,
             gpu_allocator::MemoryLocation::CpuToGpu,
-            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
+            vk::BufferUsageFlags::TRANSFER_SRC
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
             "shader binding table buffer",
         )?;
         let sbt_buffer_data = sbt_buffer.map()?;
@@ -67,13 +87,15 @@ impl ShaderBindingTable {
         let mut handles_index = 0;
 
         //copying raygen handle in the sbt_buffer
-        sbt_buffer_data[buffer_index..buffer_index+handle_size].copy_from_slice(&handles[handles_index..handles_index+handle_size]);
+        sbt_buffer_data[buffer_index..buffer_index + handle_size]
+            .copy_from_slice(&handles[handles_index..handles_index + handle_size]);
         buffer_index = raygen_region.size as usize;
         handles_index += handle_size;
 
         //copying miss handles in the sbt_buffer
         for _ in 0..miss_count {
-        sbt_buffer_data[buffer_index..buffer_index+handle_size].copy_from_slice(&handles[handles_index..handles_index+handle_size]);
+            sbt_buffer_data[buffer_index..buffer_index + handle_size]
+                .copy_from_slice(&handles[handles_index..handles_index + handle_size]);
             buffer_index += miss_region.stride as usize;
             handles_index += handle_size;
         }
@@ -83,7 +105,8 @@ impl ShaderBindingTable {
 
         //copying hit handles in the sbt_buffer
         for _ in 0..hit_count {
-        sbt_buffer_data[buffer_index..buffer_index+handle_size].copy_from_slice(&handles[handles_index..handles_index+handle_size]);
+            sbt_buffer_data[buffer_index..buffer_index + handle_size]
+                .copy_from_slice(&handles[handles_index..handles_index + handle_size]);
             buffer_index += hit_region.stride as usize;
             handles_index += handle_size;
         }
@@ -92,7 +115,8 @@ impl ShaderBindingTable {
         let sbt_buffer_device_address = sbt_buffer.get_device_address();
         raygen_region.device_address = sbt_buffer_device_address;
         miss_region.device_address = sbt_buffer_device_address + raygen_region.size;
-        hit_region.device_address = sbt_buffer_device_address + raygen_region.size + miss_region.size;
+        hit_region.device_address =
+            sbt_buffer_device_address + raygen_region.size + miss_region.size;
 
         Ok(Self {
             sbt_buffer,
@@ -102,8 +126,16 @@ impl ShaderBindingTable {
             callable_region,
         })
     }
-    pub fn get_raygen_region(&self) -> &vk::StridedDeviceAddressRegionKHR { &self.raygen_region }
-    pub fn get_miss_region(&self) -> &vk::StridedDeviceAddressRegionKHR { &self.miss_region }
-    pub fn get_hit_region(&self) -> &vk::StridedDeviceAddressRegionKHR { &self.hit_region }
-    pub fn get_callable_region(&self) -> &vk::StridedDeviceAddressRegionKHR { &self.callable_region }
+    pub fn get_raygen_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
+        &self.raygen_region
+    }
+    pub fn get_miss_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
+        &self.miss_region
+    }
+    pub fn get_hit_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
+        &self.hit_region
+    }
+    pub fn get_callable_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
+        &self.callable_region
+    }
 }

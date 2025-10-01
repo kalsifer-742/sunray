@@ -18,8 +18,8 @@ impl BLAS {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         // transform_buffer: vulkan_abstraction::Buffer,
-        vertex_buffer: vulkan_abstraction::VertexBuffer,
-        index_buffer: vulkan_abstraction::IndexBuffer,
+        vertex_buffer: &vulkan_abstraction::VertexBuffer,
+        index_buffer: &vulkan_abstraction::IndexBuffer,
     ) -> SrResult<Self> {
         /*
          * Building the BLAS is mostly a 3 step process (with some complications):
@@ -43,8 +43,8 @@ impl BLAS {
                         device_address: index_buffer.get_device_address(),
                     })
                     .index_type(index_buffer.index_type()),
-                    // .transform_data(vk::DeviceOrHostAddressConstKHR { device_address: transform_buffer.get_device_address() }),
             };
+            // .transform_data(vk::DeviceOrHostAddressConstKHR { device_address: transform_buffer.get_device_address() })
 
             vk::AccelerationStructureGeometryKHR::default()
                 .geometry_type(vk::GeometryTypeKHR::TRIANGLES)

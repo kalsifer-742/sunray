@@ -1,4 +1,4 @@
-use std::{rc::Rc};
+use std::rc::Rc;
 
 use ash::vk;
 
@@ -74,14 +74,24 @@ impl DescriptorSetLayout {
             device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
         }?;
 
-        Ok(Self{ descriptor_set_layout, core })
+        Ok(Self {
+            descriptor_set_layout,
+            core,
+        })
     }
 
-    pub fn inner(&self) -> vk::DescriptorSetLayout { self.descriptor_set_layout }
+    pub fn inner(&self) -> vk::DescriptorSetLayout {
+        self.descriptor_set_layout
+    }
 }
 impl Drop for DescriptorSetLayout {
     fn drop(&mut self) {
-        unsafe { self.core.device().inner().destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
+        unsafe {
+            self.core
+                .device()
+                .inner()
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None)
+        };
     }
 }
 
@@ -131,7 +141,6 @@ impl DescriptorSets {
         let descriptor_pool = unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None) }?;
 
         let descriptor_set_layouts = [descriptor_set_layout.inner()];
-
 
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
@@ -255,6 +264,11 @@ impl Drop for DescriptorSets {
         //only do this if you set VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
         //unsafe { self.core.device().free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets) }.unwrap();
 
-        unsafe { self.core.device().inner().destroy_descriptor_pool(self.descriptor_pool, None) };
+        unsafe {
+            self.core
+                .device()
+                .inner()
+                .destroy_descriptor_pool(self.descriptor_pool, None)
+        };
     }
 }
