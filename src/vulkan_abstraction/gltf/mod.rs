@@ -15,12 +15,17 @@ pub use primitive::*;
 pub type PrimitiveDataMap =
     HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, vulkan_abstraction::gltf::PrimitiveData>;
 
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C, packed)]
 struct Vertex {
-    #[allow(unused)]
-    pub position: [f32; 3],
-    pub tex_coords: [f32; 2],
+    // NOTE: don't move position or place any attributes before it:
+    // the BLAS assumes that the vertex_buffer has a vec3 position attribute as its first (not necessarily the only) attribute in memory
+    pub position:  [f32; 3],
+    pub _padding0: [f32; 1],
+
+    pub tex_coords:[f32; 2],
+    pub _padding2: [f32; 2],
 }
 
 pub struct Gltf {
@@ -133,7 +138,7 @@ impl Gltf {
                             reader.read_positions().unwrap(),
                             reader.read_tex_coords(0).unwrap().into_f32(),
                         )
-                            .map(|(position, tex_coords)| vulkan_abstraction::gltf::Vertex { position, tex_coords, })
+                            .map(|(position, tex_coords)| vulkan_abstraction::gltf::Vertex { position: position.into(), tex_coords:tex_coords.into(), ..Default::default() })
                             .collect::<Vec<_>>();
 
                         let vertex_buffer =

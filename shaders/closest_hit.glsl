@@ -8,8 +8,8 @@
 hitAttributeEXT vec2 attribs;
 
 struct vertex_t {
-    float position[3];
-    float tex_coords[2];
+    vec3 position;
+    vec2 tex_coords;
     //...
 };
 
@@ -19,12 +19,12 @@ struct material_t {
 };
 
 
-layout(buffer_reference, buffer_reference_align = 8) buffer vertex_buffer_reference_t {
+layout(std430, buffer_reference, buffer_reference_align = 8) buffer vertex_buffer_reference_t {
     vertex_t v[]; //use .length()?
 };
 
 
-layout(buffer_reference, buffer_reference_align = 8) buffer index_buffer_reference_t {
+layout(std430, buffer_reference, buffer_reference_align = 8) buffer index_buffer_reference_t {
     uint32_t i[];
 };
 

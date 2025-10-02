@@ -12,21 +12,22 @@ use std::{collections::HashMap, rc::Rc};
 
 use ash::vk;
 
+#[repr(C)]
 struct MatricesUniformBufferContents {
     pub view_inverse: na::Matrix4<f32>,
     pub proj_inverse: na::Matrix4<f32>,
 }
 
-#[allow(unused)]
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct MeshesInfoStorageBufferContents {
     vertex_buffer: vk::DeviceAddress,
     index_buffer: vk::DeviceAddress,
     material_index: u32,
 }
 
-#[allow(unused)]
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct MaterialsStorageBufferContents {
     texture_index: u32,
 }
