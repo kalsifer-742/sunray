@@ -85,52 +85,10 @@ impl Gltf {
             .document
             .samplers()
             .map(|sampler| vulkan_abstraction::gltf::Sampler {
-                mag_filter: sampler.mag_filter().map(|filter| match filter {
-                    gltf::texture::MagFilter::Nearest => {
-                        vulkan_abstraction::gltf::MagFilter::Nearest
-                    }
-                    gltf::texture::MagFilter::Linear => vulkan_abstraction::gltf::MagFilter::Linear,
-                }),
-                min_filter: sampler.min_filter().map(|filter| match filter {
-                    gltf::texture::MinFilter::Nearest => {
-                        vulkan_abstraction::gltf::MinFilter::Nearest
-                    }
-                    gltf::texture::MinFilter::Linear => vulkan_abstraction::gltf::MinFilter::Linear,
-                    gltf::texture::MinFilter::NearestMipmapNearest => {
-                        vulkan_abstraction::gltf::MinFilter::NearestMipmapNearest
-                    }
-                    gltf::texture::MinFilter::LinearMipmapNearest => {
-                        vulkan_abstraction::gltf::MinFilter::LinearMipmapNearest
-                    }
-                    gltf::texture::MinFilter::NearestMipmapLinear => {
-                        vulkan_abstraction::gltf::MinFilter::NearestMipmapLinear
-                    }
-                    gltf::texture::MinFilter::LinearMipmapLinear => {
-                        vulkan_abstraction::gltf::MinFilter::LinearMipmapLinear
-                    }
-                }),
-                wrap_s_u: match sampler.wrap_s() {
-                    gltf::texture::WrappingMode::ClampToEdge => {
-                        vulkan_abstraction::gltf::WrappingMode::ClampToEdge
-                    }
-                    gltf::texture::WrappingMode::MirroredRepeat => {
-                        vulkan_abstraction::gltf::WrappingMode::MirroredRepeat
-                    }
-                    gltf::texture::WrappingMode::Repeat => {
-                        vulkan_abstraction::gltf::WrappingMode::Repeat
-                    }
-                },
-                wrap_t_v: match sampler.wrap_t() {
-                    gltf::texture::WrappingMode::ClampToEdge => {
-                        vulkan_abstraction::gltf::WrappingMode::ClampToEdge
-                    }
-                    gltf::texture::WrappingMode::MirroredRepeat => {
-                        vulkan_abstraction::gltf::WrappingMode::MirroredRepeat
-                    }
-                    gltf::texture::WrappingMode::Repeat => {
-                        vulkan_abstraction::gltf::WrappingMode::Repeat
-                    }
-                },
+                mag_filter: sampler.mag_filter(),
+                min_filter: sampler.min_filter(),
+                wrap_s_u: sampler.wrap_s(),
+                wrap_t_v: sampler.wrap_t(),
             })
             .collect::<Vec<_>>();
 
@@ -332,6 +290,8 @@ impl Gltf {
                         (material, tex_coords)
                     };
 
+                    // This could also be done with zip, but the code would be equally long and whit a lot of nested tuples
+                    // I tought of moving the zip operation to a separe function but the type of reader don't allow you to pass it around
                     insert_tex_coords!(reader, vertices, tex_coords.0, base_color_tex_coord);
                     insert_tex_coords!(
                         reader,

@@ -1,30 +1,8 @@
-use crate::vulkan_abstraction;
-
-pub enum MagFilter {
-    Linear,
-    Nearest,
-}
-
-pub enum MinFilter {
-    Nearest,
-    Linear,
-    NearestMipmapNearest,
-    LinearMipmapNearest,
-    NearestMipmapLinear,
-    LinearMipmapLinear,
-}
-
-pub enum WrappingMode {
-    ClampToEdge,
-    MirroredRepeat,
-    Repeat,
-}
-
 pub struct Sampler {
-    pub mag_filter: Option<vulkan_abstraction::gltf::MagFilter>,
-    pub min_filter: Option<vulkan_abstraction::gltf::MinFilter>,
-    pub wrap_s_u: WrappingMode,
-    pub wrap_t_v: WrappingMode,
+    pub mag_filter: Option<gltf::texture::MagFilter>,
+    pub min_filter: Option<gltf::texture::MinFilter>,
+    pub wrap_s_u: gltf::texture::WrappingMode,
+    pub wrap_t_v: gltf::texture::WrappingMode,
 }
 
 pub struct Texture {
