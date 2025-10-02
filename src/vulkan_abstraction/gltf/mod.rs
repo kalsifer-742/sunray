@@ -20,6 +20,29 @@ pub use primitive::*;
 pub use texture::*;
 pub use vertex::*;
 
+macro_rules! get_texture_indexes {
+    ($material:ident, $texture_name:ident) => {
+        match $material.$texture_name() {
+            Some(texture_info) => (
+                Some(texture_info.texture().index()),
+                texture_info.tex_coord(),
+            ),
+            None => (None, 0),
+        }
+    };
+}
+
+macro_rules! insert_tex_coords {
+    ($reader:ident, $vertices:ident, $tex_coord_index:expr, $texture_name_coord:ident) => {
+        $reader
+            .read_tex_coords($tex_coord_index)
+            .unwrap()
+            .into_f32()
+            .enumerate()
+            .for_each(|(j, coord)| $vertices[j].$texture_name_coord = coord);
+    };
+}
+
 pub type PrimitiveDataMap =
     HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, vulkan_abstraction::gltf::PrimitiveData>;
 
@@ -268,45 +291,15 @@ impl Gltf {
                         // The code is repeated because the type of the textures are not the same
                         // TODO: crate a macro
                         let (base_color_texture_index, base_color_tex_coord_index) =
-                            match material_pbr.base_color_texture() {
-                                Some(texture_info) => (
-                                    Some(texture_info.texture().index()),
-                                    texture_info.tex_coord(),
-                                ),
-                                None => (None, 0),
-                            };
+                            get_texture_indexes!(material_pbr, base_color_texture);
                         let (metallic_roughness_texture_index, metallic_roughness_tex_coord_index) =
-                            match material_pbr.metallic_roughness_texture() {
-                                Some(texture_info) => (
-                                    Some(texture_info.texture().index()),
-                                    texture_info.tex_coord(),
-                                ),
-                                None => (None, 0),
-                            };
+                            get_texture_indexes!(material_pbr, metallic_roughness_texture);
                         let (normal_texture_index, normal_tex_coord_index) =
-                            match material.normal_texture() {
-                                Some(texture_info) => (
-                                    Some(texture_info.texture().index()),
-                                    texture_info.tex_coord(),
-                                ),
-                                None => (None, 0),
-                            };
+                            get_texture_indexes!(material, normal_texture);
                         let (occlusion_texture_index, occlusion_tex_coord_index) =
-                            match material.occlusion_texture() {
-                                Some(texture_info) => (
-                                    Some(texture_info.texture().index()),
-                                    texture_info.tex_coord(),
-                                ),
-                                None => (None, 0),
-                            };
+                            get_texture_indexes!(material, occlusion_texture);
                         let (emissive_texture_index, emissive_tex_coord_index) =
-                            match material.emissive_texture() {
-                                Some(texture_info) => (
-                                    Some(texture_info.texture().index()),
-                                    texture_info.tex_coord(),
-                                ),
-                                None => (None, 0),
-                            };
+                            get_texture_indexes!(material, emissive_texture);
 
                         let pbr_mettalic_roughness_properties =
                             vulkan_abstraction::gltf::PbrMetallicRoughnessProperties {
@@ -339,37 +332,16 @@ impl Gltf {
                         (material, tex_coords)
                     };
 
-                    // TODO: make macro
-                    reader
-                        .read_tex_coords(tex_coords.0)
-                        .unwrap()
-                        .into_f32()
-                        .enumerate()
-                        .for_each(|(j, coord)| vertices[j].base_color_tex_coord = coord);
-                    reader
-                        .read_tex_coords(tex_coords.1)
-                        .unwrap()
-                        .into_f32()
-                        .enumerate()
-                        .for_each(|(j, coord)| vertices[j].metallic_roughness_tex_coord = coord);
-                    reader
-                        .read_tex_coords(tex_coords.2)
-                        .unwrap()
-                        .into_f32()
-                        .enumerate()
-                        .for_each(|(j, coord)| vertices[j].normal_tex_coord = coord);
-                    reader
-                        .read_tex_coords(tex_coords.3)
-                        .unwrap()
-                        .into_f32()
-                        .enumerate()
-                        .for_each(|(j, coord)| vertices[j].occlusion_tex = coord);
-                    reader
-                        .read_tex_coords(tex_coords.4)
-                        .unwrap()
-                        .into_f32()
-                        .enumerate()
-                        .for_each(|(j, coord)| vertices[j].emissive_tex = coord);
+                    insert_tex_coords!(reader, vertices, tex_coords.0, base_color_tex_coord);
+                    insert_tex_coords!(
+                        reader,
+                        vertices,
+                        tex_coords.1,
+                        metallic_roughness_tex_coord
+                    );
+                    insert_tex_coords!(reader, vertices, tex_coords.2, normal_tex_coord);
+                    insert_tex_coords!(reader, vertices, tex_coords.3, occlusion_tex);
+                    insert_tex_coords!(reader, vertices, tex_coords.4, emissive_tex);
 
                     let vertex_buffer = {
                         let vertex_buffer =
