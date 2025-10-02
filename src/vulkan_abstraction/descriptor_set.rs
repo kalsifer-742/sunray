@@ -95,7 +95,7 @@ impl Drop for DescriptorSetLayout {
     }
 }
 
-pub struct DescriptorSets {
+pub(crate) struct DescriptorSets {
     descriptor_sets: Vec<vk::DescriptorSet>,
     descriptor_pool: vk::DescriptorPool,
 
@@ -111,7 +111,6 @@ impl DescriptorSets {
         shader_data: &vulkan_abstraction::ShaderDataBuffers,
     ) -> SrResult<Self> {
         let device = core.device().inner();
-        // vk::DescriptorType::COMBI;
         let descriptor_pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)

@@ -11,11 +11,11 @@ pub mod shader_binding_table;
 pub mod shader_data_buffers;
 pub mod synchronization;
 
-pub use acceleration_structure::*;
+pub(crate) use acceleration_structure::*;
 pub use buffer::*;
 pub use cmd_pool::*;
 pub use core::*;
-pub use descriptor_set::*;
+pub(crate) use descriptor_set::*;
 pub use image::*;
 pub use queue::*;
 pub(crate) use ray_tracing_pipeline::*;

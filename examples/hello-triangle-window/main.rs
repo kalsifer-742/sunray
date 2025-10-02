@@ -328,9 +328,7 @@ impl App {
         // image barrier to transition to PRESENT_SRC
         let img_barrier_to_present_cmd_buf =
             &mut self.res_mut().img_barrier_to_present_cmd_bufs[img_index];
-        img_barrier_to_present_cmd_buf.fence_mut().wait()?;
-        img_barrier_to_present_cmd_buf.fence_mut().reset()?;
-        let img_barrier_done_fence = img_barrier_to_present_cmd_buf.fence_mut().submit();
+        let img_barrier_done_fence = img_barrier_to_present_cmd_buf.fence_mut().submit()?;
 
         let img_barrier_to_present_cmd_buf_inner = img_barrier_to_present_cmd_buf.inner();
         let ready_to_present_sem = self.res().ready_to_present_sems[img_index].inner();

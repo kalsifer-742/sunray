@@ -4,7 +4,7 @@ use std::rc::Rc;
 use nalgebra as na;
 use ash::vk;
 
-use crate::{error::SrResult, vulkan_abstraction};
+use crate::{error::SrResult, vulkan_abstraction, CameraMatrices};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -27,7 +27,7 @@ struct MaterialsBufferContents {
     texture_index: u32,
 }
 
-pub struct ShaderDataBuffers {
+pub(crate) struct ShaderDataBuffers {
     matrices_uniform_buffer: vulkan_abstraction::Buffer,
     meshes_info_storage_buffer: vulkan_abstraction::Buffer,
     materials_storage_buffer: vulkan_abstraction::Buffer,
@@ -53,7 +53,7 @@ impl ShaderDataBuffers {
     }
 
 
-    pub fn set_matrices(&mut self, view_inverse: na::Matrix4<f32>, proj_inverse: na::Matrix4<f32>) -> SrResult<()> {
+    pub fn set_matrices(&mut self, CameraMatrices { view_inverse, proj_inverse }: CameraMatrices) -> SrResult<()> {
         let mem = self.matrices_uniform_buffer.map::<MatricesBufferContents>()?;
         mem[0] = MatricesBufferContents { view_inverse, proj_inverse };
 

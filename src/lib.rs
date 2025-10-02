@@ -1,13 +1,13 @@
 pub mod camera;
 pub mod error;
 pub mod scene;
+pub mod utils;
 pub mod vulkan_abstraction;
 
 pub use camera::*;
 use error::*;
 pub use scene::*;
 
-use nalgebra as na;
 use std::{collections::HashMap, rc::Rc};
 
 use ash::vk;
@@ -16,7 +16,7 @@ struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
     pub blit_cmd_buf: vulkan_abstraction::CmdBuffer,
     #[allow(unused)]
-    pub raytrace_result_image: vulkan_abstraction::Image,
+    raytrace_result_image: vulkan_abstraction::Image,
 
     #[allow(unused)]
     descriptor_sets: vulkan_abstraction::DescriptorSets,
@@ -28,11 +28,8 @@ pub struct Renderer {
     shader_data_buffers: vulkan_abstraction::ShaderDataBuffers,
 
     blases: Vec<vulkan_abstraction::BLAS>,
-    #[allow(unused)]
     tlas: vulkan_abstraction::TLAS,
-    #[allow(unused)]
     shader_binding_table: vulkan_abstraction::ShaderBindingTable,
-    #[allow(unused)]
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
     descriptor_set_layout: vulkan_abstraction::DescriptorSetLayout,
     image_extent: vk::Extent3D,
@@ -57,15 +54,6 @@ impl Drop for Renderer {
     }
 }
 
-fn get_env_var_as_bool(name: &str) -> Option<bool> {
-    match std::env::var(name) {
-        Ok(s) => match s.parse::<i32>() {
-            Ok(v) => Some(v != 0),
-            Err(_) => None,
-        },
-        Err(_) => None,
-    }
-}
 
 pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::SurfaceKHR>;
 
@@ -80,33 +68,15 @@ impl Renderer {
         Ok(Self::new_impl(image_extent, image_format, &[], None)?.0)
     }
 
-    pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
-        if image_extent.0 == self.image_extent.width && image_extent.1 == self.image_extent.height {
-            return Ok(());
-        }
-        self.clear_image_dependent_data();
-        self.image_extent.width = image_extent.0;
-        self.image_extent.height = image_extent.1;
-
-        Ok(())
-    }
-
-    // It is necessary to pass a function to create the surface, because surface depends on instance,
-    // device depends on surface (if present), and both device and instance are created and owned inside
-    // Renderer (in Core) so this seems to be the best approach to allow the user to build its own surface
+    // It's necessary to pass a fn to create the surface, because it depends on instance, device depends on it (if present), and both device and
+    // instance are created and owned inside Renderer (in Core) so this was deemed a good approach to allow the user to build their own surface
     pub fn new_with_surface(
         image_extent: (u32, u32),
         image_format: vk::Format,
         instance_exts: &'static [*const i8],
         create_surface: &CreateSurfaceFn,
     ) -> SrResult<(Self, vk::SurfaceKHR)> {
-        let (r, s) = Self::new_impl(
-            image_extent,
-            image_format,
-            instance_exts,
-            Some(create_surface),
-        )?;
-
+        let (r, s) = Self::new_impl(image_extent, image_format, instance_exts, Some(create_surface))?;
         return Ok((r, s.unwrap()));
     }
 
@@ -116,9 +86,9 @@ impl Renderer {
         instance_exts: &'static [*const i8],
         create_surface: Option<&CreateSurfaceFn>,
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
-        let with_validation_layer = get_env_var_as_bool(Self::ENABLE_VALIDATION_LAYER_ENV_VAR)
+        let with_validation_layer = utils::get_env_var_as_bool(Self::ENABLE_VALIDATION_LAYER_ENV_VAR)
             .unwrap_or(Self::IS_DEBUG_BUILD);
-        let with_gpuav = get_env_var_as_bool(Self::ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
+        let with_gpuav = utils::get_env_var_as_bool(Self::ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
         let (core, surface) = vulkan_abstraction::Core::new_with_surface(
             with_validation_layer,
             with_gpuav,
@@ -128,17 +98,13 @@ impl Renderer {
         )?;
         let core = Rc::new(core);
 
-        let image_extent = vk::Extent2D {
-            width: image_extent.0,
-            height: image_extent.1,
-        }
-        .into();
+        let image_extent = utils::tuple_to_extent3d(image_extent);
 
         let blases = vec![];
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[])?;
 
 
-
+        //must be filled by loading a scene
         let shader_data_buffers = vulkan_abstraction::ShaderDataBuffers::new_empty(Rc::clone(&core))?;
 
         let descriptor_set_layout = vulkan_abstraction::DescriptorSetLayout::new(Rc::clone(&core))?;
@@ -146,44 +112,34 @@ impl Renderer {
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
             Rc::clone(&core),
             &descriptor_set_layout,
-            get_env_var_as_bool(Self::ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR)
+            utils::get_env_var_as_bool(Self::ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR)
                 .unwrap_or(Self::IS_DEBUG_BUILD),
         )?;
 
-        let shader_binding_table =
-            vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
+        let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
 
         let image_dependant_data = HashMap::new();
 
         let fallback_texture_image = {
             const RESOLUTION : u32 = 64;
-            let mut image = vulkan_abstraction::Image::new(
-                Rc::clone(&core),
-                    vk::Extent3D { width: RESOLUTION, height: RESOLUTION, depth: 1 },
-                    vk::Format::R8G8B8A8_UNORM,
-                    vk::ImageTiling::OPTIMAL,
-                    gpu_allocator::MemoryLocation::GpuOnly,
-                    vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                    "fallback texture image"
-                )?
-                .with_sampler(vk::Filter::NEAREST)?;
-
             let image_data =
-                (0..image.extent().height*image.extent().width).map(|index| {
-                    let row_index = index / image.extent().width;
-                    let col_index = index % image.extent().width;
-                    if (row_index + col_index) % 2 == 0 {
-                        [0x00, 0x00, 0x00, 0xff] // black
-                    } else {
-                        [0xff, 0x00, 0xff, 0xff] // fucsia
-                    }
+                utils::iterate_image_extent(RESOLUTION, RESOLUTION)
+                .map(|(x,y)| { // black/fucsia checkboard pattern
+                    if (x+y).is_multiple_of(2) { [0x00, 0x00, 0x00, 0xff] }
+                    else                       { [0xff, 0x00, 0xff, 0xff] }
                 }).collect::<Vec<[u8; 4]>>();
 
-            let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(
+            let image = vulkan_abstraction::Image::new_from_data(
                 Rc::clone(&core),
-                &image_data,
-            )?;
-            image.copy_from_buffer(&staging_buffer)?;
+                image_data,
+                vk::Extent3D { width: RESOLUTION, height: RESOLUTION, depth: 1},
+                vk::Format::R8G8B8A8_UNORM,
+                vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                vk::ImageUsageFlags::SAMPLED,
+                "fallback texture image"
+            )?
+             .with_sampler(vk::Filter::NEAREST)?;
 
             image
         };
@@ -207,6 +163,17 @@ impl Renderer {
             },
             surface,
         ))
+    }
+
+    pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
+        let new_extent = utils::tuple_to_extent3d(image_extent);
+        if new_extent == self.image_extent {
+            return Ok(());
+        }
+        self.clear_image_dependent_data();
+        self.image_extent = new_extent;
+
+        Ok(())
     }
 
     pub fn clear_image_dependent_data(&mut self) {
@@ -296,12 +263,7 @@ impl Renderer {
 
             self.image_dependant_data.insert(
                 *post_blit_image,
-                ImageDependentData {
-                    raytrace_result_image,
-                    raytracing_cmd_buf,
-                    blit_cmd_buf,
-                    descriptor_sets,
-                },
+                ImageDependentData { raytrace_result_image, raytracing_cmd_buf, blit_cmd_buf, descriptor_sets },
             );
         }
 
@@ -318,45 +280,20 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn load_scene(
-        &mut self,
-        scene: &Scene,
-        scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
-    ) -> SrResult<()> {
+    pub fn load_scene(&mut self, scene: &Scene, scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap) -> SrResult<()> {
         let blas_instances = scene.load(&self.core, &mut self.blases, scene_data)?;
         self.tlas.rebuild(&blas_instances)?;
         let materials = [];
         let textures = [];
         self.shader_data_buffers.update(&blas_instances, &materials, &textures, &self.fallback_texture_image)?;
 
-
-        //TODO: update insted of recreating
         self.clear_image_dependent_data();
 
         Ok(())
     }
 
     pub fn set_camera(&mut self, camera: crate::Camera) -> SrResult<()> {
-        let eye = camera.position();
-        let target = camera.target();
-        let up = &na::vector![0.0, 1.0, 0.0];
-
-        //view-space: camera pov
-        let view = na::Isometry3::look_at_rh(&eye, &target, &up);
-        //clip_space: normalised coordinates adding perspective
-        let projection = na::Perspective3::new(
-            self.image_extent.width as f32 / self.image_extent.height as f32,
-            camera.fov_y() * 3.14 / std::f32::consts::PI,
-            0.1,   //render everything after this distance
-            100.0, //discard everything after this distance
-        );
-
-        let view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
-        let proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
-
-        self.shader_data_buffers.set_matrices(view_inverse, proj_inverse)?;
-
-        Ok(())
+        self.shader_data_buffers.set_matrices(camera.as_matrices(self.image_extent))
     }
 
     /// Render to dst_image. the user may also pass a Semaphore which the user should signal when the image is
@@ -368,43 +305,31 @@ impl Renderer {
         wait_sem: vk::Semaphore,
     ) -> SrResult<vk::Fence> {
         if !self.image_dependant_data.contains_key(&dst_image) {
-            // gracefully handle cache misses
-            self.build_image_dependent_data(&[dst_image])?;
+            self.build_image_dependent_data(&[dst_image])?; // gracefully handle cache misses
         }
         let img_dependent_data = self.image_dependant_data.get_mut(&dst_image).unwrap();
 
         // raytracing
         img_dependent_data.raytracing_cmd_buf.fence_mut().wait()?;
-        img_dependent_data.raytracing_cmd_buf.fence_mut().reset()?;
 
         self.core.queue().submit_async(
             img_dependent_data.raytracing_cmd_buf.inner(),
-            &[],
-            &[],
-            &[],
-            img_dependent_data.raytracing_cmd_buf.fence_mut().submit(),
+            &[], &[], &[],
+            img_dependent_data.raytracing_cmd_buf.fence_mut().submit()?,
         )?;
 
         // blitting
-        let wait_semaphores = [wait_sem];
         // ALL_GRAPHICS is fine, since literally all graphics (both barriers and blit) have to wait for the image to be available
-        let wait_dst_stages = [vk::PipelineStageFlags::ALL_GRAPHICS];
+        let (wait_sems, wait_dst_stages) = ([wait_sem], [vk::PipelineStageFlags::ALL_GRAPHICS]);
+        let (wait_sems, wait_dst_stages) =
+            if wait_sem == vk::Semaphore::null() { ([].as_slice(), [].as_slice()) }
+            else { (wait_sems.as_slice(), wait_dst_stages.as_slice()) };
 
-        let (wait_sems, wait_dst_stages) = if wait_sem != vk::Semaphore::null() {
-            (wait_semaphores.as_slice(), wait_dst_stages.as_slice())
-        } else {
-            ([].as_slice(), [].as_slice())
-        };
-
-        img_dependent_data.blit_cmd_buf.fence_mut().wait()?;
-        img_dependent_data.blit_cmd_buf.fence_mut().reset()?;
-        let signal_fence = img_dependent_data.blit_cmd_buf.fence_mut().submit();
+        let signal_fence = img_dependent_data.blit_cmd_buf.fence_mut().submit()?;
 
         self.core.queue().submit_async(
             img_dependent_data.blit_cmd_buf.inner(),
-            &wait_sems,
-            &wait_dst_stages,
-            &[],
+            &wait_sems, &wait_dst_stages, &[],
             signal_fence,
         )?;
 
@@ -424,16 +349,9 @@ impl Renderer {
 
         let wait_fence = self.render_to_image(dst_image.inner(), vk::Semaphore::null())?;
 
-        unsafe {
-            self.core
-                .device()
-                .inner()
-                .wait_for_fences(&[wait_fence], true, u64::MAX)
-        }?;
+        unsafe { self.core.device().inner().wait_for_fences(&[wait_fence], true, u64::MAX) }?;
 
-        let mem = Self::fix_image_memory_alignment(&self.core, &mut dst_image)?;
-
-        Ok(mem)
+        Ok(dst_image.get_raw_image_data_with_no_padding()?)
     }
 
     fn cmd_raytracing_render(
@@ -579,7 +497,7 @@ impl Renderer {
                 cmd_buf,
                 dst_image,
                 vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::ALL_GRAPHICS, // the image should already be transitioned when the used makes use of it
+                vk::PipelineStageFlags::ALL_GRAPHICS, // the image should already be transitioned when the user makes use of it
                 vk::AccessFlags::TRANSFER_WRITE,
                 vk::AccessFlags::MEMORY_READ,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -601,46 +519,6 @@ impl Renderer {
         }
 
         Ok(())
-    }
-
-    fn fix_image_memory_alignment(
-        core: &vulkan_abstraction::Core,
-        image: &mut vulkan_abstraction::Image,
-    ) -> SrResult<Vec<u8>> {
-        //transform dst_image to bytes(correctly aligned)
-        let image_sub = image.image_subresource_range();
-        let image_subresource = vk::ImageSubresource {
-            aspect_mask: image_sub.aspect_mask,
-            mip_level: image_sub.base_mip_level,
-            array_layer: image_sub.base_array_layer,
-        };
-        let subresource_layout = unsafe {
-            core.device()
-                .inner()
-                .get_image_subresource_layout(image.inner(), image_subresource)
-        };
-
-        let size = image.extent().width as usize
-            * image.extent().height as usize
-            * std::mem::size_of::<u32>();
-        let row_byte_size = image.extent().width as usize * std::mem::size_of::<u32>();
-        let height = image.extent().height as usize;
-
-        let mem = image.map()?;
-        let mut row_pitch_corrected_mem: Vec<u8> = vec![0; size];
-
-        let mut index = 0;
-        let mut fixed_pitch_index = 0;
-
-        for _ in 0..height {
-            row_pitch_corrected_mem[index..index + row_byte_size]
-                .copy_from_slice(&mem[fixed_pitch_index..fixed_pitch_index + row_byte_size]);
-
-            fixed_pitch_index += subresource_layout.row_pitch as usize;
-            index += row_byte_size;
-        }
-
-        Ok(row_pitch_corrected_mem)
     }
 
     pub fn core(&self) -> &Rc<vulkan_abstraction::Core> {

@@ -38,9 +38,11 @@ impl Fence {
 
         Ok(())
     }
-    pub fn submit(&mut self) -> vk::Fence {
+    pub fn submit(&mut self) -> SrResult<vk::Fence> {
+
+        self.wait()?;
         self.fence_waited = false;
-        self.handle
+        Ok(self.handle)
     }
     pub fn get_fence_for_wait(&mut self) -> SrResult<vk::Fence> {
         self.fence_waited = true;
@@ -55,7 +57,10 @@ impl Fence {
                     .wait_for_fences(&[self.handle], true, u64::MAX)?;
             }
             self.fence_waited = true;
+
         }
+
+        self.reset()?;
 
         Ok(())
     }

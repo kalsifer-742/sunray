@@ -19,6 +19,27 @@ pub struct Image {
 }
 
 impl Image {
+    pub fn new_from_data<T: Copy>(
+        core: Rc<vulkan_abstraction::Core>,
+        image_data: Vec<T>,
+        extent: vk::Extent3D,
+        format: vk::Format,
+        tiling: vk::ImageTiling,
+        location: gpu_allocator::MemoryLocation,
+        usage_flags: vk::ImageUsageFlags,
+        name: &'static str,
+    ) -> SrResult<Self> {
+        let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(
+            Rc::clone(&core),
+            &image_data,
+        )?;
+        let usage_flags = vk::ImageUsageFlags::TRANSFER_DST | usage_flags;
+        let mut image = Self::new(core, extent, format, tiling, location, usage_flags, name)?;
+
+        image.copy_from_buffer(&staging_buffer)?;
+
+        Ok(image)
+    }
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         extent: vk::Extent3D,
@@ -159,6 +180,46 @@ impl Image {
 
         Ok(())
     }
+
+    pub fn get_raw_image_data_with_no_padding(
+        &mut self
+    ) -> SrResult<Vec<u8>> {
+        //transform dst_image to bytes(correctly aligned)
+        let image_sub = self.image_subresource_range();
+        let image_subresource = vk::ImageSubresource {
+            aspect_mask: image_sub.aspect_mask,
+            mip_level: image_sub.base_mip_level,
+            array_layer: image_sub.base_array_layer,
+        };
+        let subresource_layout = unsafe {
+            self.core.device()
+                .inner()
+                .get_image_subresource_layout(self.inner(), image_subresource)
+        };
+
+        let size = self.extent().width as usize
+            * self.extent().height as usize
+            * std::mem::size_of::<u32>();
+        let row_byte_size = self.extent().width as usize * std::mem::size_of::<u32>();
+        let height = self.extent().height as usize;
+
+        let mem = self.map()?;
+        let mut row_pitch_corrected_mem: Vec<u8> = vec![0; size];
+
+        let mut index = 0;
+        let mut fixed_pitch_index = 0;
+
+        for _ in 0..height {
+            row_pitch_corrected_mem[index..index + row_byte_size]
+                .copy_from_slice(&mem[fixed_pitch_index..fixed_pitch_index + row_byte_size]);
+
+            fixed_pitch_index += subresource_layout.row_pitch as usize;
+            index += row_byte_size;
+        }
+
+        Ok(row_pitch_corrected_mem)
+    }
+
     pub fn with_sampler(mut self, filter: vk::Filter) -> SrResult<Self> {
         let create_info = vk::SamplerCreateInfo::default()
             .flags(vk::SamplerCreateFlags::empty())
@@ -166,7 +227,7 @@ impl Image {
             .min_filter(filter)
             .mag_filter(filter)
             // repeat (tile) the texture on all axes
-            .address_mode_u(vk::SamplerAddressMode::REPEAT) // repeat
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
             .address_mode_v(vk::SamplerAddressMode::REPEAT)
             .address_mode_w(vk::SamplerAddressMode::REPEAT)
             // use supported anisotropy
@@ -182,8 +243,7 @@ impl Image {
             .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
             .mip_lod_bias(0.0)
             .min_lod(0.0)
-            .max_lod(0.0)
-            ;
+            .max_lod(0.0);
         self.sampler = unsafe { self.core.device().inner().create_sampler(&create_info, None) }?;
         Ok(self)
     }
@@ -224,11 +284,7 @@ impl Drop for Image {
 
         unsafe {
             device.destroy_sampler(self.sampler, None);
-        }
-        unsafe {
             device.destroy_image_view(self.image_view, None);
-        }
-        unsafe {
             device.destroy_image(self.image, None);
         }
 
