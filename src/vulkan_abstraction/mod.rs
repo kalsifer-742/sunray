@@ -8,6 +8,7 @@ pub mod image;
 pub mod queue;
 pub mod ray_tracing_pipeline;
 pub mod shader_binding_table;
+pub mod shader_data_buffers;
 pub mod synchronization;
 
 pub use acceleration_structure::*;
@@ -17,6 +18,7 @@ pub use core::*;
 pub use descriptor_set::*;
 pub use image::*;
 pub use queue::*;
-pub use ray_tracing_pipeline::*;
-pub use shader_binding_table::*;
+pub(crate) use ray_tracing_pipeline::*;
+pub(crate) use shader_binding_table::*;
+pub(crate) use shader_data_buffers::*;
 pub use synchronization::*;

@@ -12,27 +12,6 @@ use std::{collections::HashMap, rc::Rc};
 
 use ash::vk;
 
-#[repr(C)]
-struct MatricesUniformBufferContents {
-    pub view_inverse: na::Matrix4<f32>,
-    pub proj_inverse: na::Matrix4<f32>,
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct MeshesInfoStorageBufferContents {
-    vertex_buffer: vk::DeviceAddress,
-    index_buffer: vk::DeviceAddress,
-    material_index: u32,
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct MaterialsStorageBufferContents {
-    texture_index: u32,
-}
-
-
 struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
     pub blit_cmd_buf: vulkan_abstraction::CmdBuffer,
@@ -46,9 +25,8 @@ struct ImageDependentData {
 pub struct Renderer {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
-    matrices_uniform_buffer: vulkan_abstraction::Buffer,
-    meshes_info_storage_buffer: vulkan_abstraction::Buffer,
-    materials_storage_buffer: vulkan_abstraction::Buffer,
+    shader_data_buffers: vulkan_abstraction::ShaderDataBuffers,
+
     blases: Vec<vulkan_abstraction::BLAS>,
     #[allow(unused)]
     tlas: vulkan_abstraction::TLAS,
@@ -159,17 +137,9 @@ impl Renderer {
         let blases = vec![];
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[])?;
 
-        let matrices_uniform_buffer = vulkan_abstraction::Buffer::new_uniform::<MatricesUniformBufferContents>(Rc::clone(&core), 1)?;
-        let meshes_info_storage_buffer = vulkan_abstraction::Buffer::new_storage_from_data(
-            Rc::clone(&core),
-            &[ MeshesInfoStorageBufferContents{ vertex_buffer: vk::DeviceAddress::default(), index_buffer: vk::DeviceAddress::default(), material_index: 0 } ],
-            "meshes info storage buffer",
-        )?;
-        let materials_storage_buffer = vulkan_abstraction::Buffer::new_storage_from_data(
-            Rc::clone(&core),
-            &[ MaterialsStorageBufferContents { texture_index: 0 } ],
-            "materials storage buffer",
-        )?;
+
+
+        let shader_data_buffers = vulkan_abstraction::ShaderDataBuffers::new_empty(Rc::clone(&core))?;
 
         let descriptor_set_layout = vulkan_abstraction::DescriptorSetLayout::new(Rc::clone(&core))?;
 
@@ -227,13 +197,11 @@ impl Renderer {
                 descriptor_set_layout,
                 blases,
                 tlas,
-                matrices_uniform_buffer,
-                meshes_info_storage_buffer,
-                materials_storage_buffer,
                 image_extent,
                 image_format,
 
                 fallback_texture_image,
+                shader_data_buffers,
 
                 core,
             },
@@ -262,11 +230,7 @@ impl Renderer {
                 &self.descriptor_set_layout,
                 &self.tlas,
                 raytrace_result_image.image_view(),
-                &self.matrices_uniform_buffer,
-                &self.meshes_info_storage_buffer,
-                &self.materials_storage_buffer,
-                &[ self.fallback_texture_image.sampler(); vulkan_abstraction::DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize ],
-                &[ self.fallback_texture_image.image_view(); vulkan_abstraction::DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize ],
+                &self.shader_data_buffers
             )?;
 
             let blit_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
@@ -359,20 +323,12 @@ impl Renderer {
         scene: &Scene,
         scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
     ) -> SrResult<()> {
-        scene.load(&self.core, &mut self.tlas, &mut self.blases, scene_data)?;
+        let blas_instances = scene.load(&self.core, &mut self.blases, scene_data)?;
+        self.tlas.rebuild(&blas_instances)?;
+        let materials = [];
+        let textures = [];
+        self.shader_data_buffers.update(&blas_instances, &materials, &textures, &self.fallback_texture_image)?;
 
-        // TODO: should NOT be a mapping of each blas, but instead of each blas instance; for our Lantern.glb testing model this is not relevant
-        let meshes_info_storage_buffer_contents =
-            self.blases.iter().map(|blas| MeshesInfoStorageBufferContents {
-                vertex_buffer: blas.vertex_buffer().get_device_address(),
-                index_buffer: blas.index_buffer().get_device_address(),
-                material_index: 0,
-            })
-            .collect::<Vec<_>>();
-
-        self.meshes_info_storage_buffer = vulkan_abstraction::Buffer::new_storage_from_data(
-            Rc::clone(&self.core), &meshes_info_storage_buffer_contents, "meshes info storage buffer"
-        )?;
 
         //TODO: update insted of recreating
         self.clear_image_dependent_data();
@@ -395,9 +351,10 @@ impl Renderer {
             100.0, //discard everything after this distance
         );
 
-        let mem = self.matrices_uniform_buffer.map::<crate::MatricesUniformBufferContents>()?;
-        mem[0].view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
-        mem[0].proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
+        let view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
+        let proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
+
+        self.shader_data_buffers.set_matrices(view_inverse, proj_inverse)?;
 
         Ok(())
     }

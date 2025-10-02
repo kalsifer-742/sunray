@@ -22,7 +22,7 @@ impl DescriptorSetLayout {
     pub const SAMPLERS_BINDING: u32 = 5;
     pub const NUMBER_OF_BINDINGS: usize = 6;
 
-    pub const NUMBER_OF_SAMPLERS : u32 = 1024;
+    pub const NUMBER_OF_SAMPLERS : u32 = vulkan_abstraction::ShaderDataBuffers::NUMBER_OF_SAMPLERS as u32;
 
     pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let device = core.device().inner();
@@ -108,11 +108,7 @@ impl DescriptorSets {
         descriptor_set_layout: &vulkan_abstraction::DescriptorSetLayout,
         tlas: &TLAS,
         output_image_view: vk::ImageView,
-        matrices_uniform_buffer: &vulkan_abstraction::Buffer,
-        meshes_info_uniform_buffer: &vulkan_abstraction::Buffer,
-        materials_storage_buffer: &vulkan_abstraction::Buffer,
-        samplers: &[vk::Sampler],
-        sampler_image_views: &[vk::ImageView],
+        shader_data: &vulkan_abstraction::ShaderDataBuffers,
     ) -> SrResult<Self> {
         let device = core.device().inner();
         // vk::DescriptorType::COMBI;
@@ -181,7 +177,7 @@ impl DescriptorSets {
         // write matrices uniform buffer to descriptor set
         let descriptor_buffer_infos = [
             vk::DescriptorBufferInfo::default()
-                .buffer(matrices_uniform_buffer.inner())
+                .buffer(shader_data.get_matrices_uniform_buffer())
                 .range(vk::WHOLE_SIZE)
         ];
         descriptor_writes.push(
@@ -195,7 +191,7 @@ impl DescriptorSets {
         // write meshes info uniform buffer to descriptor set
         let descriptor_buffer_infos = [
             vk::DescriptorBufferInfo::default()
-                .buffer(meshes_info_uniform_buffer.inner())
+                .buffer(shader_data.get_meshes_info_storage_buffer())
                 .range(vk::WHOLE_SIZE)
         ];
         descriptor_writes.push(
@@ -209,7 +205,7 @@ impl DescriptorSets {
         // write materials storage buffer to descriptor set
         let descriptor_buffer_infos = [
             vk::DescriptorBufferInfo::default()
-                .buffer(materials_storage_buffer.inner())
+                .buffer(shader_data.get_materials_storage_buffer())
                 .range(vk::WHOLE_SIZE)
         ];
         descriptor_writes.push(
@@ -221,11 +217,10 @@ impl DescriptorSets {
         );
 
         // write samplers to descriptor set
-        assert!(samplers.len() == DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize);
-        assert_eq!(samplers.len(), sampler_image_views.len());
+        assert_eq!(shader_data.get_textures().len(), DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize);
 
         let descriptor_sampler_infos =
-            std::iter::zip(samplers, sampler_image_views)
+            shader_data.get_textures().iter()
             .map(|(sampler, image_view)|
                 vk::DescriptorImageInfo::default()
                     .sampler(*sampler)
@@ -234,16 +229,13 @@ impl DescriptorSets {
             )
             .collect::<Vec<_>>();
 
-        if samplers.len() != 0 {
-
-            descriptor_writes.push(
-                vk::WriteDescriptorSet::default()
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&descriptor_sampler_infos)
-                    .dst_set(descriptor_sets[0])
-                    .dst_binding(DescriptorSetLayout::SAMPLERS_BINDING)
-            );
-        }
+        descriptor_writes.push(
+            vk::WriteDescriptorSet::default()
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&descriptor_sampler_infos)
+                .dst_set(descriptor_sets[0])
+                .dst_binding(DescriptorSetLayout::SAMPLERS_BINDING)
+        );
 
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
 
