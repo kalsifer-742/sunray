@@ -81,11 +81,10 @@ impl TLAS {
     ) -> SrResult<vulkan_abstraction::Buffer> {
         let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = blas_instances
             .iter()
-            .enumerate()
-            .map(|(i, blas_instance)| {
+            .map(|blas_instance| {
                 vk::AccelerationStructureInstanceKHR {
                     transform: blas_instance.transform,
-                    instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, 0xFF), // mask = 0 (don't know what actually does, NV tutorial writes "Only be hit if rayMask & instance.mask != 0")
+                    instance_custom_index_and_mask: vk::Packed24_8::new(blas_instance.blas_instance_index, 0xFF), // mask = 0 (don't know what actually does, NV tutorial writes "Only be hit if rayMask & instance.mask != 0")
                     instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                         0, // hit_group_offset = 0, same hit group for the whole scene
                         vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8, // disable face culling for semplicity

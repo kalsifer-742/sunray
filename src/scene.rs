@@ -50,8 +50,10 @@ impl Scene {
 
         let blas_instances = blas_instances_info
             .into_iter()
-            .map(|(index, transform)| vulkan_abstraction::BlasInstance {
-                blas: &blases[index],
+            .enumerate()
+            .map(|(blas_instance_index, (blas_index, transform))| vulkan_abstraction::BlasInstance {
+                blas_instance_index: blas_instance_index as u32,
+                blas: &blases[blas_index],
                 transform: Self::to_vk_transform(transform),
             })
             .collect::<Vec<_>>();

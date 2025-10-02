@@ -5,11 +5,11 @@
 //uint32_t
 #extension GL_EXT_shader_explicit_arithmetic_types : require
 
-hitAttributeEXT vec3 attribs;
+hitAttributeEXT vec2 attribs;
 
 struct vertex_t {
-    vec3 position;
-    vec2 tex_coord;
+    float position[3];
+    float tex_coords[2];
     //...
 };
 
@@ -47,7 +47,7 @@ layout(set = 0, binding = 4) buffer materials_buffer_t {
     material_t m[];
 } materials_buffer;
 
-layout(set = 0, binding = 5) uniform sampler2D texture_samplers[];
+layout(set = 0, binding = 5) uniform sampler2D texture_samplers[1024];
 
 layout(location = 0) rayPayloadInEXT ray_payload_t {
     vec3 color;
@@ -56,14 +56,16 @@ layout(location = 0) rayPayloadInEXT ray_payload_t {
 
 
 void main() {
+    // Get barycentric coordinates
+    vec3 barycentrics = vec3(1 - attribs.x - attribs.y, attribs.x, attribs.y);
+
     uint blas_instance_id = gl_InstanceCustomIndexEXT;
     mesh_info_t mesh_info = meshes_info_uniform_buffer.m[blas_instance_id];
     material_t material = materials_buffer.m[mesh_info.material_index];
     uint texture_index = material.texture_index;
 
-    // texture_samplers[texture_index] is our texture
 
-    uint index_buffer_offset = gl_InstanceID * 3;
+    uint index_buffer_offset = gl_PrimitiveID * 3;
 
     uint i0 = mesh_info.indices.i[index_buffer_offset+0];
     uint i1 = mesh_info.indices.i[index_buffer_offset+1];
@@ -73,5 +75,11 @@ void main() {
     vertex_t v1 = mesh_info.vertices.v[i1];
     vertex_t v2 = mesh_info.vertices.v[i2];
 
-    prd.color = vec3(0, 0.5, 0);
+    vec2 tex_coords =
+          vec2(v0.tex_coords[0], v0.tex_coords[1]) * barycentrics.x
+        + vec2(v1.tex_coords[0], v1.tex_coords[1]) * barycentrics.y
+        + vec2(v2.tex_coords[0], v2.tex_coords[1]) * barycentrics.z;
+
+    // texture_samplers[texture_index] is our texture
+    prd.color = texture(texture_samplers[texture_index], tex_coords).xyz;
 }

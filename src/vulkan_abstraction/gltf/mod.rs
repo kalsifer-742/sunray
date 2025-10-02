@@ -16,9 +16,11 @@ pub type PrimitiveDataMap =
     HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, vulkan_abstraction::gltf::PrimitiveData>;
 
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 struct Vertex {
     #[allow(unused)]
     pub position: [f32; 3],
+    pub tex_coords: [f32; 2],
 }
 
 pub struct Gltf {
@@ -126,10 +128,12 @@ impl Gltf {
 
                     let vertex_buffer = {
                         // get vertices positions
-                        let vertices = reader
-                            .read_positions()
-                            .unwrap()
-                            .map(|position| vulkan_abstraction::gltf::Vertex { position })
+                        let vertices =
+                        std::iter::zip(
+                            reader.read_positions().unwrap(),
+                            reader.read_tex_coords(0).unwrap().into_f32(),
+                        )
+                            .map(|(position, tex_coords)| vulkan_abstraction::gltf::Vertex { position, tex_coords, })
                             .collect::<Vec<_>>();
 
                         let vertex_buffer =
@@ -158,9 +162,7 @@ impl Gltf {
                             indices
                         };
 
-                        let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<
-                            u32,
-                        >(
+                        let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(
                             Rc::clone(&self.core), &indices
                         )?;
 

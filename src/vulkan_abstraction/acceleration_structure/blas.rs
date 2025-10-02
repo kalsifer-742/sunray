@@ -7,6 +7,7 @@ use ash::vk;
 pub struct BlasInstance<'a> {
     pub blas: &'a vulkan_abstraction::BLAS,
     pub transform: vk::TransformMatrixKHR,
+    pub blas_instance_index: u32, // blas custom index, contains the index of the instance, NOT of the blas, so we can fetch instance-specific information in the shader
 }
 
 // Bottom-Level Acceleration Structure
@@ -21,7 +22,6 @@ pub struct BLAS {
 impl BLAS {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
-        // transform_buffer: vulkan_abstraction::Buffer,
         vertex_buffer: vulkan_abstraction::VertexBuffer,
         index_buffer: vulkan_abstraction::IndexBuffer,
     ) -> SrResult<Self> {
@@ -88,5 +88,13 @@ impl BLAS {
 
     pub fn inner(&self) -> vk::AccelerationStructureKHR {
         self.blas.inner()
+    }
+
+    pub fn vertex_buffer(&self) -> &vulkan_abstraction::VertexBuffer {
+        &self.vertex_buffer
+    }
+
+    pub fn index_buffer(&self) -> &vulkan_abstraction::IndexBuffer {
+        &self.index_buffer
     }
 }

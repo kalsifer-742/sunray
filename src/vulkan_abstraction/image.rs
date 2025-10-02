@@ -159,12 +159,12 @@ impl Image {
 
         Ok(())
     }
-    pub fn with_sampler(mut self) -> SrResult<Self> {
+    pub fn with_sampler(mut self, filter: vk::Filter) -> SrResult<Self> {
         let create_info = vk::SamplerCreateInfo::default()
             .flags(vk::SamplerCreateFlags::empty())
             // linear filtering both for magnification and minification
-            .min_filter(vk::Filter::LINEAR)
-            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(filter)
+            .mag_filter(filter)
             // repeat (tile) the texture on all axes
             .address_mode_u(vk::SamplerAddressMode::REPEAT) // repeat
             .address_mode_v(vk::SamplerAddressMode::REPEAT)

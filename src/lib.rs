@@ -185,27 +185,28 @@ impl Renderer {
         let image_dependant_data = HashMap::new();
 
         let fallback_texture_image = {
+            const RESOLUTION : u32 = 64;
             let mut image = vulkan_abstraction::Image::new(
                 Rc::clone(&core),
-                    vk::Extent3D { width: 64, height: 64, depth: 1 },
+                    vk::Extent3D { width: RESOLUTION, height: RESOLUTION, depth: 1 },
                     vk::Format::R8G8B8A8_UNORM,
                     vk::ImageTiling::OPTIMAL,
                     gpu_allocator::MemoryLocation::GpuOnly,
                     vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
                     "fallback texture image"
                 )?
-                .with_sampler()?;
+                .with_sampler(vk::Filter::NEAREST)?;
 
             let image_data =
                 (0..image.extent().height*image.extent().width).map(|index| {
                     let row_index = index / image.extent().width;
-                    let col_index = index % image.extent().height;
-                    if row_index + col_index % 2 == 0 {
-                        [0.0, 0.0, 0.0, 1.0] // black
+                    let col_index = index % image.extent().width;
+                    if (row_index + col_index) % 2 == 0 {
+                        [0x00, 0x00, 0x00, 0xff] // black
                     } else {
-                        [1.0, 0.0, 1.0, 1.0] // fucsia
+                        [0xff, 0x00, 0xff, 0xff] // fucsia
                     }
-                }).collect::<Vec<[f32;4]>>();
+                }).collect::<Vec<[u8; 4]>>();
 
             let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(
                 Rc::clone(&core),
@@ -358,6 +359,19 @@ impl Renderer {
         scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
     ) -> SrResult<()> {
         scene.load(&self.core, &mut self.tlas, &mut self.blases, scene_data)?;
+
+        // TODO: should NOT be a mapping of each blas, but instead of each blas instance; for our Lantern.glb testing model this is not relevant
+        let meshes_info_storage_buffer_contents =
+            self.blases.iter().map(|blas| MeshesInfoStorageBufferContents {
+                vertex_buffer: blas.vertex_buffer().get_device_address(),
+                index_buffer: blas.index_buffer().get_device_address(),
+                material_index: 0,
+            })
+            .collect::<Vec<_>>();
+
+        self.meshes_info_storage_buffer = vulkan_abstraction::Buffer::new_storage_from_data(
+            Rc::clone(&self.core), &meshes_info_storage_buffer_contents, "meshes info storage buffer"
+        )?;
 
         //TODO: update insted of recreating
         self.clear_image_dependent_data();
