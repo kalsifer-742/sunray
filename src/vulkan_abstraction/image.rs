@@ -107,7 +107,7 @@ impl Image {
         Ok(self.allocation.mapped_slice().unwrap())
     }
 
-    // copies from a staging buffermainly useful to copy from a staging buffer to a device buffer
+    // copies from a staging buffer mainly useful to copy from a staging buffer to a device buffer
     // note that this function internally changes the image's layout to TRANSFER_DST_OPTIMAL
     pub fn copy_from_buffer(
         &mut self,
