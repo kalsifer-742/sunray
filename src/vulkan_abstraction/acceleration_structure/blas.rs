@@ -20,6 +20,7 @@ pub struct BLAS {
 }
 
 impl BLAS {
+    /// the vertex_buffer is assumed to have a vec3 position attribute as its first (not necessarily the only) attribute in memory
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         vertex_buffer: vulkan_abstraction::VertexBuffer,

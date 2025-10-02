@@ -195,7 +195,6 @@ impl Gltf {
         if let Some(gltf_mesh) = gltf_node.mesh() {
             let mut primitives = vec![];
 
-            //TODO: check for primitive support
             for (i, primitive) in gltf_mesh
                 .primitives()
                 .filter(|p| Self::is_primitive_supported(p))
@@ -219,7 +218,7 @@ impl Gltf {
                 if !primitive_data_map.contains_key(&primitive_unique_key) {
                     let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
-                    let mut vertices: Vec<Vertex> = vec![];
+                    let mut vertices: Vec<vulkan_abstraction::gltf::Vertex> = vec![];
                     // get vertices positions
                     reader.read_positions().unwrap().for_each(|position| {
                         vertices.push(Vertex {

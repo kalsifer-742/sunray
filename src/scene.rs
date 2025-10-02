@@ -20,13 +20,12 @@ impl Scene {
         &self.nodes
     }
 
-    pub fn load(
+    pub fn load<'a>(
         &self,
         core: &Rc<vulkan_abstraction::Core>,
-        tlas: &mut vulkan_abstraction::TLAS,
-        blases: &mut Vec<vulkan_abstraction::BLAS>,
+        blases: &'a mut Vec<vulkan_abstraction::BLAS>,
         scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
-    ) -> SrResult<()> {
+    ) -> SrResult<Vec<vulkan_abstraction::BlasInstance<'a>>> {
         blases.clear();
 
         let mut blas_instances_info: Vec<BlasInstanceInfo> = vec![];
@@ -59,9 +58,8 @@ impl Scene {
                 }
             })
             .collect::<Vec<_>>();
-        tlas.rebuild(&blas_instances)?;
 
-        Ok(())
+        Ok(blas_instances)
     }
 
     fn load_node(

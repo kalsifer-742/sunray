@@ -8,9 +8,12 @@
 hitAttributeEXT vec2 attribs;
 
 struct vertex_t {
-    float position[3];
-    float tex_coords[2];
-    //...
+    vec3 position;
+    vec2 base_color_tex_coord;
+    vec2 metallic_roughness_tex_coord;
+    vec2 normal_tex_coord;
+    vec2 occlusion_tex;
+    vec2 emissive_tex;
 };
 
 struct material_t {
@@ -19,12 +22,12 @@ struct material_t {
 };
 
 
-layout(buffer_reference, buffer_reference_align = 8) buffer vertex_buffer_reference_t {
+layout(std430, buffer_reference, buffer_reference_align = 8) buffer vertex_buffer_reference_t {
     vertex_t v[]; //use .length()?
 };
 
 
-layout(buffer_reference, buffer_reference_align = 8) buffer index_buffer_reference_t {
+layout(std430, buffer_reference, buffer_reference_align = 8) buffer index_buffer_reference_t {
     uint32_t i[];
 };
 
@@ -75,11 +78,11 @@ void main() {
     vertex_t v1 = mesh_info.vertices.v[i1];
     vertex_t v2 = mesh_info.vertices.v[i2];
 
-    vec2 tex_coords =
-          vec2(v0.tex_coords[0], v0.tex_coords[1]) * barycentrics.x
-        + vec2(v1.tex_coords[0], v1.tex_coords[1]) * barycentrics.y
-        + vec2(v2.tex_coords[0], v2.tex_coords[1]) * barycentrics.z;
+    vec2 base_color_tex_coords =
+          vec2(v0.base_color_tex_coord[0], v0.base_color_tex_coord[1]) * barycentrics.x
+        + vec2(v1.base_color_tex_coord[0], v1.base_color_tex_coord[1]) * barycentrics.y
+        + vec2(v2.base_color_tex_coord[0], v2.base_color_tex_coord[1]) * barycentrics.z;
 
     // texture_samplers[texture_index] is our texture
-    prd.color = texture(texture_samplers[texture_index], tex_coords).xyz;
+    prd.color = texture(texture_samplers[texture_index], base_color_tex_coords).xyz;
 }
