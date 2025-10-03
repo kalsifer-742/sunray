@@ -16,7 +16,7 @@ pub struct PbrMetallicRoughnessProperties {
 }
 
 pub struct Material {
-    pub pbr_mettalic_roughness_properties: PbrMetallicRoughnessProperties,
+    pub pbr_metallic_roughness_properties: PbrMetallicRoughnessProperties,
     pub normal_texture_index: Option<usize>,
     pub occlusion_texture_index: Option<usize>,
     pub emissive_factor: [f32; 3],

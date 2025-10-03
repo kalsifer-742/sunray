@@ -79,6 +79,7 @@ impl Scene {
             for primitive in mesh.primitives() {
                 let primitive_unique_key = primitive.unique_key;
 
+
                 let blas_index = match primitives_blas_index.get(&primitive_unique_key) {
                     Some(blas_index) => *blas_index,
                     None => {
@@ -105,7 +106,7 @@ impl Scene {
                 // - blases.last() - compiler error!
                 // - blases.last_mut()
                 // creates another mutable borrow when anoter mutable borrow already exists
-                // but only one mutable borrow can exist at every time - compile error!
+                // but only one mutable borrow can exist at any time - compile error!
                 //
                 // tl;dr don't waste time making lifetimes work
                 blas_instances_info.push((blas_index, transform));

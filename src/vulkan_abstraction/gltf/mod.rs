@@ -20,7 +20,7 @@ pub use primitive::*;
 pub use texture::*;
 pub use vertex::*;
 
-macro_rules! get_texture_indexes {
+macro_rules! get_texture_indices {
     ($material:ident, $texture_name:ident) => {
         match $material.$texture_name() {
             Some(texture_info) => (
@@ -246,20 +246,18 @@ impl Gltf {
                         let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
                         let double_sided = material.double_sided();
 
-                        // The code is repeated because the type of the textures are not the same
-                        // TODO: crate a macro
                         let (base_color_texture_index, base_color_tex_coord_index) =
-                            get_texture_indexes!(material_pbr, base_color_texture);
+                            get_texture_indices!(material_pbr, base_color_texture);
                         let (metallic_roughness_texture_index, metallic_roughness_tex_coord_index) =
-                            get_texture_indexes!(material_pbr, metallic_roughness_texture);
+                            get_texture_indices!(material_pbr, metallic_roughness_texture);
                         let (normal_texture_index, normal_tex_coord_index) =
-                            get_texture_indexes!(material, normal_texture);
+                            get_texture_indices!(material, normal_texture);
                         let (occlusion_texture_index, occlusion_tex_coord_index) =
-                            get_texture_indexes!(material, occlusion_texture);
+                            get_texture_indices!(material, occlusion_texture);
                         let (emissive_texture_index, emissive_tex_coord_index) =
-                            get_texture_indexes!(material, emissive_texture);
+                            get_texture_indices!(material, emissive_texture);
 
-                        let pbr_mettalic_roughness_properties =
+                        let pbr_metallic_roughness_properties =
                             vulkan_abstraction::gltf::PbrMetallicRoughnessProperties {
                                 base_color_factor,
                                 metallic_factor,
@@ -269,7 +267,7 @@ impl Gltf {
                             };
 
                         let material = vulkan_abstraction::gltf::Material {
-                            pbr_mettalic_roughness_properties,
+                            pbr_metallic_roughness_properties,
                             normal_texture_index,
                             occlusion_texture_index,
                             emissive_factor,
@@ -290,27 +288,15 @@ impl Gltf {
                         (material, tex_coords)
                     };
 
-                    // This could also be done with zip, but the code would be equally long and whit a lot of nested tuples
-                    // I tought of moving the zip operation to a separe function but the type of reader don't allow you to pass it around
+                    // This could also be done with zip, but the code would be equally long and with a lot of nested tuples
+                    // I thought of moving the zip operation to a separate function but the type of reader doesn't allow you to pass it around
                     insert_tex_coords!(reader, vertices, tex_coords.0, base_color_tex_coord);
-                    insert_tex_coords!(
-                        reader,
-                        vertices,
-                        tex_coords.1,
-                        metallic_roughness_tex_coord
-                    );
+                    insert_tex_coords!(reader, vertices, tex_coords.1, metallic_roughness_tex_coord);
                     insert_tex_coords!(reader, vertices, tex_coords.2, normal_tex_coord);
                     insert_tex_coords!(reader, vertices, tex_coords.3, occlusion_tex);
                     insert_tex_coords!(reader, vertices, tex_coords.4, emissive_tex);
 
-                    let vertex_buffer = {
-                        let vertex_buffer =
-                            vulkan_abstraction::VertexBuffer::new_for_blas_from_data::<
-                                vulkan_abstraction::gltf::Vertex,
-                            >(Rc::clone(&self.core), &vertices)?;
-
-                        vertex_buffer
-                    };
+                    let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), &vertices)?;
 
                     let primitive_data = vulkan_abstraction::gltf::PrimitiveData {
                         vertex_buffer,
