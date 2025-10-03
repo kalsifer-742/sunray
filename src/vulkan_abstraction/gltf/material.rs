@@ -7,6 +7,7 @@
 //     Textures(usize, usize),
 // }
 
+#[derive(Clone)]
 pub struct PbrMetallicRoughnessProperties {
     pub base_color_factor: [f32; 4],
     pub metallic_factor: f32,
@@ -15,6 +16,7 @@ pub struct PbrMetallicRoughnessProperties {
     pub metallic_roughness_texture_index: Option<usize>,
 }
 
+#[derive(Clone)]
 pub struct Material {
     pub pbr_metallic_roughness_properties: PbrMetallicRoughnessProperties,
     pub normal_texture_index: Option<usize>,

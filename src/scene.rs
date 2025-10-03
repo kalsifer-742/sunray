@@ -24,6 +24,7 @@ impl Scene {
         &self,
         core: &Rc<vulkan_abstraction::Core>,
         blases: &'a mut Vec<vulkan_abstraction::BLAS>,
+        materials: &mut Vec<vulkan_abstraction::gltf::Material>,
         scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
     ) -> SrResult<Vec<vulkan_abstraction::BlasInstance<'a>>> {
         blases.clear();
@@ -43,6 +44,7 @@ impl Scene {
                 blases,
                 &mut blas_instances_info,
                 &mut primitives_blas_index,
+                materials,
                 scene_data,
             )?;
         }
@@ -70,6 +72,7 @@ impl Scene {
         blases: &mut Vec<vulkan_abstraction::BLAS>,
         blas_instances_info: &mut Vec<BlasInstanceInfo>,
         primitives_blas_index: &mut HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, usize>,
+        materials: &mut Vec<vulkan_abstraction::gltf::Material>,
         scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
     ) -> SrResult<()> {
         let transform = parent_transform * node.transform();
@@ -99,6 +102,8 @@ impl Scene {
                     }
                 };
 
+                materials.push(primitive.material.clone());
+
                 // the first idea that could come to your mind is to create a BlasInstance here directly.
                 // Apart from having to manage lifetimes it is still not going to work because:
                 // - &blases[blases.len()]
@@ -122,6 +127,7 @@ impl Scene {
                     blases,
                     blas_instances_info,
                     primitives_blas_index,
+                    materials,
                     scene_data,
                 )? // mut borrow
             }
@@ -131,16 +137,16 @@ impl Scene {
     }
 
     fn to_vk_transform(transform: na::Matrix4<f32>) -> vk::TransformMatrixKHR {
-        let r0 = transform.column(0);
-        let r1 = transform.column(1);
-        let r2 = transform.column(2);
-        let r3 = transform.column(3);
+        let c0 = transform.column(0);
+        let c1 = transform.column(1);
+        let c2 = transform.column(2);
+        let c3 = transform.column(3);
 
         #[rustfmt::skip]
         let matrix = [
-            r0[0], r1[0], r2[0], r3[0],
-            r0[1], r1[1], r2[1], r3[1],
-            r0[2], r1[2], r2[2], r3[2],
+            c0[0], c1[0], c2[0], c3[0],
+            c0[1], c1[1], c2[1], c3[1],
+            c0[2], c1[2], c2[2], c3[2],
         ];
 
         vk::TransformMatrixKHR { matrix }

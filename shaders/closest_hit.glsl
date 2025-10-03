@@ -16,12 +16,6 @@ struct vertex_t {
     vec2 emissive_tex;
 };
 
-struct material_t {
-    uint32_t texture_index;
-    //...
-};
-
-
 layout(std430, buffer_reference, buffer_reference_align = 8) buffer vertex_buffer_reference_t {
     vertex_t v[]; //use .length()?
 };
@@ -31,26 +25,38 @@ layout(std430, buffer_reference, buffer_reference_align = 8) buffer index_buffer
     uint32_t i[];
 };
 
+struct material_t {
+    vec4 base_color_value;
+    uint32_t base_color_texture_index;
+
+    float metallic_factor;
+    float roughness_factor;
+    uint32_t metallic_roughness_texture_index;
+
+    uint32_t normal_texture_index;
+    uint32_t occlusion_texture_index;
+
+    vec3 emissive_factor;
+    uint32_t emissive_texture_index;
+};
+
 struct mesh_info_t {
     vertex_buffer_reference_t vertices;
     index_buffer_reference_t indices;
-    uint32_t material_index;
 
+    material_t material;
 };
 
 layout(set = 0, binding = 2) uniform matrices_uniform_buffer_t {
     mat4 view_inverse, proj_inverse;
+
 } matrices_uniform_buffer;
 
 layout(set = 0, binding = 3) buffer meshes_info_storage_buffer_t {
     mesh_info_t m[];
 } meshes_info_uniform_buffer;
 
-layout(set = 0, binding = 4) buffer materials_buffer_t {
-    material_t m[];
-} materials_buffer;
-
-layout(set = 0, binding = 5) uniform sampler2D texture_samplers[1024];
+layout(set = 0, binding = 4) uniform sampler2D texture_samplers[1024];
 
 layout(location = 0) rayPayloadInEXT ray_payload_t {
     vec3 color;
@@ -64,8 +70,8 @@ void main() {
 
     uint blas_instance_id = gl_InstanceCustomIndexEXT;
     mesh_info_t mesh_info = meshes_info_uniform_buffer.m[blas_instance_id];
-    material_t material = materials_buffer.m[mesh_info.material_index];
-    uint texture_index = material.texture_index;
+    material_t material = mesh_info.material;
+    uint texture_index = material.base_color_texture_index;
 
 
     uint index_buffer_offset = gl_PrimitiveID * 3;

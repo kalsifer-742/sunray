@@ -18,9 +18,8 @@ impl DescriptorSetLayout {
     pub const OUTPUT_IMAGE_BINDING: u32 = 1;
     pub const MATRICES_UNIFORM_BUFFER_BINDING: u32 = 2;
     pub const MESHES_INFO_STORAGE_BUFFER_BINDING: u32 = 3;
-    pub const MATERIALS_STORAGE_BUFFER_BINDING: u32 = 4;
-    pub const SAMPLERS_BINDING: u32 = 5;
-    pub const NUMBER_OF_BINDINGS: usize = 6;
+    pub const SAMPLERS_BINDING: u32 = 4;
+    pub const NUMBER_OF_BINDINGS: usize = 5;
 
     pub const NUMBER_OF_SAMPLERS : u32 = vulkan_abstraction::ShaderDataBuffers::NUMBER_OF_SAMPLERS as u32;
 
@@ -50,12 +49,6 @@ impl DescriptorSetLayout {
             // meshes info uniform buffer layout binding
             vk::DescriptorSetLayoutBinding::default()
                 .binding(Self::MESHES_INFO_STORAGE_BUFFER_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::ALL),
-            // materials storage buffer layout binding
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(Self::MATERIALS_STORAGE_BUFFER_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::ALL),
@@ -123,7 +116,7 @@ impl DescriptorSets {
                 .descriptor_count(1),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(2),
+                .descriptor_count(1),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(DescriptorSetLayout::NUMBER_OF_SAMPLERS),
@@ -199,20 +192,6 @@ impl DescriptorSets {
                 .buffer_info(&descriptor_buffer_infos)
                 .dst_set(descriptor_sets[0])
                 .dst_binding(DescriptorSetLayout::MESHES_INFO_STORAGE_BUFFER_BINDING)
-        );
-
-        // write materials storage buffer to descriptor set
-        let descriptor_buffer_infos = [
-            vk::DescriptorBufferInfo::default()
-                .buffer(shader_data.get_materials_storage_buffer())
-                .range(vk::WHOLE_SIZE)
-        ];
-        descriptor_writes.push(
-            vk::WriteDescriptorSet::default()
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&descriptor_buffer_infos)
-                .dst_set(descriptor_sets[0])
-                .dst_binding(DescriptorSetLayout::MATERIALS_STORAGE_BUFFER_BINDING)
         );
 
         // write samplers to descriptor set

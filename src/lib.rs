@@ -306,9 +306,9 @@ impl Renderer {
         scene: &Scene,
         scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
     ) -> SrResult<()> {
-        let blas_instances = scene.load(&self.core, &mut self.blases, scene_data)?;
+        let mut materials = Vec::new();
+        let blas_instances = scene.load(&self.core, &mut self.blases, &mut materials, scene_data)?;
         self.tlas.rebuild(&blas_instances)?;
-        let materials = [];
         let textures = [];
         self.shader_data_buffers.update(
             &blas_instances,
