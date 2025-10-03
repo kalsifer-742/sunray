@@ -196,6 +196,62 @@ impl Gltf {
 
                 let primitive_unique_key = (vertex_position_accessor_index, indices_accessor_index);
 
+                let (material, tex_coords) = {
+                    let material = primitive.material();
+                    let material_pbr = primitive.material().pbr_metallic_roughness();
+
+                    let base_color_factor = material_pbr.base_color_factor();
+                    let metallic_factor = material_pbr.metallic_factor();
+                    let roughness_factor = material_pbr.roughness_factor();
+                    let emissive_factor = material.emissive_factor();
+                    let alpha_mode = material.alpha_mode();
+                    let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
+                    let double_sided = material.double_sided();
+
+                    // The code is repeated because the type of the textures are not the same
+                    // TODO: crate a macro
+                    let (base_color_texture_index, base_color_tex_coord_index) =
+                        get_texture_indexes!(material_pbr, base_color_texture);
+                    let (metallic_roughness_texture_index, metallic_roughness_tex_coord_index) =
+                        get_texture_indexes!(material_pbr, metallic_roughness_texture);
+                    let (normal_texture_index, normal_tex_coord_index) =
+                        get_texture_indexes!(material, normal_texture);
+                    let (occlusion_texture_index, occlusion_tex_coord_index) =
+                        get_texture_indexes!(material, occlusion_texture);
+                    let (emissive_texture_index, emissive_tex_coord_index) =
+                        get_texture_indexes!(material, emissive_texture);
+
+                    let pbr_mettalic_roughness_properties =
+                        vulkan_abstraction::gltf::PbrMetallicRoughnessProperties {
+                            base_color_factor,
+                            metallic_factor,
+                            roughness_factor,
+                            base_color_texture_index,
+                            metallic_roughness_texture_index,
+                        };
+
+                    let material = vulkan_abstraction::gltf::Material {
+                        pbr_mettalic_roughness_properties,
+                        normal_texture_index,
+                        occlusion_texture_index,
+                        emissive_factor,
+                        emissive_texture_index,
+                        alpha_mode,
+                        alpha_cutoff,
+                        double_sided,
+                    };
+
+                    let tex_coords = (
+                        base_color_tex_coord_index,
+                        metallic_roughness_tex_coord_index,
+                        normal_tex_coord_index,
+                        occlusion_tex_coord_index,
+                        emissive_tex_coord_index,
+                    );
+
+                    (material, tex_coords)
+                };
+
                 if !primitive_data_map.contains_key(&primitive_unique_key) {
                     let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
@@ -234,62 +290,6 @@ impl Gltf {
                         index_buffer
                     };
 
-                    let (material, tex_coords) = {
-                        let material = primitive.material();
-                        let material_pbr = primitive.material().pbr_metallic_roughness();
-
-                        let base_color_factor = material_pbr.base_color_factor();
-                        let metallic_factor = material_pbr.metallic_factor();
-                        let roughness_factor = material_pbr.roughness_factor();
-                        let emissive_factor = material.emissive_factor();
-                        let alpha_mode = material.alpha_mode();
-                        let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
-                        let double_sided = material.double_sided();
-
-                        // The code is repeated because the type of the textures are not the same
-                        // TODO: crate a macro
-                        let (base_color_texture_index, base_color_tex_coord_index) =
-                            get_texture_indexes!(material_pbr, base_color_texture);
-                        let (metallic_roughness_texture_index, metallic_roughness_tex_coord_index) =
-                            get_texture_indexes!(material_pbr, metallic_roughness_texture);
-                        let (normal_texture_index, normal_tex_coord_index) =
-                            get_texture_indexes!(material, normal_texture);
-                        let (occlusion_texture_index, occlusion_tex_coord_index) =
-                            get_texture_indexes!(material, occlusion_texture);
-                        let (emissive_texture_index, emissive_tex_coord_index) =
-                            get_texture_indexes!(material, emissive_texture);
-
-                        let pbr_mettalic_roughness_properties =
-                            vulkan_abstraction::gltf::PbrMetallicRoughnessProperties {
-                                base_color_factor,
-                                metallic_factor,
-                                roughness_factor,
-                                base_color_texture_index,
-                                metallic_roughness_texture_index,
-                            };
-
-                        let material = vulkan_abstraction::gltf::Material {
-                            pbr_mettalic_roughness_properties,
-                            normal_texture_index,
-                            occlusion_texture_index,
-                            emissive_factor,
-                            emissive_texture_index,
-                            alpha_mode,
-                            alpha_cutoff,
-                            double_sided,
-                        };
-
-                        let tex_coords = (
-                            base_color_tex_coord_index,
-                            metallic_roughness_tex_coord_index,
-                            normal_tex_coord_index,
-                            occlusion_tex_coord_index,
-                            emissive_tex_coord_index,
-                        );
-
-                        (material, tex_coords)
-                    };
-
                     // This could also be done with zip, but the code would be equally long and whit a lot of nested tuples
                     // I tought of moving the zip operation to a separe function but the type of reader don't allow you to pass it around
                     insert_tex_coords!(reader, vertices, tex_coords.0, base_color_tex_coord);
@@ -315,7 +315,6 @@ impl Gltf {
                     let primitive_data = vulkan_abstraction::gltf::PrimitiveData {
                         vertex_buffer,
                         index_buffer,
-                        material,
                     };
 
                     primitive_data_map.insert(primitive_unique_key, primitive_data);
@@ -323,6 +322,7 @@ impl Gltf {
 
                 primitives.push(vulkan_abstraction::gltf::Primitive {
                     unique_key: primitive_unique_key,
+                    material,
                 });
             }
             mesh = Some(vulkan_abstraction::gltf::Mesh::new(primitives)?);
