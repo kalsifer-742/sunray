@@ -117,11 +117,14 @@ impl ShaderDataBuffers {
         &mut self,
         blas_instances: &[vulkan_abstraction::BlasInstance],
         materials: &[vulkan_abstraction::gltf::Material],
-        textures: &[&vulkan_abstraction::Image],
-        fallback: &vulkan_abstraction::Image,
+        images: &[vulkan_abstraction::Image],
+        samplers: &[vulkan_abstraction::Sampler],
+        textures: &[vulkan_abstraction::gltf::Texture],
+        fallback: vulkan_abstraction::Texture,
+        default_sampler: &vulkan_abstraction::Sampler,
     ) -> SrResult<()> {
         self.set_meshes_info(blas_instances, materials)?;
-        self.set_textures(textures, fallback);
+        self.set_textures(images, samplers, textures, fallback, default_sampler);
 
         Ok(())
     }
@@ -148,17 +151,29 @@ impl ShaderDataBuffers {
         Ok(())
     }
 
-    fn set_textures(&mut self, textures: &[&vulkan_abstraction::Image], fallback: &vulkan_abstraction::Image) {
+    fn set_textures(
+        &mut self,
+        images: &[vulkan_abstraction::Image],
+        samplers: &[vulkan_abstraction::Sampler],
+        textures: &[vulkan_abstraction::gltf::Texture],
+        fallback: vulkan_abstraction::Texture,
+        default_sampler: &vulkan_abstraction::Sampler,
+    ) {
         self.textures.clear();
 
         self.textures.reserve_exact(Self::NUMBER_OF_SAMPLERS);
 
-        for i in 0..textures.len() {
-            self.textures.push((textures[i].sampler(), textures[i].image_view()));
+        for tex in textures {
+            let sampler = match tex.sampler {
+                Some(i) => &samplers[i],
+                None => default_sampler,
+            };
+            let image = &images[tex.source];
+            self.textures.push((sampler.inner(), image.image_view()));
         }
 
         while self.textures.len() < Self::NUMBER_OF_SAMPLERS {
-            self.textures.push((fallback.sampler(), fallback.image_view()));
+            self.textures.push((fallback.1.inner(), fallback.0.image_view()));
         }
 
         assert_eq!(self.textures.len(), Self::NUMBER_OF_SAMPLERS);

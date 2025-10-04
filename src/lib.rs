@@ -40,6 +40,8 @@ pub struct Renderer {
     image_format: vk::Format,
 
     fallback_texture_image: vulkan_abstraction::Image,
+    fallback_texture_sampler: vulkan_abstraction::Sampler,
+    default_sampler: vulkan_abstraction::Sampler,
 
     core: Rc<vulkan_abstraction::Core>,
 }
@@ -107,7 +109,7 @@ impl Renderer {
                 })
                 .collect::<Vec<u32>>();
 
-            let image = vulkan_abstraction::Image::new_from_data(
+            vulkan_abstraction::Image::new_from_data(
                 Rc::clone(&core),
                 image_data,
                 vk::Extent3D {
@@ -121,10 +123,24 @@ impl Renderer {
                 vk::ImageUsageFlags::SAMPLED,
                 "fallback texture image",
             )?
-            .with_sampler(vk::Filter::NEAREST)?;
-
-            image
         };
+        let fallback_texture_sampler = vulkan_abstraction::Sampler::new(
+            Rc::clone(&core),
+            vk::Filter::NEAREST,
+            vk::Filter::NEAREST,
+            vk::SamplerAddressMode::REPEAT,
+            vk::SamplerAddressMode::REPEAT,
+            vk::SamplerAddressMode::REPEAT,
+        )?;
+
+        let default_sampler = vulkan_abstraction::Sampler::new(
+            Rc::clone(&core),
+            vk::Filter::LINEAR,
+            vk::Filter::LINEAR,
+            vk::SamplerAddressMode::REPEAT,
+            vk::SamplerAddressMode::REPEAT,
+            vk::SamplerAddressMode::REPEAT,
+        )?;
 
         Ok((
             Self {
@@ -139,6 +155,9 @@ impl Renderer {
                 image_format,
 
                 fallback_texture_image,
+                fallback_texture_sampler,
+                default_sampler,
+
                 shader_data_buffers,
 
                 core,
@@ -262,8 +281,19 @@ impl Renderer {
         let blas_instances = scene.load(&self.core, &mut self.blases, &mut materials, scene_data)?;
         self.tlas.rebuild(&blas_instances)?;
         let textures = [];
-        self.shader_data_buffers
-            .update(&blas_instances, &materials, &textures, &self.fallback_texture_image)?;
+        let images = [];
+        let samplers = [];
+        let fallback_texture = vulkan_abstraction::Texture(&self.fallback_texture_image, &self.fallback_texture_sampler);
+
+        self.shader_data_buffers.update(
+            &blas_instances,
+            &materials,
+            &images,
+            &samplers,
+            &textures,
+            fallback_texture,
+            &self.default_sampler,
+        )?;
 
         self.clear_image_dependent_data();
 

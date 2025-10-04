@@ -1,3 +1,8 @@
+pub mod sampler;
+pub mod texture;
+pub use sampler::*;
+pub use texture::*;
+
 use std::rc::Rc;
 
 use ash::vk;
@@ -13,9 +18,6 @@ pub struct Image {
     image_subresource_range: vk::ImageSubresourceRange,
     extent: vk::Extent3D,
     format: vk::Format,
-
-    // can be null
-    sampler: vk::Sampler,
 }
 
 impl Image {
@@ -111,8 +113,6 @@ impl Image {
             image_subresource_range,
             extent,
             format,
-
-            sampler: vk::Sampler::null(),
         })
     }
 
@@ -215,34 +215,6 @@ impl Image {
         Ok(row_pitch_corrected_mem)
     }
 
-    pub fn with_sampler(mut self, filter: vk::Filter) -> SrResult<Self> {
-        let create_info = vk::SamplerCreateInfo::default()
-            .flags(vk::SamplerCreateFlags::empty())
-            // linear filtering both for magnification and minification
-            .min_filter(filter)
-            .mag_filter(filter)
-            // repeat (tile) the texture on all axes
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            // use supported anisotropy
-            // TODO: does this make sense for raytracing?
-            .anisotropy_enable(true)
-            .max_anisotropy(self.core.device().properties().limits.max_sampler_anisotropy)
-            // use normalized ([0,1] range) coordinates
-            .unnormalized_coordinates(false)
-            // no need for a comparison function ("mainly used for percentage-closer filtering on shadow maps")
-            .compare_enable(false)
-            .compare_op(vk::CompareOp::ALWAYS)
-            // mipmapping
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-            .mip_lod_bias(0.0)
-            .min_lod(0.0)
-            .max_lod(0.0);
-        self.sampler = unsafe { self.core.device().inner().create_sampler(&create_info, None) }?;
-        Ok(self)
-    }
-
     pub fn image_view(&self) -> vk::ImageView {
         self.image_view
     }
@@ -266,11 +238,6 @@ impl Image {
     pub fn inner(&self) -> vk::Image {
         self.image
     }
-
-    pub fn sampler(&self) -> vk::Sampler {
-        assert_ne!(self.sampler, vk::Sampler::null());
-        self.sampler
-    }
 }
 
 impl Drop for Image {
@@ -278,7 +245,6 @@ impl Drop for Image {
         let device = self.core.device().inner();
 
         unsafe {
-            device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.image_view, None);
             device.destroy_image(self.image, None);
         }
