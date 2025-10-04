@@ -33,6 +33,10 @@ pub struct Renderer {
 
     blases: Vec<vulkan_abstraction::BLAS>,
     tlas: vulkan_abstraction::TLAS,
+
+    scene_images: Vec<vulkan_abstraction::Image>,
+    scene_samplers: Vec<vulkan_abstraction::Sampler>,
+
     shader_binding_table: vulkan_abstraction::ShaderBindingTable,
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
     descriptor_set_layout: vulkan_abstraction::DescriptorSetLayout,
@@ -107,7 +111,9 @@ impl Renderer {
                     // black/fucsia checkboard pattern
                     if (x + y).is_multiple_of(2) { 0xff000000 } else { 0xffff00ff }
                 })
-                .collect::<Vec<u32>>();
+                .map(u32::to_be_bytes)
+                .flatten()
+                .collect::<Vec<u8>>();
 
             vulkan_abstraction::Image::new_from_data(
                 Rc::clone(&core),
@@ -151,8 +157,12 @@ impl Renderer {
                 shader_binding_table,
                 ray_tracing_pipeline,
                 descriptor_set_layout,
+
                 blases,
                 tlas,
+                scene_images: Vec::new(),
+                scene_samplers: Vec::new(),
+
                 image_extent,
                 image_format,
 
@@ -280,6 +290,7 @@ impl Renderer {
         let (blas_instances, materials, textures, samplers, images) =
             scene.load_into_gpu(&self.core, &mut self.blases, scene_data)?;
 
+
         let fallback_texture = vulkan_abstraction::Texture(&self.fallback_texture_image, &self.fallback_texture_sampler);
         self.tlas.rebuild(&blas_instances)?;
         self.shader_data_buffers.update(
@@ -291,6 +302,9 @@ impl Renderer {
             fallback_texture,
             &self.default_sampler,
         )?;
+
+        self.scene_images = images;
+        self.scene_samplers = samplers;
 
         self.clear_image_dependent_data();
 

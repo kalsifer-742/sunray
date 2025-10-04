@@ -19,3 +19,21 @@ pub(crate) fn tuple_to_extent2d((width, height): (u32, u32)) -> ash::vk::Extent2
 pub(crate) fn tuple_to_extent3d(tuple: (u32, u32)) -> ash::vk::Extent3D {
     tuple_to_extent2d(tuple).into()
 }
+
+pub(crate) fn realign_data(bytes: &[u8], starting_alignment: usize, target_alignment: usize) -> Vec<u8> {
+    let mut i = 0;
+    let mut ret = Vec::new();
+
+    while bytes.len() >= (i+1) * starting_alignment {
+        for j in 0..starting_alignment.min(target_alignment) {
+            ret.push(bytes[i * starting_alignment + j]);
+        }
+        for _ in starting_alignment..target_alignment {
+            ret.push(0x00);
+        }
+
+        i += 1;
+    }
+
+    ret
+}

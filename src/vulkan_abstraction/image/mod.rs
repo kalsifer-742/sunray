@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use ash::vk;
 
-use crate::{error::SrResult, vulkan_abstraction};
+use crate::{error::SrResult, utils, vulkan_abstraction};
 
 pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
@@ -21,9 +21,9 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new_from_data<T: Copy>(
+    pub fn new_from_data(
         core: Rc<vulkan_abstraction::Core>,
-        image_data: Vec<T>,
+        image_data: Vec<u8>,
         extent: vk::Extent3D,
         format: vk::Format,
         tiling: vk::ImageTiling,
@@ -31,9 +31,20 @@ impl Image {
         usage_flags: vk::ImageUsageFlags,
         name: &'static str,
     ) -> SrResult<Self> {
-        let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(Rc::clone(&core), &image_data)?;
         let usage_flags = vk::ImageUsageFlags::TRANSFER_DST | usage_flags;
-        let mut image = Self::new(core, extent, format, tiling, location, usage_flags, name)?;
+        // format is the format of the data. we don't even try to check if it's supported by the gpu since
+        // in general only RGBA8 is supported. TODO: it would be better to do so, and also we're assuming UNORM for no reason
+        let mut image = Self::new(core, extent, vk::Format::R8G8B8A8_UNORM, tiling, location, usage_flags, name)?;
+
+        let image_data = match format {
+            vk::Format::R8G8B8A8_UNORM => image_data,
+            vk::Format::R8G8B8_UNORM => utils::realign_data(&image_data, 3, 4),
+            vk::Format::R8G8_UNORM => utils::realign_data(&image_data, 2, 4),
+            vk::Format::R8_UNORM => utils::realign_data(&image_data, 1, 4),
+            _ => todo!(), // TODO
+        };
+
+        let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(Rc::clone(&image.core), &image_data)?;
 
         image.copy_from_buffer(&staging_buffer)?;
 

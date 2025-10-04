@@ -12,8 +12,8 @@ struct vertex_t {
     vec2 base_color_tex_coord;
     vec2 metallic_roughness_tex_coord;
     vec2 normal_tex_coord;
-    vec2 occlusion_tex;
-    vec2 emissive_tex;
+    vec2 occlusion_tex_coord;
+    vec2 emissive_tex_coord;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) buffer vertex_buffer_reference_t {
@@ -24,6 +24,8 @@ layout(std430, buffer_reference, buffer_reference_align = 8) buffer vertex_buffe
 layout(std430, buffer_reference, buffer_reference_align = 8) buffer index_buffer_reference_t {
     uint32_t i[];
 };
+
+const uint32_t null_texture = ~0;
 
 struct material_t {
     vec4 base_color_value;
@@ -49,7 +51,6 @@ struct mesh_info_t {
 
 layout(set = 0, binding = 2) uniform matrices_uniform_buffer_t {
     mat4 view_inverse, proj_inverse;
-
 } matrices_uniform_buffer;
 
 layout(set = 0, binding = 3) buffer meshes_info_storage_buffer_t {
@@ -62,7 +63,13 @@ layout(location = 0) rayPayloadInEXT ray_payload_t {
     vec3 color;
 } prd;
 
-
+vec4 sample_texture(in uint32_t texture_index, in vec2 tex_coords, in vec4 color) {
+    if(texture_index == null_texture) {
+        return color;
+    } else {
+        return texture(texture_samplers[texture_index], tex_coords);
+    }
+}
 
 void main() {
     // Get barycentric coordinates
@@ -71,8 +78,6 @@ void main() {
     uint blas_instance_id = gl_InstanceCustomIndexEXT;
     mesh_info_t mesh_info = meshes_info_uniform_buffer.m[blas_instance_id];
     material_t material = mesh_info.material;
-    uint texture_index = material.base_color_texture_index;
-
 
     uint index_buffer_offset = gl_PrimitiveID * 3;
 
@@ -89,6 +94,13 @@ void main() {
         + vec2(v1.base_color_tex_coord[0], v1.base_color_tex_coord[1]) * barycentrics.y
         + vec2(v2.base_color_tex_coord[0], v2.base_color_tex_coord[1]) * barycentrics.z;
 
-    // texture_samplers[texture_index] is our texture
-    prd.color = texture(texture_samplers[texture_index], base_color_tex_coords).xyz;
+    vec2 emissive_tex_coords =
+          vec2(v0.emissive_tex_coord[0], v0.emissive_tex_coord[1]) * barycentrics.x
+        + vec2(v1.emissive_tex_coord[0], v1.emissive_tex_coord[1]) * barycentrics.y
+        + vec2(v2.emissive_tex_coord[0], v2.emissive_tex_coord[1]) * barycentrics.z;
+
+    vec4 base_color = sample_texture(material.base_color_texture_index, base_color_tex_coords, material.base_color_value);
+    vec4 emissive_color = sample_texture(material.emissive_texture_index, emissive_tex_coords, vec4(material.emissive_factor, 0.0));
+
+    prd.color = base_color.xyz + emissive_color.xyz;
 }
