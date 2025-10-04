@@ -23,8 +23,7 @@ log4rs = "1.4.0" #logging for examples
 image = "0.25.8" #png example
 
 [[example]]
-name = "hello-triangle-png"
+name = "png-example"
 
 [[example]]
-name = "hello-triangle-window"
-
+name = "window-example"
