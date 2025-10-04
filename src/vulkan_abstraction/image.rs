@@ -29,10 +29,7 @@ impl Image {
         usage_flags: vk::ImageUsageFlags,
         name: &'static str,
     ) -> SrResult<Self> {
-        let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(
-            Rc::clone(&core),
-            &image_data,
-        )?;
+        let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(Rc::clone(&core), &image_data)?;
         let usage_flags = vk::ImageUsageFlags::TRANSFER_DST | usage_flags;
         let mut image = Self::new(core, extent, format, tiling, location, usage_flags, name)?;
 
@@ -102,12 +99,7 @@ impl Image {
                 .subresource_range(image_subresource_range)
                 .image(image);
 
-            unsafe {
-                core.device()
-                    .inner()
-                    .create_image_view(&image_view_create_info, None)
-            }
-            .unwrap()
+            unsafe { core.device().inner().create_image_view(&image_view_create_info, None) }.unwrap()
         };
 
         Ok(Self {
@@ -120,7 +112,7 @@ impl Image {
             extent,
             format,
 
-            sampler: vk::Sampler::null()
+            sampler: vk::Sampler::null(),
         })
     }
 
@@ -130,10 +122,7 @@ impl Image {
 
     // copies from a staging buffer mainly useful to copy from a staging buffer to a device buffer
     // note that this function internally changes the image's layout to TRANSFER_DST_OPTIMAL
-    pub fn copy_from_buffer(
-        &mut self,
-        src: &vulkan_abstraction::Buffer,
-    ) -> SrResult<()> {
+    pub fn copy_from_buffer(&mut self, src: &vulkan_abstraction::Buffer) -> SrResult<()> {
         if src.is_null() {
             return Ok(());
         }
@@ -141,37 +130,46 @@ impl Image {
         let device = self.core.device().inner();
         let cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(self.core.cmd_pool(), device)?;
 
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         unsafe {
             device.begin_command_buffer(cmd_buf, &begin_info)?;
 
             vulkan_abstraction::synchronization::cmd_image_memory_barrier(
-                &self.core, cmd_buf,
+                &self.core,
+                cmd_buf,
                 self.image,
-                vk::PipelineStageFlags::ALL_COMMANDS, vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE,
-                vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             );
 
             let region = vk::BufferImageCopy::default()
                 .buffer_offset(0)
                 .buffer_row_length(0)
                 .buffer_image_height(0)
-                .image_subresource(vk::ImageSubresourceLayers::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .mip_level(0)
-                    .base_array_layer(0)
-                    .layer_count(1)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(0)
+                        .base_array_layer(0)
+                        .layer_count(1),
                 )
                 .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
                 .image_extent(self.extent);
 
-            device.cmd_copy_buffer_to_image(cmd_buf, src.inner(), self.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+            device.cmd_copy_buffer_to_image(
+                cmd_buf,
+                src.inner(),
+                self.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
 
-
-            device.end_command_buffer(cmd_buf) ?;
+            device.end_command_buffer(cmd_buf)?;
         }
 
         self.core.queue().submit_sync(cmd_buf)?;
@@ -181,9 +179,7 @@ impl Image {
         Ok(())
     }
 
-    pub fn get_raw_image_data_with_no_padding(
-        &mut self
-    ) -> SrResult<Vec<u8>> {
+    pub fn get_raw_image_data_with_no_padding(&mut self) -> SrResult<Vec<u8>> {
         //transform dst_image to bytes(correctly aligned)
         let image_sub = self.image_subresource_range();
         let image_subresource = vk::ImageSubresource {
@@ -192,14 +188,13 @@ impl Image {
             array_layer: image_sub.base_array_layer,
         };
         let subresource_layout = unsafe {
-            self.core.device()
+            self.core
+                .device()
                 .inner()
                 .get_image_subresource_layout(self.inner(), image_subresource)
         };
 
-        let size = self.extent().width as usize
-            * self.extent().height as usize
-            * std::mem::size_of::<u32>();
+        let size = self.extent().width as usize * self.extent().height as usize * std::mem::size_of::<u32>();
         let row_byte_size = self.extent().width as usize * std::mem::size_of::<u32>();
         let height = self.extent().height as usize;
 
@@ -289,15 +284,12 @@ impl Drop for Image {
         }
 
         //need to take ownership to pass to free
-        let allocation = std::mem::replace(
-            &mut self.allocation,
-            gpu_allocator::vulkan::Allocation::default(),
-        );
+        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
         match self.core.allocator_mut().free(allocation) {
             Ok(()) => {}
-            Err(e) => log::error!(
-                "gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop"
-            ),
+            Err(e) => {
+                log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop")
+            }
         }
     }
 }

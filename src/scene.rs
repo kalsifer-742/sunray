@@ -30,10 +30,7 @@ impl Scene {
         blases.clear();
 
         let mut blas_instances_info: Vec<BlasInstanceInfo> = vec![];
-        let mut primitives_blas_index: HashMap<
-            vulkan_abstraction::gltf::PrimitiveUniqueKey,
-            usize,
-        > = HashMap::new();
+        let mut primitives_blas_index: HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, usize> = HashMap::new();
         for node in self.nodes() {
             // the root nodes do not have a parent transform to apply
             let transform = na::Matrix4::identity();
@@ -52,13 +49,13 @@ impl Scene {
         let blas_instances = blas_instances_info
             .into_iter()
             .enumerate()
-            .map(|(blas_instance_index, (blas_index, transform))| {
-                vulkan_abstraction::BlasInstance {
+            .map(
+                |(blas_instance_index, (blas_index, transform))| vulkan_abstraction::BlasInstance {
                     blas_instance_index: blas_instance_index as u32,
                     blas: &blases[blas_index],
                     transform: Self::to_vk_transform(transform),
-                }
-            })
+                },
+            )
             .collect::<Vec<_>>();
 
         Ok(blas_instances)
@@ -81,7 +78,6 @@ impl Scene {
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
                 let primitive_unique_key = primitive.unique_key;
-
 
                 let blas_index = match primitives_blas_index.get(&primitive_unique_key) {
                     Some(blas_index) => *blas_index,

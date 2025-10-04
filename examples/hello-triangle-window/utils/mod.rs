@@ -12,58 +12,40 @@ use sunray::error::*;
 /// extensions and creation of a compatible Vulkan instance prior to creating a window.
 ///
 /// The returned extensions will include all extension dependencies.
-pub fn enumerate_required_extensions(
-    display_handle: RawDisplayHandle,
-) -> SrResult<&'static [*const c_char]> {
+pub fn enumerate_required_extensions(display_handle: RawDisplayHandle) -> SrResult<&'static [*const c_char]> {
     let extensions = match display_handle {
         RawDisplayHandle::Windows(_) => {
-            const WINDOWS_EXTS: [*const c_char; 2] = [
-                khr::surface::NAME.as_ptr(),
-                khr::win32_surface::NAME.as_ptr(),
-            ];
+            const WINDOWS_EXTS: [*const c_char; 2] = [khr::surface::NAME.as_ptr(), khr::win32_surface::NAME.as_ptr()];
 
             &WINDOWS_EXTS
         }
 
         RawDisplayHandle::Wayland(_) => {
-            const WAYLAND_EXTS: [*const c_char; 2] = [
-                khr::surface::NAME.as_ptr(),
-                khr::wayland_surface::NAME.as_ptr(),
-            ];
+            const WAYLAND_EXTS: [*const c_char; 2] = [khr::surface::NAME.as_ptr(), khr::wayland_surface::NAME.as_ptr()];
 
             &WAYLAND_EXTS
         }
 
         RawDisplayHandle::Xlib(_) => {
-            const XLIB_EXTS: [*const c_char; 2] = [
-                khr::surface::NAME.as_ptr(),
-                khr::xlib_surface::NAME.as_ptr(),
-            ];
+            const XLIB_EXTS: [*const c_char; 2] = [khr::surface::NAME.as_ptr(), khr::xlib_surface::NAME.as_ptr()];
 
             &XLIB_EXTS
         }
 
         RawDisplayHandle::Xcb(_) => {
-            const XCB_EXTS: [*const c_char; 2] =
-                [khr::surface::NAME.as_ptr(), khr::xcb_surface::NAME.as_ptr()];
+            const XCB_EXTS: [*const c_char; 2] = [khr::surface::NAME.as_ptr(), khr::xcb_surface::NAME.as_ptr()];
 
             &XCB_EXTS
         }
 
         RawDisplayHandle::Android(_) => {
-            const ANDROID_EXTS: [*const c_char; 2] = [
-                khr::surface::NAME.as_ptr(),
-                khr::android_surface::NAME.as_ptr(),
-            ];
+            const ANDROID_EXTS: [*const c_char; 2] = [khr::surface::NAME.as_ptr(), khr::android_surface::NAME.as_ptr()];
 
             &ANDROID_EXTS
         }
 
         RawDisplayHandle::AppKit(_) | RawDisplayHandle::UiKit(_) => {
-            const METAL_EXTS: [*const c_char; 2] = [
-                khr::surface::NAME.as_ptr(),
-                ext::metal_surface::NAME.as_ptr(),
-            ];
+            const METAL_EXTS: [*const c_char; 2] = [khr::surface::NAME.as_ptr(), ext::metal_surface::NAME.as_ptr()];
 
             &METAL_EXTS
         }
@@ -148,8 +130,7 @@ pub fn create_surface(
         }
 
         (RawDisplayHandle::Android(_), RawWindowHandle::AndroidNdk(window)) => {
-            let surface_desc =
-                vk::AndroidSurfaceCreateInfoKHR::default().window(window.a_native_window);
+            let surface_desc = vk::AndroidSurfaceCreateInfoKHR::default().window(window.a_native_window);
 
             let surface_fn = khr::android_surface::Instance::new(entry, instance);
 

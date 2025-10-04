@@ -36,18 +36,11 @@ impl Device {
             .into_iter()
             //only allow devices which support all required extensions
             .filter(|physical_device| {
-                Self::check_device_extension_support(
-                    &instance,
-                    *physical_device,
-                    &device_extensions,
-                )
-                .unwrap_or(false)
+                Self::check_device_extension_support(&instance, *physical_device, &device_extensions).unwrap_or(false)
             })
             //check for blit support
             .filter(|physical_device| {
-                let format_properties = unsafe {
-                    instance.get_physical_device_format_properties(*physical_device, image_format)
-                };
+                let format_properties = unsafe { instance.get_physical_device_format_properties(*physical_device, image_format) };
 
                 format_properties
                     .optimal_tiling_features
@@ -60,8 +53,7 @@ impl Device {
             .filter_map(|physical_device| {
                 if let Some((surface, surface_instance)) = &surface_to_support {
                     let surface_support_details =
-                        SurfaceSupportDetails::new(*surface, surface_instance, physical_device)
-                            .unwrap();
+                        SurfaceSupportDetails::new(*surface, surface_instance, physical_device).unwrap();
                     if surface_support_details.check_swapchain_support() {
                         Some((physical_device, Some(RefCell::new(surface_support_details))))
                     } else {
@@ -80,19 +72,15 @@ impl Device {
                 ))
             })
             // try to get a discrete or at least integrated gpu
-            .max_by_key(
-                |(physical_device, _surface_support_details, _queue_family_index)| {
-                    let device_type =
-                        unsafe { instance.get_physical_device_properties(*physical_device) }
-                            .device_type;
+            .max_by_key(|(physical_device, _surface_support_details, _queue_family_index)| {
+                let device_type = unsafe { instance.get_physical_device_properties(*physical_device) }.device_type;
 
-                    match device_type {
-                        vk::PhysicalDeviceType::DISCRETE_GPU => 2,
-                        vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
-                        _ => 0,
-                    }
-                },
-            )
+                match device_type {
+                    vk::PhysicalDeviceType::DISCRETE_GPU => 2,
+                    vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
+                    _ => 0,
+                }
+            })
             .ok_or(SrError::new(None, String::from("No suitable GPU found!")))?;
 
         let device = {
@@ -109,20 +97,14 @@ impl Device {
                 .vulkan_memory_model_device_scope(true)
                 .storage_buffer8_bit_access(true);
             let mut physical_device_rt_pipeline_features =
-                vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
-                    .ray_tracing_pipeline(true);
+                vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
             let mut physical_device_acceleration_structure_features =
-                vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
-                    .acceleration_structure(true);
+                vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
 
             // enable anisotropic filtering
             // TODO: does this make sense for raytracing
             let mut physical_device_features =
-                vk::PhysicalDeviceFeatures2::default()
-                    .features(
-                        vk::PhysicalDeviceFeatures::default()
-                        .sampler_anisotropy(true)
-                    );
+                vk::PhysicalDeviceFeatures2::default().features(vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true));
 
             let device_create_info = vk::DeviceCreateInfo::default()
                 .enabled_extension_names(&device_extensions)
@@ -135,27 +117,28 @@ impl Device {
             unsafe { instance.create_device(physical_device, &device_create_info, None) }?
         };
         //necessary for memory allocations
-        let physical_device_memory_properties =
-            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let physical_device_memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
-        let (physical_device_properties, physical_device_rt_pipeline_properties, physical_device_acceleration_structure_properties) = {
+        let (
+            physical_device_properties,
+            physical_device_rt_pipeline_properties,
+            physical_device_acceleration_structure_properties,
+        ) = {
             let mut physical_device_rt_pipeline_properties = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
-            let mut physical_device_acceleration_structure_properties = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+            let mut physical_device_acceleration_structure_properties =
+                vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
 
             let mut physical_device_properties = vk::PhysicalDeviceProperties2::default()
                 .push_next(&mut physical_device_rt_pipeline_properties)
                 .push_next(&mut physical_device_acceleration_structure_properties);
 
+            unsafe { instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
 
-
-            unsafe {
-                instance.get_physical_device_properties2(
-                    physical_device,
-                    &mut physical_device_properties,
-                )
-            };
-
-            (physical_device_properties.properties, physical_device_rt_pipeline_properties, physical_device_acceleration_structure_properties)
+            (
+                physical_device_properties.properties,
+                physical_device_rt_pipeline_properties,
+                physical_device_acceleration_structure_properties,
+            )
         };
 
         Ok(Self {
@@ -170,18 +153,11 @@ impl Device {
         })
     }
 
-    fn select_queue_family(
-        instance: &ash::Instance,
-        physical_device: vk::PhysicalDevice,
-    ) -> Option<u32> {
+    fn select_queue_family(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Option<u32> {
         unsafe { instance.get_physical_device_queue_family_properties(physical_device) }
             .into_iter()
             .enumerate()
-            .filter(|(_queue_family_index, queue_family_props)| {
-                queue_family_props
-                    .queue_flags
-                    .contains(vk::QueueFlags::GRAPHICS)
-            })
+            .filter(|(_queue_family_index, queue_family_props)| queue_family_props.queue_flags.contains(vk::QueueFlags::GRAPHICS))
             .map(|(queue_family_index, _)| queue_family_index as u32)
             .next()
     }
@@ -196,8 +172,7 @@ impl Device {
             .map(|p| unsafe { CStr::from_ptr(*p) })
             .collect();
 
-        let available_exts =
-            unsafe { instance.enumerate_device_extension_properties(physical_device) }?;
+        let available_exts = unsafe { instance.enumerate_device_extension_properties(physical_device) }?;
 
         let available_exts_set: HashSet<&CStr> = available_exts
             .iter()
@@ -225,9 +200,7 @@ impl Device {
         &self.physical_device_rt_pipeline_properties
     }
 
-    pub fn acceleration_structure_properties(
-        &self,
-    ) -> &vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'static> {
+    pub fn acceleration_structure_properties(&self) -> &vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'static> {
         &self.physical_device_acceleration_structure_properties
     }
 
@@ -240,11 +213,7 @@ impl Device {
     pub fn surface_support_details(&self) -> Ref<'_, SurfaceSupportDetails> {
         self.surface_support_details.as_ref().unwrap().borrow()
     }
-    pub fn update_surface_support_details(
-        &self,
-        surface: vk::SurfaceKHR,
-        surface_instance: &khr::surface::Instance,
-    ) {
+    pub fn update_surface_support_details(&self, surface: vk::SurfaceKHR, surface_instance: &khr::surface::Instance) {
         *self.surface_support_details.as_ref().unwrap().borrow_mut() =
             SurfaceSupportDetails::new(surface, surface_instance, self.physical_device).unwrap();
     }
@@ -275,17 +244,13 @@ impl SurfaceSupportDetails {
         surface_instance: &khr::surface::Instance,
         physical_device: vk::PhysicalDevice,
     ) -> SrResult<Self> {
-        let surface_capabilities = unsafe {
-            surface_instance.get_physical_device_surface_capabilities(physical_device, surface)
-        }?;
+        let surface_capabilities =
+            unsafe { surface_instance.get_physical_device_surface_capabilities(physical_device, surface) }?;
 
-        let surface_formats = unsafe {
-            surface_instance.get_physical_device_surface_formats(physical_device, surface)
-        }?;
+        let surface_formats = unsafe { surface_instance.get_physical_device_surface_formats(physical_device, surface) }?;
 
-        let surface_present_modes = unsafe {
-            surface_instance.get_physical_device_surface_present_modes(physical_device, surface)
-        }?;
+        let surface_present_modes =
+            unsafe { surface_instance.get_physical_device_surface_present_modes(physical_device, surface) }?;
 
         Ok(Self {
             surface_capabilities,

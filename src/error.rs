@@ -21,21 +21,14 @@ impl SrError {
         Self::new_with_backtrace(source, description, std::backtrace::Backtrace::capture())
     }
 
-    pub fn new_with_backtrace(
-        source: Option<ErrorSource>,
-        description: String,
-        bt: std::backtrace::Backtrace,
-    ) -> Self {
+    pub fn new_with_backtrace(source: Option<ErrorSource>, description: String, bt: std::backtrace::Backtrace) -> Self {
         let description = if bt.status() == BacktraceStatus::Captured {
             format!("{description}\n{bt}")
         } else {
             format!("{description} (set RUST_BACKTRACE=1 to get a backtrace)")
         };
 
-        Self {
-            source,
-            description,
-        }
+        Self { source, description }
     }
     pub fn get_source(&self) -> Option<&ErrorSource> {
         self.source.as_ref()

@@ -31,11 +31,7 @@ pub struct Core {
 }
 
 impl Core {
-    pub fn new(
-        with_validation_layer: bool,
-        with_gpuav: bool,
-        image_format: vk::Format,
-    ) -> SrResult<Self> {
+    pub fn new(with_validation_layer: bool, with_gpuav: bool, image_format: vk::Format) -> SrResult<Self> {
         Ok(Self::new_with_surface(with_validation_layer, with_gpuav, image_format, &[], None)?.0)
     }
 
@@ -51,12 +47,8 @@ impl Core {
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
         let entry = ash::Entry::linked();
 
-        let instance = vulkan_abstraction::Instance::new(
-            &entry,
-            required_instance_extensions,
-            with_validation_layer,
-            with_gpuav,
-        )?;
+        let instance =
+            vulkan_abstraction::Instance::new(&entry, required_instance_extensions, with_validation_layer, with_gpuav)?;
 
         let surface_support = match create_surface.as_ref() {
             Some(f) => Some((
@@ -73,10 +65,7 @@ impl Core {
         ]
         .map(CStr::as_ptr);
 
-        let mut device_extensions = raytracing_device_extensions
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
+        let mut device_extensions = raytracing_device_extensions.iter().copied().collect::<Vec<_>>();
 
         if surface_support.is_some() {
             device_extensions.push(khr::swapchain::NAME.as_ptr());
@@ -99,17 +88,12 @@ impl Core {
             allocation_sizes: Default::default(),
         })?;
 
-        let acceleration_structure_device =
-            khr::acceleration_structure::Device::new(&instance.inner(), &device.inner());
-        let ray_tracing_pipeline_device =
-            khr::ray_tracing_pipeline::Device::new(&instance.inner(), &device.inner());
+        let acceleration_structure_device = khr::acceleration_structure::Device::new(&instance.inner(), &device.inner());
+        let ray_tracing_pipeline_device = khr::ray_tracing_pipeline::Device::new(&instance.inner(), &device.inner());
 
         let queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0)?;
 
-        let cmd_pool = vulkan_abstraction::CmdPool::new(
-            Rc::clone(&device),
-            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-        )?;
+        let cmd_pool = vulkan_abstraction::CmdPool::new(Rc::clone(&device), vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)?;
 
         Ok((
             Self {

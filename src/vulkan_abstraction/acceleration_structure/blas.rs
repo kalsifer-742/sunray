@@ -54,10 +54,7 @@ impl BLAS {
             vk::AccelerationStructureGeometryKHR::default()
                 .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
                 .geometry(geometry_data)
-                .flags(
-                    vk::GeometryFlagsKHR::OPAQUE
-                        | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
-                )
+                .flags(vk::GeometryFlagsKHR::OPAQUE | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION)
         };
 
         // specify the range of values to read from the ibo, vbo and transform data of a geometry.

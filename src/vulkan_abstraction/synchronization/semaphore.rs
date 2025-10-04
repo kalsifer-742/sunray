@@ -30,10 +30,7 @@ impl Semaphore {
 impl Drop for Semaphore {
     fn drop(&mut self) {
         unsafe {
-            self.core
-                .device()
-                .inner()
-                .destroy_semaphore(self.handle, None);
+            self.core.device().inner().destroy_semaphore(self.handle, None);
         }
     }
 }

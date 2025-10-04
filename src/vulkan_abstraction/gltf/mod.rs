@@ -23,10 +23,7 @@ pub use vertex::*;
 macro_rules! get_texture_indices {
     ($material:ident, $texture_name:ident) => {
         match $material.$texture_name() {
-            Some(texture_info) => (
-                Some(texture_info.texture().index()),
-                texture_info.tex_coord(),
-            ),
+            Some(texture_info) => (Some(texture_info.texture().index()), texture_info.tex_coord()),
             None => (None, 0),
         }
     };
@@ -43,8 +40,7 @@ macro_rules! insert_tex_coords {
     };
 }
 
-pub type PrimitiveDataMap =
-    HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, vulkan_abstraction::gltf::PrimitiveData>;
+pub type PrimitiveDataMap = HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, vulkan_abstraction::gltf::PrimitiveData>;
 
 pub struct Gltf {
     core: Rc<vulkan_abstraction::Core>,
@@ -126,14 +122,7 @@ impl Gltf {
             primitive_data_maps.push(primitive_data_map);
         }
 
-        Ok((
-            default_scene_index,
-            scenes,
-            textures,
-            images,
-            samplers,
-            primitive_data_maps,
-        ))
+        Ok((default_scene_index, scenes, textures, images, samplers, primitive_data_maps))
     }
 
     fn explore(
@@ -155,9 +144,7 @@ impl Gltf {
             Some(children)
         };
 
-        Ok(vulkan_abstraction::gltf::Node::new(
-            transform, mesh, children,
-        )?)
+        Ok(vulkan_abstraction::gltf::Node::new(transform, mesh, children)?)
     }
 
     fn process_node(
@@ -176,11 +163,7 @@ impl Gltf {
         if let Some(gltf_mesh) = gltf_node.mesh() {
             let mut primitives = vec![];
 
-            for (i, primitive) in gltf_mesh
-                .primitives()
-                .filter(|p| Self::is_primitive_supported(p))
-                .enumerate()
-            {
+            for (i, primitive) in gltf_mesh.primitives().filter(|p| Self::is_primitive_supported(p)).enumerate() {
                 let vertex_position_accessor_index = primitive
                     .attributes() // ATTRIBUTES are required in the spec
                     .filter(|(semantic, _)| *semantic == gltf::Semantic::Positions) // POSITION is always defined
@@ -214,21 +197,17 @@ impl Gltf {
                         get_texture_indices!(material_pbr, base_color_texture);
                     let (metallic_roughness_texture_index, metallic_roughness_tex_coord_index) =
                         get_texture_indices!(material_pbr, metallic_roughness_texture);
-                    let (normal_texture_index, normal_tex_coord_index) =
-                        get_texture_indices!(material, normal_texture);
-                    let (occlusion_texture_index, occlusion_tex_coord_index) =
-                        get_texture_indices!(material, occlusion_texture);
-                    let (emissive_texture_index, emissive_tex_coord_index) =
-                        get_texture_indices!(material, emissive_texture);
+                    let (normal_texture_index, normal_tex_coord_index) = get_texture_indices!(material, normal_texture);
+                    let (occlusion_texture_index, occlusion_tex_coord_index) = get_texture_indices!(material, occlusion_texture);
+                    let (emissive_texture_index, emissive_tex_coord_index) = get_texture_indices!(material, emissive_texture);
 
-                    let pbr_metallic_roughness_properties =
-                        vulkan_abstraction::gltf::PbrMetallicRoughnessProperties {
-                            base_color_factor,
-                            metallic_factor,
-                            roughness_factor,
-                            base_color_texture_index,
-                            metallic_roughness_texture_index,
-                        };
+                    let pbr_metallic_roughness_properties = vulkan_abstraction::gltf::PbrMetallicRoughnessProperties {
+                        base_color_factor,
+                        metallic_factor,
+                        roughness_factor,
+                        base_color_texture_index,
+                        metallic_roughness_texture_index,
+                    };
 
                     let material = vulkan_abstraction::gltf::Material {
                         pbr_metallic_roughness_properties,
@@ -267,11 +246,7 @@ impl Gltf {
                     let index_buffer = {
                         let indices = if primitive.indices().is_some() {
                             // get vertices index
-                            let indices = reader
-                                .read_indices()
-                                .unwrap()
-                                .into_u32()
-                                .collect::<Vec<_>>();
+                            let indices = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
 
                             indices
                         } else {
@@ -281,11 +256,8 @@ impl Gltf {
                             indices
                         };
 
-                        let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<
-                            u32,
-                        >(
-                            Rc::clone(&self.core), &indices
-                        )?;
+                        let index_buffer =
+                            vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(Rc::clone(&self.core), &indices)?;
 
                         index_buffer
                     };
@@ -298,7 +270,8 @@ impl Gltf {
                     insert_tex_coords!(reader, vertices, tex_coords.3, occlusion_tex);
                     insert_tex_coords!(reader, vertices, tex_coords.4, emissive_tex);
 
-                    let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), &vertices)?;
+                    let vertex_buffer =
+                        vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), &vertices)?;
 
                     let primitive_data = vulkan_abstraction::gltf::PrimitiveData {
                         vertex_buffer,

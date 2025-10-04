@@ -45,7 +45,10 @@ impl Camera {
         let view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
         let proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
 
-        CameraMatrices { view_inverse, proj_inverse }
+        CameraMatrices {
+            view_inverse,
+            proj_inverse,
+        }
     }
 
     pub fn position(&self) -> na::Point3<f32> {

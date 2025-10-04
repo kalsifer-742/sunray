@@ -12,7 +12,6 @@ pub struct DescriptorSetLayout {
     core: Rc<vulkan_abstraction::Core>,
 }
 
-
 impl DescriptorSetLayout {
     pub const TLAS_BINDING: u32 = 0;
     pub const OUTPUT_IMAGE_BINDING: u32 = 1;
@@ -21,7 +20,7 @@ impl DescriptorSetLayout {
     pub const SAMPLERS_BINDING: u32 = 4;
     pub const NUMBER_OF_BINDINGS: usize = 5;
 
-    pub const NUMBER_OF_SAMPLERS : u32 = vulkan_abstraction::ShaderDataBuffers::NUMBER_OF_SAMPLERS as u32;
+    pub const NUMBER_OF_SAMPLERS: u32 = vulkan_abstraction::ShaderDataBuffers::NUMBER_OF_SAMPLERS as u32;
 
     pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let device = core.device().inner();
@@ -63,9 +62,7 @@ impl DescriptorSetLayout {
         let descriptor_set_layout_create_info =
             vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_set_layout_bindings);
 
-        let descriptor_set_layout = unsafe {
-            device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
-        }?;
+        let descriptor_set_layout = unsafe { device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None) }?;
 
         Ok(Self {
             descriptor_set_layout,
@@ -141,70 +138,67 @@ impl DescriptorSets {
         // write TLAS to descriptor set
         let tlases = [tlas.inner()];
         let mut write_descriptor_set_acceleration_structure =
-            vk::WriteDescriptorSetAccelerationStructureKHR::default()
-                .acceleration_structures(&tlases);
+            vk::WriteDescriptorSetAccelerationStructureKHR::default().acceleration_structures(&tlases);
         descriptor_writes.push(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .push_next(&mut write_descriptor_set_acceleration_structure)
                 .descriptor_count(1)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(DescriptorSetLayout::TLAS_BINDING)
+                .dst_binding(DescriptorSetLayout::TLAS_BINDING),
         );
 
         // write image to descriptor set
-        let descriptor_image_infos = [
-            vk::DescriptorImageInfo::default()
-                .image_view(output_image_view)
-                .image_layout(vk::ImageLayout::GENERAL)
-        ];
+        let descriptor_image_infos = [vk::DescriptorImageInfo::default()
+            .image_view(output_image_view)
+            .image_layout(vk::ImageLayout::GENERAL)];
         descriptor_writes.push(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(&descriptor_image_infos)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(DescriptorSetLayout::OUTPUT_IMAGE_BINDING)
+                .dst_binding(DescriptorSetLayout::OUTPUT_IMAGE_BINDING),
         );
 
         // write matrices uniform buffer to descriptor set
-        let descriptor_buffer_infos = [
-            vk::DescriptorBufferInfo::default()
-                .buffer(shader_data.get_matrices_uniform_buffer())
-                .range(vk::WHOLE_SIZE)
-        ];
+        let descriptor_buffer_infos = [vk::DescriptorBufferInfo::default()
+            .buffer(shader_data.get_matrices_uniform_buffer())
+            .range(vk::WHOLE_SIZE)];
         descriptor_writes.push(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(&descriptor_buffer_infos)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(DescriptorSetLayout::MATRICES_UNIFORM_BUFFER_BINDING)
+                .dst_binding(DescriptorSetLayout::MATRICES_UNIFORM_BUFFER_BINDING),
         );
 
         // write meshes info uniform buffer to descriptor set
-        let descriptor_buffer_infos = [
-            vk::DescriptorBufferInfo::default()
-                .buffer(shader_data.get_meshes_info_storage_buffer())
-                .range(vk::WHOLE_SIZE)
-        ];
+        let descriptor_buffer_infos = [vk::DescriptorBufferInfo::default()
+            .buffer(shader_data.get_meshes_info_storage_buffer())
+            .range(vk::WHOLE_SIZE)];
         descriptor_writes.push(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&descriptor_buffer_infos)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(DescriptorSetLayout::MESHES_INFO_STORAGE_BUFFER_BINDING)
+                .dst_binding(DescriptorSetLayout::MESHES_INFO_STORAGE_BUFFER_BINDING),
         );
 
         // write samplers to descriptor set
-        assert_eq!(shader_data.get_textures().len(), DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize);
+        assert_eq!(
+            shader_data.get_textures().len(),
+            DescriptorSetLayout::NUMBER_OF_SAMPLERS as usize
+        );
 
-        let descriptor_sampler_infos =
-            shader_data.get_textures().iter()
-            .map(|(sampler, image_view)|
+        let descriptor_sampler_infos = shader_data
+            .get_textures()
+            .iter()
+            .map(|(sampler, image_view)| {
                 vk::DescriptorImageInfo::default()
                     .sampler(*sampler)
                     .image_view(*image_view)
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            )
+            })
             .collect::<Vec<_>>();
 
         descriptor_writes.push(
@@ -212,7 +206,7 @@ impl DescriptorSets {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&descriptor_sampler_infos)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(DescriptorSetLayout::SAMPLERS_BINDING)
+                .dst_binding(DescriptorSetLayout::SAMPLERS_BINDING),
         );
 
         unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
@@ -234,11 +228,6 @@ impl Drop for DescriptorSets {
         //only do this if you set VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
         //unsafe { self.core.device().free_descriptor_sets(self.descriptor_pool, &self.descriptor_sets) }.unwrap();
 
-        unsafe {
-            self.core
-                .device()
-                .inner()
-                .destroy_descriptor_pool(self.descriptor_pool, None)
-        };
+        unsafe { self.core.device().inner().destroy_descriptor_pool(self.descriptor_pool, None) };
     }
 }

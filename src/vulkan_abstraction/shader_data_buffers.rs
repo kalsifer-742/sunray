@@ -1,10 +1,9 @@
-
 use std::rc::Rc;
 
-use nalgebra as na;
 use ash::vk;
+use nalgebra as na;
 
-use crate::{error::SrResult, vulkan_abstraction, CameraMatrices};
+use crate::{CameraMatrices, error::SrResult, vulkan_abstraction};
 
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
@@ -12,7 +11,6 @@ struct MatricesBufferContents {
     pub view_inverse: na::Matrix4<f32>,
     pub proj_inverse: na::Matrix4<f32>,
 }
-
 
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
@@ -31,7 +29,6 @@ struct Material {
 
     emissive_factor: [f32; 3],
     emissive_texture_index: u32,
-
     //alpha mode and alpha cutoff are missing
 }
 impl Material {
@@ -53,7 +50,9 @@ impl From<&vulkan_abstraction::gltf::Material> for Material {
 
             metallic_factor: material.pbr_metallic_roughness_properties.metallic_factor,
             roughness_factor: material.pbr_metallic_roughness_properties.roughness_factor,
-            metallic_roughness_texture_index: to_texture_index(material.pbr_metallic_roughness_properties.base_color_texture_index),
+            metallic_roughness_texture_index: to_texture_index(
+                material.pbr_metallic_roughness_properties.base_color_texture_index,
+            ),
 
             normal_texture_index: to_texture_index(material.normal_texture_index),
             occlusion_texture_index: to_texture_index(material.occlusion_texture_index),
@@ -81,16 +80,16 @@ pub(crate) struct ShaderDataBuffers {
 
     textures: Vec<(vk::Sampler, vk::ImageView)>,
 
-    core: Rc<vulkan_abstraction::Core>
+    core: Rc<vulkan_abstraction::Core>,
 }
 
 impl ShaderDataBuffers {
-    pub const NUMBER_OF_SAMPLERS : usize = 1024;
+    pub const NUMBER_OF_SAMPLERS: usize = 1024;
 
     pub fn new_empty(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let matrices_uniform_buffer = vulkan_abstraction::Buffer::new_uniform::<MatricesBufferContents>(Rc::clone(&core), 1)?;
 
-        Ok(Self{
+        Ok(Self {
             matrices_uniform_buffer,
             meshes_info_storage_buffer: vulkan_abstraction::Buffer::new_null(Rc::clone(&core)),
             textures: Vec::new(),
@@ -98,24 +97,41 @@ impl ShaderDataBuffers {
         })
     }
 
-
-    pub fn set_matrices(&mut self, CameraMatrices { view_inverse, proj_inverse }: CameraMatrices) -> SrResult<()> {
+    pub fn set_matrices(
+        &mut self,
+        CameraMatrices {
+            view_inverse,
+            proj_inverse,
+        }: CameraMatrices,
+    ) -> SrResult<()> {
         let mem = self.matrices_uniform_buffer.map::<MatricesBufferContents>()?;
-        mem[0] = MatricesBufferContents { view_inverse, proj_inverse };
+        mem[0] = MatricesBufferContents {
+            view_inverse,
+            proj_inverse,
+        };
 
         Ok(())
     }
 
-    pub fn update(&mut self, blas_instances: &[vulkan_abstraction::BlasInstance], materials: &[vulkan_abstraction::gltf::Material], textures: &[&vulkan_abstraction::Image], fallback: &vulkan_abstraction::Image) -> SrResult<()> {
+    pub fn update(
+        &mut self,
+        blas_instances: &[vulkan_abstraction::BlasInstance],
+        materials: &[vulkan_abstraction::gltf::Material],
+        textures: &[&vulkan_abstraction::Image],
+        fallback: &vulkan_abstraction::Image,
+    ) -> SrResult<()> {
         self.set_meshes_info(blas_instances, materials)?;
         self.set_textures(textures, fallback);
 
         Ok(())
     }
 
-    fn set_meshes_info(&mut self, blas_instances: &[vulkan_abstraction::BlasInstance], materials: &[vulkan_abstraction::gltf::Material]) -> SrResult<()> {
-        let meshes_info_storage_buffer_contents =
-            std::iter::zip(blas_instances.iter(), materials.iter())
+    fn set_meshes_info(
+        &mut self,
+        blas_instances: &[vulkan_abstraction::BlasInstance],
+        materials: &[vulkan_abstraction::gltf::Material],
+    ) -> SrResult<()> {
+        let meshes_info_storage_buffer_contents = std::iter::zip(blas_instances.iter(), materials.iter())
             .map(|(blas_instance, material)| MeshesInfoBufferContents {
                 vertex_buffer: blas_instance.blas.vertex_buffer().get_device_address(),
                 index_buffer: blas_instance.blas.index_buffer().get_device_address(),
@@ -124,7 +140,9 @@ impl ShaderDataBuffers {
             .collect::<Vec<_>>();
 
         self.meshes_info_storage_buffer = vulkan_abstraction::Buffer::new_storage_from_data(
-            Rc::clone(&self.core), &meshes_info_storage_buffer_contents, "meshes info storage buffer"
+            Rc::clone(&self.core),
+            &meshes_info_storage_buffer_contents,
+            "meshes info storage buffer",
         )?;
 
         Ok(())

@@ -61,21 +61,15 @@ impl App {
         };
 
         // build sunray renderer and surface
-        let (mut renderer, surface) = sunray::Renderer::new_with_surface(
-            size,
-            vk::Format::R8G8B8A8_UNORM,
-            instance_exts,
-            &create_surface,
-        )?;
+        let (mut renderer, surface) =
+            sunray::Renderer::new_with_surface(size, vk::Format::R8G8B8A8_UNORM, instance_exts, &create_surface)?;
 
         renderer.load_gltf("examples/assets/Lantern.glb")?;
 
         //take ownership of the surface
-        let surface =
-            surface::Surface::new(renderer.core().entry(), renderer.core().instance(), surface);
+        let surface = surface::Surface::new(renderer.core().entry(), renderer.core().instance(), surface);
 
-        let swapchain =
-            swapchain::Swapchain::new(Rc::clone(renderer.core()), surface.inner(), size)?;
+        let swapchain = swapchain::Swapchain::new(Rc::clone(renderer.core()), surface.inner(), size)?;
 
         renderer.build_image_dependent_data(swapchain.images())?;
 
@@ -118,8 +112,9 @@ impl App {
             .collect::<Result<Vec<_>, _>>()?;
         let img_rendered_fences = vec![vk::Fence::null(); MAX_FRAMES_IN_FLIGHT];
 
-        let ready_to_present_sems =
-            swapchain.images().iter()
+        let ready_to_present_sems = swapchain
+            .images()
+            .iter()
             .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(&core)))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -137,10 +132,7 @@ impl App {
         };
 
         log::debug!("img_acquired_sems: {}", fmt_handles(&img_acquired_sems));
-        log::debug!(
-            "ready_to_present_sems: {}",
-            fmt_handles(&ready_to_present_sems)
-        );
+        log::debug!("ready_to_present_sems: {}", fmt_handles(&ready_to_present_sems));
 
         self.resources = Some(AppResources {
             swapchain,
@@ -163,21 +155,10 @@ impl App {
             .renderer
             .core()
             .device()
-            .update_surface_support_details(
-                self.res().surface.inner(),
-                self.res().surface.instance(),
-            );
+            .update_surface_support_details(self.res().surface.inner(), self.res().surface.instance());
 
         let curr_size = self.res().swapchain.extent();
-        let new_size = swapchain::Swapchain::get_extent(
-            size,
-            &self
-                .res()
-                .renderer
-                .core()
-                .device()
-                .surface_support_details(),
-        );
+        let new_size = swapchain::Swapchain::get_extent(size, &self.res().renderer.core().device().surface_support_details());
 
         if curr_size == new_size {
             return Ok(());
@@ -271,12 +252,7 @@ impl App {
 
         let queue = self.res().renderer.core().queue().inner();
 
-        unsafe {
-            self.res()
-                .swapchain
-                .device()
-                .queue_present(queue, &present_info)
-        }?;
+        unsafe { self.res().swapchain.device().queue_present(queue, &present_info) }?;
 
         Ok(())
     }
@@ -289,11 +265,7 @@ impl App {
         let position = na::Point3::new(dist * time.cos(), y, dist * time.sin());
         let target = na::Point3::new(0.0, y, 0.0);
         let fov_y = 45.0;
-        self.res_mut().renderer.set_camera(Camera::new(
-            position,
-            target,
-            fov_y,
-        )?)?;
+        self.res_mut().renderer.set_camera(Camera::new(position, target, fov_y)?)?;
 
         let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
 
@@ -306,14 +278,11 @@ impl App {
         let swapchain_image = self.res().swapchain.images()[img_index];
 
         //render
-        self.res_mut().img_rendered_fences[frame_index] = self
-            .res_mut()
-            .renderer
-            .render_to_image(swapchain_image, img_acquired_sem)?;
+        self.res_mut().img_rendered_fences[frame_index] =
+            self.res_mut().renderer.render_to_image(swapchain_image, img_acquired_sem)?;
 
         // image barrier to transition to PRESENT_SRC
-        let img_barrier_to_present_cmd_buf =
-            &mut self.res_mut().img_barrier_to_present_cmd_bufs[img_index];
+        let img_barrier_to_present_cmd_buf = &mut self.res_mut().img_barrier_to_present_cmd_bufs[img_index];
         let img_barrier_done_fence = img_barrier_to_present_cmd_buf.fence_mut().submit()?;
 
         let img_barrier_to_present_cmd_buf_inner = img_barrier_to_present_cmd_buf.inner();
@@ -335,32 +304,17 @@ impl App {
         Ok(())
     }
 
-    fn handle_event(
-        &mut self,
-        event_loop: &event_loop::ActiveEventLoop,
-        event: winit::event::WindowEvent,
-    ) -> SrResult<()> {
+    fn handle_event(&mut self, event_loop: &event_loop::ActiveEventLoop, event: winit::event::WindowEvent) -> SrResult<()> {
         match event {
             WindowEvent::CloseRequested => {
                 let run_time = {
                     let end_time = std::time::SystemTime::now();
 
-                    end_time
-                        .duration_since(self.start_time.unwrap())
-                        .unwrap()
-                        .as_millis() as f32
-                        / 1000.0
+                    end_time.duration_since(self.start_time.unwrap()).unwrap().as_millis() as f32 / 1000.0
                 };
                 let fps = self.frame_count as f32 / run_time;
                 log::info!("Frames per second: {fps}");
-                unsafe {
-                    self.res()
-                        .renderer
-                        .core()
-                        .device()
-                        .inner()
-                        .device_wait_idle()
-                }?;
+                unsafe { self.res().renderer.core().device().inner().device_wait_idle() }?;
 
                 event_loop.exit();
             }
@@ -407,9 +361,7 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        let window = event_loop
-            .create_window(Window::default_attributes())
-            .unwrap();
+        let window = event_loop.create_window(Window::default_attributes()).unwrap();
 
         let window_size = window.inner_size().into();
 
@@ -438,8 +390,7 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    log4rs::config::init_file("examples/log4rs.yaml", log4rs::config::Deserializers::new())
-        .unwrap();
+    log4rs::config::init_file("examples/log4rs.yaml", log4rs::config::Deserializers::new()).unwrap();
 
     if cfg!(debug_assertions) {
         //stdlib unfortunately completely pollutes trace log level, TODO somehow config stdlib/log to fix this?

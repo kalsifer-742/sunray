@@ -19,10 +19,7 @@ fn compile_shader_internal(
     if generate_debug_info {
         options.set_generate_debug_info();
     }
-    options.set_target_env(
-        shaderc::TargetEnv::Vulkan,
-        shaderc::EnvVersion::Vulkan1_4 as u32,
-    );
+    options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
 
     let binary_result = compiler
         .compile_into_spirv(
@@ -72,9 +69,7 @@ impl RayTracingPipeline {
         let device = core.device().inner();
 
         let make_shader_stage_create_info =
-            |stage: vk::ShaderStageFlags,
-             spirv: shaderc::CompilationArtifact|
-             -> SrResult<vk::PipelineShaderStageCreateInfo> {
+            |stage: vk::ShaderStageFlags, spirv: shaderc::CompilationArtifact| -> SrResult<vk::PipelineShaderStageCreateInfo> {
                 let module_create_info = vk::ShaderModuleCreateInfo::default()
                     .code(spirv.as_binary())
                     .flags(vk::ShaderModuleCreateFlags::empty());
@@ -100,11 +95,7 @@ impl RayTracingPipeline {
 
         let ray_miss_stage_create_info = make_shader_stage_create_info(
             vk::ShaderStageFlags::MISS_KHR,
-            compile_shader!(
-                "shaders/ray_miss.glsl",
-                shaderc::ShaderKind::Miss,
-                generate_shader_debug_info
-            ),
+            compile_shader!("shaders/ray_miss.glsl", shaderc::ShaderKind::Miss, generate_shader_debug_info),
         )?;
 
         let closest_hit_stage_create_info = make_shader_stage_create_info(
@@ -147,21 +138,18 @@ impl RayTracingPipeline {
 
         shader_groups.push(ray_miss_shader_group_create_info);
 
-        let closest_hit_shader_group_create_info =
-            vk::RayTracingShaderGroupCreateInfoKHR::default()
-                .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
-                .intersection_shader(vk::SHADER_UNUSED_KHR)
-                .any_hit_shader(vk::SHADER_UNUSED_KHR)
-                .closest_hit_shader(closest_hit_stage_index as u32)
-                .general_shader(vk::SHADER_UNUSED_KHR);
+        let closest_hit_shader_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR::default()
+            .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
+            .intersection_shader(vk::SHADER_UNUSED_KHR)
+            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+            .closest_hit_shader(closest_hit_stage_index as u32)
+            .general_shader(vk::SHADER_UNUSED_KHR);
 
         shader_groups.push(closest_hit_shader_group_create_info);
 
         let push_constants = [vk::PushConstantRange::default()
             .stage_flags(
-                vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                    | vk::ShaderStageFlags::MISS_KHR,
+                vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::MISS_KHR,
             )
             .offset(0)
             .size(std::mem::size_of::<PushConstant>() as u32)];
@@ -172,8 +160,7 @@ impl RayTracingPipeline {
             .push_constant_ranges(&push_constants)
             .set_layouts(&set_layouts);
 
-        let pipeline_layout =
-            unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }?;
+        let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }?;
 
         let pipeline_create_info = vk::RayTracingPipelineCreateInfoKHR::default()
             .stages(&stages)
@@ -215,14 +202,8 @@ impl RayTracingPipeline {
 impl Drop for RayTracingPipeline {
     fn drop(&mut self) {
         unsafe {
-            self.core
-                .device()
-                .inner()
-                .destroy_pipeline(self.pipeline, None);
-            self.core
-                .device()
-                .inner()
-                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.core.device().inner().destroy_pipeline(self.pipeline, None);
+            self.core.device().inner().destroy_pipeline_layout(self.pipeline_layout, None);
         }
     }
 }

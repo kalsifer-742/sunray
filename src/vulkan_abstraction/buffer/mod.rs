@@ -30,10 +30,7 @@ pub fn get_memory_type_index(
         }
     }
     if idx < 0 {
-        return Err(SrError::new(
-            None,
-            String::from("Vertex Buffer Memory Type not supported!"),
-        ));
+        return Err(SrError::new(None, String::from("Vertex Buffer Memory Type not supported!")));
     }
 
     Ok(idx as u32)
@@ -80,11 +77,7 @@ impl Buffer {
         )
     }
 
-
-    pub fn new_staging_from_data<T: Copy>(
-        core: Rc<vulkan_abstraction::Core>,
-        data: &[T],
-    ) -> SrResult<Self> {
+    pub fn new_staging_from_data<T: Copy>(core: Rc<vulkan_abstraction::Core>, data: &[T]) -> SrResult<Self> {
         if data.len() == 0 {
             return Ok(Self::new_null(core));
         }
@@ -170,18 +163,15 @@ impl Buffer {
 
         let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
         // fix alignment
-        let mem_requirements =
-            mem_requirements.alignment(mem_requirements.alignment.max(alignment));
+        let mem_requirements = mem_requirements.alignment(mem_requirements.alignment.max(alignment));
 
-        let allocation =
-            core.allocator_mut()
-                .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                    name,
-                    requirements: mem_requirements,
-                    location: memory_location,
-                    linear: true, // Buffers are always linear
-                    allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-                })?;
+        let allocation = core.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name,
+            requirements: mem_requirements,
+            location: memory_location,
+            linear: true, // Buffers are always linear
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+        })?;
 
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }?;
 
@@ -200,12 +190,7 @@ impl Buffer {
         if !self.is_null() {
             let slice = self.allocation.mapped_slice_mut().unwrap();
 
-            let ret = unsafe {
-                std::slice::from_raw_parts_mut(
-                    slice.as_ptr() as *mut V,
-                    slice.len() / std::mem::size_of::<V>(),
-                )
-            };
+            let ret = unsafe { std::slice::from_raw_parts_mut(slice.as_ptr() as *mut V, slice.len() / std::mem::size_of::<V>()) };
 
             Ok(ret)
         } else {
@@ -214,11 +199,7 @@ impl Buffer {
     }
 
     // mainly useful to copy from a staging buffer to a device buffer
-    pub fn clone_buffer(
-        core: &vulkan_abstraction::Core,
-        src: &Buffer,
-        dst: &Buffer,
-    ) -> SrResult<()> {
+    pub fn clone_buffer(core: &vulkan_abstraction::Core, src: &Buffer, dst: &Buffer) -> SrResult<()> {
         if src.is_null() {
             return Ok(());
         }
@@ -232,18 +213,14 @@ impl Buffer {
         let device = core.device().inner();
         let cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
 
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         unsafe { device.begin_command_buffer(cmd_buf, &begin_info) }?;
 
         debug_assert!(src.byte_size() <= dst.byte_size());
 
         //copy src.byte_size() bytes, from position 0 in src buffer to position 0 in dst buffer
-        let regions = [vk::BufferCopy::default()
-            .size(src.byte_size())
-            .src_offset(0)
-            .dst_offset(0)];
+        let regions = [vk::BufferCopy::default().size(src.byte_size()).src_offset(0).dst_offset(0)];
 
         unsafe { device.cmd_copy_buffer(cmd_buf, src.inner(), dst.inner(), &regions) };
 
@@ -261,8 +238,7 @@ impl Buffer {
             return 0 as vk::DeviceAddress;
         }
 
-        let buffer_device_address_info = vk::BufferDeviceAddressInfo::default()
-            .buffer(self.buffer);
+        let buffer_device_address_info = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
         unsafe {
             self.core
                 .device()
@@ -271,9 +247,13 @@ impl Buffer {
         }
     }
 
-    pub fn is_null(&self) -> bool { self.buffer == vk::Buffer::null() }
+    pub fn is_null(&self) -> bool {
+        self.buffer == vk::Buffer::null()
+    }
 
-    pub fn inner(&self) -> vk::Buffer { self.buffer }
+    pub fn inner(&self) -> vk::Buffer {
+        self.buffer
+    }
 }
 
 impl Drop for Buffer {
@@ -284,15 +264,12 @@ impl Drop for Buffer {
         }
 
         //need to take ownership to pass to free
-        let allocation = std::mem::replace(
-            &mut self.allocation,
-            gpu_allocator::vulkan::Allocation::default(),
-        );
+        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
         match self.core.allocator_mut().free(allocation) {
             Ok(()) => {}
-            Err(e) => log::error!(
-                "gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Buffer::drop"
-            ),
+            Err(e) => {
+                log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Buffer::drop")
+            }
         }
     }
 }

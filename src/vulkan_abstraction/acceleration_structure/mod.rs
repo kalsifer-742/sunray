@@ -38,33 +38,26 @@ impl AccelerationStructure {
         // this temporary version is used to calculate how much memory to allocate for it,
         // and the final version which is used to really build the acceleration structure will be based on it,
         // with some additional args based on the allocations that were performed.
-        let incomplete_build_geometry_info =
-            vk::AccelerationStructureBuildGeometryInfoKHR::default()
-                .geometries(&geometries)
-                // PREFER_FAST_TRACE -> prioritize trace performance over build time
-                .flags(
-                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | allow_update_flag,
-                )
-                // BUILD as opposed to UPDATE
-                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-                .ty(level);
+        let incomplete_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+            .geometries(&geometries)
+            // PREFER_FAST_TRACE -> prioritize trace performance over build time
+            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | allow_update_flag)
+            // BUILD as opposed to UPDATE
+            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+            .ty(level);
 
         // based on incomplete_build_info get the sizes of the acceleration structure buffer to allocate and
         // of the scratch buffer that will be used for building the acceleration structure (and can then be discarded)
         let acceleration_structure_size_info = unsafe {
             let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
-            let primitive_counts = build_range_infos
-                .iter()
-                .map(|i| i.primitive_count)
-                .collect::<Vec<_>>();
+            let primitive_counts = build_range_infos.iter().map(|i| i.primitive_count).collect::<Vec<_>>();
 
-            core.acceleration_structure_device()
-                .get_acceleration_structure_build_sizes(
-                    vk::AccelerationStructureBuildTypeKHR::DEVICE,
-                    &incomplete_build_geometry_info,
-                    &primitive_counts,
-                    &mut size_info,
-                );
+            core.acceleration_structure_device().get_acceleration_structure_build_sizes(
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &incomplete_build_geometry_info,
+                &primitive_counts,
+                &mut size_info,
+            );
 
             size_info
         };
@@ -123,29 +116,22 @@ impl AccelerationStructure {
         // - fill with the commands to build the acceleration structure
         // - pass to the queue to be executed (thus building the acceleration structure)
         // - free
-        let build_command_buffer = vulkan_abstraction::cmd_buffer::new_command_buffer(
-            core.cmd_pool(),
-            core.device().inner(),
-        )?;
+        let build_command_buffer = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
 
         //record build_command_buffer with the commands to build the acceleration structure
         unsafe {
             core.device().inner().begin_command_buffer(
                 build_command_buffer,
-                &vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            core.acceleration_structure_device()
-                .cmd_build_acceleration_structures(
-                    build_command_buffer,
-                    &[build_geometry_info],
-                    &[build_range_infos],
-                );
+            core.acceleration_structure_device().cmd_build_acceleration_structures(
+                build_command_buffer,
+                &[build_geometry_info],
+                &[build_range_infos],
+            );
 
-            core.device()
-                .inner()
-                .end_command_buffer(build_command_buffer)?
+            core.device().inner().end_command_buffer(build_command_buffer)?
         }
 
         // build_command_buffer must not be in a pending state when
@@ -203,26 +189,21 @@ impl AccelerationStructure {
         // this temporary version is used to calculate how much memory to allocate for it,
         // and the final version which is used to really build the acceleration structure will be based on it,
         // with some additional args based on the allocations that were performed.
-        let incomplete_build_geometry_info =
-            vk::AccelerationStructureBuildGeometryInfoKHR::default()
-                .geometries(&geometries)
-                // PREFER_FAST_TRACE -> prioritize trace performance over build time
-                .flags(
-                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                        | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
-                )
-                // UPDATE as opposed to BUILD
-                .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
-                .ty(self.level);
+        let incomplete_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+            .geometries(&geometries)
+            // PREFER_FAST_TRACE -> prioritize trace performance over build time
+            .flags(
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+            )
+            // UPDATE as opposed to BUILD
+            .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
+            .ty(self.level);
 
         // based on incomplete_build_info get the sizes of the acceleration structure buffer to allocate and
         // of the scratch buffer that will be used for building the acceleration structure (and can then be discarded)
         let size_info = unsafe {
             let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
-            let primitive_counts = build_range_infos
-                .iter()
-                .map(|i| i.primitive_count)
-                .collect::<Vec<_>>();
+            let primitive_counts = build_range_infos.iter().map(|i| i.primitive_count).collect::<Vec<_>>();
 
             self.core
                 .acceleration_structure_device()
@@ -257,31 +238,23 @@ impl AccelerationStructure {
         // - fill with the commands to build the acceleration structure
         // - pass to the queue to be executed (thus building the acceleration structure)
         // - free
-        let build_command_buffer = vulkan_abstraction::cmd_buffer::new_command_buffer(
-            self.core.cmd_pool(),
-            self.core.device().inner(),
-        )?;
+        let build_command_buffer =
+            vulkan_abstraction::cmd_buffer::new_command_buffer(self.core.cmd_pool(), self.core.device().inner())?;
 
         //record build_command_buffer with the commands to build the acceleration structure
         unsafe {
             self.core.device().inner().begin_command_buffer(
                 build_command_buffer,
-                &vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            self.core
-                .acceleration_structure_device()
-                .cmd_build_acceleration_structures(
-                    build_command_buffer,
-                    &[build_geometry_info],
-                    &[build_range_infos],
-                );
+            self.core.acceleration_structure_device().cmd_build_acceleration_structures(
+                build_command_buffer,
+                &[build_geometry_info],
+                &[build_range_infos],
+            );
 
-            self.core
-                .device()
-                .inner()
-                .end_command_buffer(build_command_buffer)?
+            self.core.device().inner().end_command_buffer(build_command_buffer)?
         }
 
         // build_command_buffer must not be in a pending state when

@@ -37,9 +37,7 @@ impl Instance {
         required_exts: &[&'a CStr],
     ) -> SrResult<Vec<&'a CStr>> {
         match layer {
-            Some(layer) => log::info!(
-                "Attempting to enable some instance extensions for layer {layer:?}: {required_exts:?}"
-            ),
+            Some(layer) => log::info!("Attempting to enable some instance extensions for layer {layer:?}: {required_exts:?}"),
             None => log::info!("Attempting to enable some instance extensions: {required_exts:?}"),
         };
 
@@ -89,29 +87,15 @@ impl Instance {
     ) -> vk::Bool32 {
         let callback_data = unsafe { *callback_data };
         let msg_id_number = callback_data.message_id_number;
-        let msg_id_name = unsafe { CStr::from_ptr(callback_data.p_message_id_name) }
-            .to_str()
-            .unwrap();
-        let msg_text = unsafe { CStr::from_ptr(callback_data.p_message) }
-            .to_str()
-            .unwrap();
+        let msg_id_name = unsafe { CStr::from_ptr(callback_data.p_message_id_name) }.to_str().unwrap();
+        let msg_text = unsafe { CStr::from_ptr(callback_data.p_message) }.to_str().unwrap();
 
         match (message_severity, message_type, msg_id_number) {
-            (
-                vk::DebugUtilsMessageSeverityFlagsEXT::WARNING,
-                vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
-                0x675dc32e,
-            ) => return vk::FALSE,
-            (
-                vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE,
-                vk::DebugUtilsMessageTypeFlagsEXT::GENERAL,
-                0x0,
-            )
-            | (
-                vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
-                vk::DebugUtilsMessageTypeFlagsEXT::GENERAL,
-                0x0,
-            ) => {
+            (vk::DebugUtilsMessageSeverityFlagsEXT::WARNING, vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION, 0x675dc32e) => {
+                return vk::FALSE;
+            }
+            (vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0)
+            | (vk::DebugUtilsMessageSeverityFlagsEXT::INFO, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0) => {
                 if msg_id_name == "Loader Message" {
                     return vk::FALSE;
                 }
@@ -133,10 +117,7 @@ impl Instance {
         // some messages have id_number=0, don't print it in that case
         if msg_id_number != 0 {
             // print the id num in lowercase hex, padding up to 10 characters. 10 characters = 0x_ where _ are 8 hex digits => 8 nibbles = 32 bits
-            log::log!(
-                level,
-                "{message_type:?} {msg_id_number:#010x} - {msg_id_name}: {msg_text}"
-            );
+            log::log!(level, "{message_type:?} {msg_id_number:#010x} - {msg_id_name}: {msg_text}");
         } else {
             log::log!(level, "{message_type:?} {msg_id_name}: {msg_text}");
         }
@@ -144,14 +125,8 @@ impl Instance {
         vk::FALSE
     }
 
-    pub fn new(
-        entry: &ash::Entry,
-        instance_exts: &[*const i8],
-        with_validation_layer: bool,
-        with_gpuav: bool,
-    ) -> SrResult<Self> {
-        let application_info =
-            vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 4, 0));
+    pub fn new(entry: &ash::Entry, instance_exts: &[*const i8], with_validation_layer: bool, with_gpuav: bool) -> SrResult<Self> {
+        let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 4, 0));
 
         let (enable_validation_layer, layer_names) = {
             let enable_validation_layer = if with_validation_layer {
@@ -159,9 +134,7 @@ impl Instance {
                     log::info!("Validation layer enabled");
                     true
                 } else {
-                    log::warn!(
-                        "No validation layer support; continuing without validation layer..."
-                    );
+                    log::warn!("No validation layer support; continuing without validation layer...");
                     false
                 }
             } else {
@@ -178,18 +151,10 @@ impl Instance {
             (enable_validation_layer, layer_names)
         };
 
-        let supported_debug_extensions =
-            Self::filter_supported_exts(entry, None, &Self::DEBUG_EXTENSIONS)?;
+        let supported_debug_extensions = Self::filter_supported_exts(entry, None, &Self::DEBUG_EXTENSIONS)?;
         let enable_layer_settings = enable_validation_layer
-            && Self::filter_supported_exts(
-                entry,
-                Some(Self::VALIDATION_LAYER_NAME),
-                &[ext::layer_settings::NAME],
-            )?
-            .len()
-                > 0;
-        let enable_debug_utils =
-            enable_validation_layer && supported_debug_extensions.contains(&ext::debug_utils::NAME);
+            && Self::filter_supported_exts(entry, Some(Self::VALIDATION_LAYER_NAME), &[ext::layer_settings::NAME])?.len() > 0;
+        let enable_debug_utils = enable_validation_layer && supported_debug_extensions.contains(&ext::debug_utils::NAME);
 
         let instance_extensions = {
             if enable_validation_layer {
@@ -237,9 +202,7 @@ impl Instance {
             use vk::DebugUtilsMessageTypeFlagsEXT as MsgType;
             Some(
                 vk::DebugUtilsMessengerCreateInfoEXT::default()
-                    .message_severity(
-                        Severity::VERBOSE | Severity::INFO | Severity::WARNING | Severity::ERROR,
-                    )
+                    .message_severity(Severity::VERBOSE | Severity::INFO | Severity::WARNING | Severity::ERROR)
                     .message_type(MsgType::VALIDATION | MsgType::GENERAL | MsgType::PERFORMANCE)
                     .pfn_user_callback(Some(Self::debug_utils_callback)),
             )
@@ -269,10 +232,7 @@ impl Instance {
         let (debug_utils_instance, debug_messenger) = if enable_debug_utils {
             let debug_utils_instance = ext::debug_utils::Instance::new(&entry, &instance);
             let debug_messenger = unsafe {
-                debug_utils_instance.create_debug_utils_messenger(
-                    debug_messenger_create_info.as_ref().unwrap(),
-                    None,
-                )
+                debug_utils_instance.create_debug_utils_messenger(debug_messenger_create_info.as_ref().unwrap(), None)
             }?;
 
             (Some(debug_utils_instance), Some(debug_messenger))

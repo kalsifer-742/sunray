@@ -15,10 +15,7 @@ pub struct TLAS {
 }
 
 impl TLAS {
-    pub fn new(
-        core: Rc<vulkan_abstraction::Core>,
-        blas_instances: &[vulkan_abstraction::BlasInstance],
-    ) -> SrResult<Self> {
+    pub fn new(core: Rc<vulkan_abstraction::Core>, blas_instances: &[vulkan_abstraction::BlasInstance]) -> SrResult<Self> {
         let instances_buffer = Self::make_instances_buffer(Rc::clone(&core), blas_instances)?;
 
         let geometry = Self::make_geometry(&instances_buffer);
@@ -49,8 +46,7 @@ impl TLAS {
     /// - switch one BLAS instance for another, possibly to switch LODs
     #[allow(unused)]
     pub fn update(&mut self, blas_instances: &[vulkan_abstraction::BlasInstance]) -> SrResult<()> {
-        let instances_buffer =
-            Self::make_instances_buffer(Rc::clone(self.tlas.core()), blas_instances)?;
+        let instances_buffer = Self::make_instances_buffer(Rc::clone(self.tlas.core()), blas_instances)?;
 
         let geometry = Self::make_geometry(&instances_buffer);
 
@@ -63,8 +59,7 @@ impl TLAS {
 
     #[allow(unused)]
     pub fn rebuild(&mut self, blas_instances: &[vulkan_abstraction::BlasInstance]) -> SrResult<()> {
-        let instances_buffer =
-            Self::make_instances_buffer(Rc::clone(self.tlas.core()), blas_instances)?;
+        let instances_buffer = Self::make_instances_buffer(Rc::clone(self.tlas.core()), blas_instances)?;
 
         let geometry = Self::make_geometry(&instances_buffer);
 
@@ -107,17 +102,14 @@ impl TLAS {
             core,
             &blas_instances,
             gpu_allocator::MemoryLocation::GpuOnly,
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             "TLAS instances buffer",
         )?;
 
         Ok(instances_buffer)
     }
 
-    fn make_geometry(
-        instances_buffer: &vulkan_abstraction::Buffer,
-    ) -> vk::AccelerationStructureGeometryKHR<'_> {
+    fn make_geometry(instances_buffer: &vulkan_abstraction::Buffer) -> vk::AccelerationStructureGeometryKHR<'_> {
         vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::INSTANCES)
             .flags(vk::GeometryFlagsKHR::OPAQUE)

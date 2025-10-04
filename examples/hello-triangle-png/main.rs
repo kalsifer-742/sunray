@@ -12,8 +12,7 @@ fn get_vk_format(image_format: ExtendedColorType) -> vk::Format {
 }
 
 fn init_logging() {
-    log4rs::config::init_file("examples/log4rs.yaml", log4rs::config::Deserializers::new())
-        .unwrap();
+    log4rs::config::init_file("examples/log4rs.yaml", log4rs::config::Deserializers::new()).unwrap();
 
     if cfg!(debug_assertions) {
         //stdlib unfortunately completely pollutes trace log level, TODO somehow config stdlib/log to fix this?

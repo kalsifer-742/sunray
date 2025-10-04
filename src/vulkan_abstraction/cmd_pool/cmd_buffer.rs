@@ -18,19 +18,13 @@ pub fn new_command_buffer_vec_secondary(
 ) -> SrResult<Vec<vk::CommandBuffer>> {
     new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::SECONDARY, len)
 }
-pub fn new_command_buffer(
-    cmd_pool: &vulkan_abstraction::CmdPool,
-    device: &ash::Device,
-) -> SrResult<vk::CommandBuffer> {
+pub fn new_command_buffer(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::Device) -> SrResult<vk::CommandBuffer> {
     let v = new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::PRIMARY, 1)?;
     v.into_iter()
         .next()
         .ok_or_else(|| SrError::new(None, String::from("Error in new_command_buffer")))
 }
-pub fn new_command_buffer_secondary(
-    cmd_pool: &vulkan_abstraction::CmdPool,
-    device: &ash::Device,
-) -> SrResult<vk::CommandBuffer> {
+pub fn new_command_buffer_secondary(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::Device) -> SrResult<vk::CommandBuffer> {
     let v = new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::SECONDARY, 1)?;
     v.into_iter()
         .next()
@@ -62,16 +56,9 @@ pub struct CmdBuffer {
 
 impl CmdBuffer {
     pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
-        let handle = vulkan_abstraction::cmd_buffer::new_command_buffer(
-            core.cmd_pool(),
-            core.device().inner(),
-        )?;
+        let handle = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
         let fence = vulkan_abstraction::Fence::new_signaled(Rc::clone(core.device()))?;
-        Ok(Self {
-            core,
-            handle,
-            fence,
-        })
+        Ok(Self { core, handle, fence })
     }
     pub fn inner(&self) -> vk::CommandBuffer {
         self.handle

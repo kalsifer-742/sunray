@@ -15,10 +15,7 @@ pub struct CmdPool {
 }
 
 impl CmdPool {
-    pub fn new(
-        device: Rc<vulkan_abstraction::Device>,
-        flags: vk::CommandPoolCreateFlags,
-    ) -> SrResult<Self> {
+    pub fn new(device: Rc<vulkan_abstraction::Device>, flags: vk::CommandPoolCreateFlags) -> SrResult<Self> {
         let info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(device.queue_family_index())
             .flags(flags);
@@ -34,11 +31,7 @@ impl CmdPool {
 }
 impl Drop for CmdPool {
     fn drop(&mut self) {
-        unsafe {
-            self.device
-                .inner()
-                .destroy_command_pool(self.cmd_pool, None)
-        };
+        unsafe { self.device.inner().destroy_command_pool(self.cmd_pool, None) };
     }
 }
 impl Deref for CmdPool {

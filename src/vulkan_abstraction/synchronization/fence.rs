@@ -25,10 +25,7 @@ impl Fence {
     pub fn new_unsignaled(device: Rc<vulkan_abstraction::Device>) -> SrResult<Self> {
         Self::new(device, vk::FenceCreateFlags::empty())
     }
-    pub fn new(
-        device: Rc<vulkan_abstraction::Device>,
-        flags: vk::FenceCreateFlags,
-    ) -> SrResult<Self> {
+    pub fn new(device: Rc<vulkan_abstraction::Device>, flags: vk::FenceCreateFlags) -> SrResult<Self> {
         let fence_info = vk::FenceCreateInfo::default().flags(flags);
 
         let handle = unsafe { device.inner().create_fence(&fence_info, None) }?;

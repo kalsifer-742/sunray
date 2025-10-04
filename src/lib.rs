@@ -57,12 +57,7 @@ impl Renderer {
         instance_exts: &'static [*const i8],
         create_surface: &CreateSurfaceFn,
     ) -> SrResult<(Self, vk::SurfaceKHR)> {
-        let (r, s) = Self::new_impl(
-            image_extent,
-            image_format,
-            instance_exts,
-            Some(create_surface),
-        )?;
+        let (r, s) = Self::new_impl(image_extent, image_format, instance_exts, Some(create_surface))?;
         return Ok((r, s.unwrap()));
     }
 
@@ -72,11 +67,8 @@ impl Renderer {
         instance_exts: &'static [*const i8],
         create_surface: Option<&CreateSurfaceFn>,
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
-        let with_validation_layer =
-            env_var_as_bool(ENABLE_VALIDATION_LAYER_ENV_VAR)
-                .unwrap_or(IS_DEBUG_BUILD);
-        let with_gpuav =
-            env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
+        let with_validation_layer = env_var_as_bool(ENABLE_VALIDATION_LAYER_ENV_VAR).unwrap_or(IS_DEBUG_BUILD);
+        let with_gpuav = env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
         let (core, surface) = vulkan_abstraction::Core::new_with_surface(
             with_validation_layer,
             with_gpuav,
@@ -92,20 +84,17 @@ impl Renderer {
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[])?;
 
         //must be filled by loading a scene
-        let shader_data_buffers =
-            vulkan_abstraction::ShaderDataBuffers::new_empty(Rc::clone(&core))?;
+        let shader_data_buffers = vulkan_abstraction::ShaderDataBuffers::new_empty(Rc::clone(&core))?;
 
         let descriptor_set_layout = vulkan_abstraction::DescriptorSetLayout::new(Rc::clone(&core))?;
 
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
             Rc::clone(&core),
             &descriptor_set_layout,
-            env_var_as_bool(ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR)
-                .unwrap_or(IS_DEBUG_BUILD),
+            env_var_as_bool(ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR).unwrap_or(IS_DEBUG_BUILD),
         )?;
 
-        let shader_binding_table =
-            vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
+        let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
 
         let image_dependant_data = HashMap::new();
 
@@ -114,11 +103,7 @@ impl Renderer {
             let image_data = utils::iterate_image_extent(RESOLUTION, RESOLUTION)
                 .map(|(x, y)| {
                     // black/fucsia checkboard pattern
-                    if (x + y).is_multiple_of(2) {
-                        0xff000000
-                    } else {
-                        0xffff00ff
-                    }
+                    if (x + y).is_multiple_of(2) { 0xff000000 } else { 0xffff00ff }
                 })
                 .collect::<Vec<u32>>();
 
@@ -202,8 +187,8 @@ impl Renderer {
 
             // record raytracing
             {
-                let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE);
+                let cmd_buf_begin_info =
+                    vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE);
 
                 unsafe {
                     self.core
@@ -222,18 +207,13 @@ impl Renderer {
                     raytrace_result_image.extent(),
                 )?;
 
-                unsafe {
-                    self.core
-                        .device()
-                        .inner()
-                        .end_command_buffer(raytracing_cmd_buf.inner())
-                }?;
+                unsafe { self.core.device().inner().end_command_buffer(raytracing_cmd_buf.inner()) }?;
             }
 
             //record blit
             {
-                let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE);
+                let cmd_buf_begin_info =
+                    vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE);
                 unsafe {
                     self.core
                         .device()
@@ -250,12 +230,7 @@ impl Renderer {
                     raytrace_result_image.image_subresource_range(),
                 )?;
 
-                unsafe {
-                    self.core
-                        .device()
-                        .inner()
-                        .end_command_buffer(blit_cmd_buf.inner())
-                }?;
+                unsafe { self.core.device().inner().end_command_buffer(blit_cmd_buf.inner()) }?;
             }
 
             self.image_dependant_data.insert(
@@ -274,8 +249,7 @@ impl Renderer {
 
     pub fn load_gltf(&mut self, path: &str) -> SrResult<()> {
         let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
-        let (default_scene_index, scenes, _textures, _images, _samplers, mut scenes_data) =
-            gltf.create_scenes()?;
+        let (default_scene_index, scenes, _textures, _images, _samplers, mut scenes_data) = gltf.create_scenes()?;
         let scene_data = scenes_data.get_mut(default_scene_index).unwrap();
         let default_scene = scenes.get(default_scene_index).unwrap();
 
@@ -283,21 +257,13 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn load_scene(
-        &mut self,
-        scene: &Scene,
-        scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap,
-    ) -> SrResult<()> {
+    pub fn load_scene(&mut self, scene: &Scene, scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap) -> SrResult<()> {
         let mut materials = Vec::new();
         let blas_instances = scene.load(&self.core, &mut self.blases, &mut materials, scene_data)?;
         self.tlas.rebuild(&blas_instances)?;
         let textures = [];
-        self.shader_data_buffers.update(
-            &blas_instances,
-            &materials,
-            &textures,
-            &self.fallback_texture_image,
-        )?;
+        self.shader_data_buffers
+            .update(&blas_instances, &materials, &textures, &self.fallback_texture_image)?;
 
         self.clear_image_dependent_data();
 
@@ -305,18 +271,13 @@ impl Renderer {
     }
 
     pub fn set_camera(&mut self, camera: crate::Camera) -> SrResult<()> {
-        self.shader_data_buffers
-            .set_matrices(camera.as_matrices(self.image_extent))
+        self.shader_data_buffers.set_matrices(camera.as_matrices(self.image_extent))
     }
 
     /// Render to dst_image. the user may also pass a Semaphore which the user should signal when the image is
     /// ready to be written to (for example after being acquired from a swapchain) and a Fence will be returned
     /// that will be signaled when the rendering is finished (which can be used to know when the Semaphore has no pending operations left).
-    pub fn render_to_image(
-        &mut self,
-        dst_image: vk::Image,
-        wait_sem: vk::Semaphore,
-    ) -> SrResult<vk::Fence> {
+    pub fn render_to_image(&mut self, dst_image: vk::Image, wait_sem: vk::Semaphore) -> SrResult<vk::Fence> {
         if !self.image_dependant_data.contains_key(&dst_image) {
             self.build_image_dependent_data(&[dst_image])?; // gracefully handle cache misses
         }
@@ -397,14 +358,10 @@ impl Renderer {
                 vk::AccessFlags::empty(),      //no writes to flush out
                 vk::AccessFlags::SHADER_WRITE, //maybe also shader read is needed
                 vk::ImageLayout::UNDEFINED,    //input is garbage
-                vk::ImageLayout::GENERAL, //great for flexibility, and it should have good performance in all cases
+                vk::ImageLayout::GENERAL,      //great for flexibility, and it should have good performance in all cases
             );
 
-            device.cmd_bind_pipeline(
-                cmd_buf,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                rt_pipeline.inner(),
-            );
+            device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::RAY_TRACING_KHR, rt_pipeline.inner());
             device.cmd_bind_descriptor_sets(
                 cmd_buf,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
@@ -416,9 +373,7 @@ impl Renderer {
             device.cmd_push_constants(
                 cmd_buf,
                 rt_pipeline.layout(),
-                vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                    | vk::ShaderStageFlags::MISS_KHR,
+                vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::MISS_KHR,
                 0,
                 &std::mem::transmute::<
                     vulkan_abstraction::PushConstant,

@@ -12,11 +12,7 @@ pub struct Queue {
 }
 impl Queue {
     pub fn new(device: Rc<vulkan_abstraction::Device>, q_index: u32) -> SrResult<Self> {
-        let queue = unsafe {
-            device
-                .inner()
-                .get_device_queue(device.queue_family_index(), q_index)
-        };
+        let queue = unsafe { device.inner().get_device_queue(device.queue_family_index(), q_index) };
 
         Ok(Self { queue, device })
     }
@@ -36,7 +32,10 @@ impl Queue {
     ) -> SrResult<()> {
         // NOTE: consider using VkQueueSubmit2 from the extension VK_KHR_synchronization2 which adds more dst stages (VkPipelineStageFlags2) like BLIT
         if cfg!(debug_assertions) && wait_semaphores.len() != wait_dst_stages.len() {
-            return Err(SrError::new(None, "Incorrect parameters to Queue::submit_async: wait_semaphores.len() != wait_dst_stages.len()".to_string()));
+            return Err(SrError::new(
+                None,
+                "Incorrect parameters to Queue::submit_async: wait_semaphores.len() != wait_dst_stages.len()".to_string(),
+            ));
         }
 
         let command_buffers = [command_buffer];
@@ -46,11 +45,7 @@ impl Queue {
             .command_buffers(&command_buffers)
             .signal_semaphores(signal_semaphores);
 
-        unsafe {
-            self.device
-                .inner()
-                .queue_submit(self.queue, &[submit_info], signal_fence)
-        }?;
+        unsafe { self.device.inner().queue_submit(self.queue, &[submit_info], signal_fence) }?;
 
         Ok(())
     }
@@ -65,11 +60,7 @@ impl Queue {
 
         let mut fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(&self.device))?;
 
-        unsafe {
-            self.device
-                .inner()
-                .queue_submit(self.queue, &[submit_info], fence.submit()?)
-        }?;
+        unsafe { self.device.inner().queue_submit(self.queue, &[submit_info], fence.submit()?) }?;
         fence.wait()?;
 
         Ok(())

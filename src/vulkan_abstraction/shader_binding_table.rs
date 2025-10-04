@@ -18,27 +18,15 @@ pub struct ShaderBindingTable {
 }
 
 impl ShaderBindingTable {
-    pub fn new(
-        core: &Rc<vulkan_abstraction::Core>,
-        rt_pipeline: &vulkan_abstraction::RayTracingPipeline,
-    ) -> SrResult<Self> {
+    pub fn new(core: &Rc<vulkan_abstraction::Core>, rt_pipeline: &vulkan_abstraction::RayTracingPipeline) -> SrResult<Self> {
         const RAYGEN_COUNT: u32 = 1; //There is always one and only one raygen
         let miss_count = 1; // TODO: be more flexible and allow the user to provide more than 1 hit/miss shader
         let hit_count = 1;
         let handle_count = RAYGEN_COUNT + miss_count + hit_count;
 
-        let handle_size: usize = core
-            .device()
-            .rt_pipeline_properties()
-            .shader_group_handle_size as usize;
-        let handle_alignment = core
-            .device()
-            .rt_pipeline_properties()
-            .shader_group_handle_alignment;
-        let base_alignment = core
-            .device()
-            .rt_pipeline_properties()
-            .shader_group_base_alignment;
+        let handle_size: usize = core.device().rt_pipeline_properties().shader_group_handle_size as usize;
+        let handle_alignment = core.device().rt_pipeline_properties().shader_group_handle_alignment;
+        let base_alignment = core.device().rt_pipeline_properties().shader_group_base_alignment;
         let handle_size_aligned = aligned_size(handle_size as u32, handle_alignment);
 
         let raygen_size = aligned_size(RAYGEN_COUNT * handle_size_aligned, base_alignment);
@@ -61,18 +49,11 @@ impl ShaderBindingTable {
         // get the shader handles
         let handles = unsafe {
             core.rt_pipeline_device()
-                .get_ray_tracing_shader_group_handles(
-                    rt_pipeline.inner(),
-                    0,
-                    handle_count,
-                    data_size,
-                )
+                .get_ray_tracing_shader_group_handles(rt_pipeline.inner(), 0, handle_count, data_size)
         }?;
 
         // Allocate a buffer for storing the SBT.
-        let sbt_buffer_size =
-            (raygen_region.size + miss_region.size + hit_region.size + callable_region.size)
-                as usize;
+        let sbt_buffer_size = (raygen_region.size + miss_region.size + hit_region.size + callable_region.size) as usize;
         let mut sbt_buffer = vulkan_abstraction::Buffer::new::<u8>(
             Rc::clone(core),
             sbt_buffer_size,
@@ -115,8 +96,7 @@ impl ShaderBindingTable {
         let sbt_buffer_device_address = sbt_buffer.get_device_address();
         raygen_region.device_address = sbt_buffer_device_address;
         miss_region.device_address = sbt_buffer_device_address + raygen_region.size;
-        hit_region.device_address =
-            sbt_buffer_device_address + raygen_region.size + miss_region.size;
+        hit_region.device_address = sbt_buffer_device_address + raygen_region.size + miss_region.size;
 
         Ok(Self {
             sbt_buffer,
