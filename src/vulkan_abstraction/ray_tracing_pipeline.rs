@@ -46,9 +46,10 @@ macro_rules! compile_shader {
 }
 
 #[allow(dead_code)] // read by the gpu
-// for now push constants are never used, but it is enough to specify a value in this struct, to instantiate it in lib.rs and to add in the shader a uniform block with "layout(push_constant)" for it to work
+#[repr(C, packed)]
 pub struct PushConstant {
-    pub clear_color: [f32; 4],
+    pub use_srgb: bool,
+    pub _padding: [u8; 3], //push constant size must be a multiple of 4
 }
 
 pub struct RayTracingPipeline {

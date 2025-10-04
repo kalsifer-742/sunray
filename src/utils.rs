@@ -24,7 +24,7 @@ pub(crate) fn realign_data(bytes: &[u8], starting_alignment: usize, target_align
     let mut i = 0;
     let mut ret = Vec::new();
 
-    while bytes.len() >= (i+1) * starting_alignment {
+    while bytes.len() >= (i + 1) * starting_alignment {
         for j in 0..starting_alignment.min(target_alignment) {
             ret.push(bytes[i * starting_alignment + j]);
         }

@@ -62,7 +62,7 @@ impl App {
 
         // build sunray renderer and surface
         let (mut renderer, surface) =
-            sunray::Renderer::new_with_surface(size, vk::Format::R8G8B8A8_UNORM, instance_exts, &create_surface)?;
+            sunray::Renderer::new_with_surface(size, vk::Format::R8G8B8A8_SRGB, instance_exts, &create_surface)?;
 
         renderer.load_gltf("examples/assets/Lantern.glb")?;
 
@@ -262,10 +262,11 @@ impl App {
         let time = self.time_elapsed();
         let y = 13.0;
         let dist = 30.0;
-        let position = na::Point3::new(dist * time.cos(), y, dist * time.sin());
-        let target = na::Point3::new(0.0, y, 0.0);
-        let fov_y = 45.0;
-        self.res_mut().renderer.set_camera(Camera::new(position, target, fov_y)?)?;
+        let camera = Camera::default()
+            .set_position(na::Point3::new(dist * time.cos(), y, dist * time.sin()))
+            .set_target(na::Point3::new(0.0, y, 0.0))
+            .set_fov_y(45.0);
+        self.res_mut().renderer.set_camera(camera)?;
 
         let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
 

@@ -198,7 +198,7 @@ impl Renderer {
             let raytrace_result_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
-                self.image_format,
+                vk::Format::R8G8B8A8_UNORM,
                 vk::ImageTiling::OPTIMAL,
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
@@ -228,12 +228,9 @@ impl Renderer {
                         .begin_command_buffer(raytracing_cmd_buf.inner(), &cmd_buf_begin_info)
                 }?;
 
-                Self::cmd_raytracing_render(
-                    &self.core,
+                self.cmd_raytracing_render(
                     raytracing_cmd_buf.inner(),
-                    &self.ray_tracing_pipeline,
                     &descriptor_sets,
-                    &self.shader_binding_table,
                     raytrace_result_image.inner(),
                     raytrace_result_image.extent(),
                 )?;
@@ -289,7 +286,6 @@ impl Renderer {
     pub fn load_scene(&mut self, scene: &crate::Scene, scene_data: crate::SceneData) -> SrResult<()> {
         let (blas_instances, materials, textures, samplers, images) =
             scene.load_into_gpu(&self.core, &mut self.blases, scene_data)?;
-
 
         let fallback_texture = vulkan_abstraction::Texture(&self.fallback_texture_image, &self.fallback_texture_sampler);
         self.tlas.rebuild(&blas_instances)?;
@@ -375,23 +371,22 @@ impl Renderer {
     }
 
     fn cmd_raytracing_render(
-        core: &vulkan_abstraction::Core,
+        &self,
         cmd_buf: vk::CommandBuffer,
-        rt_pipeline: &vulkan_abstraction::RayTracingPipeline,
         descriptor_sets: &vulkan_abstraction::DescriptorSets,
-        shader_binding_table: &vulkan_abstraction::ShaderBindingTable,
         image: vk::Image,
         extent: vk::Extent3D,
     ) -> SrResult<()> {
-        let device = core.device().inner();
+        let device = self.core.device().inner();
         // Initializing push constant values
         let push_constants = vulkan_abstraction::PushConstant {
-            clear_color: [1.0, 0.0, 0.0, 1.0],
+            use_srgb: self.image_format == vk::Format::R8G8B8A8_SRGB,
+            _padding: [0; 3],
         };
 
         unsafe {
             vulkan_abstraction::cmd_image_memory_barrier(
-                core,
+                &self.core,
                 cmd_buf,
                 image,
                 vk::PipelineStageFlags::TOP_OF_PIPE, //wait nothing
@@ -402,18 +397,22 @@ impl Renderer {
                 vk::ImageLayout::GENERAL,      //great for flexibility, and it should have good performance in all cases
             );
 
-            device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::RAY_TRACING_KHR, rt_pipeline.inner());
+            device.cmd_bind_pipeline(
+                cmd_buf,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.ray_tracing_pipeline.inner(),
+            );
             device.cmd_bind_descriptor_sets(
                 cmd_buf,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
-                rt_pipeline.layout(),
+                self.ray_tracing_pipeline.layout(),
                 0,
                 descriptor_sets.inner(),
                 &[],
             );
             device.cmd_push_constants(
                 cmd_buf,
-                rt_pipeline.layout(),
+                self.ray_tracing_pipeline.layout(),
                 vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::MISS_KHR,
                 0,
                 &std::mem::transmute::<
@@ -421,12 +420,12 @@ impl Renderer {
                     [u8; std::mem::size_of::<vulkan_abstraction::PushConstant>()],
                 >(push_constants), //TODO: comment this transmute
             );
-            core.rt_pipeline_device().cmd_trace_rays(
+            self.core.rt_pipeline_device().cmd_trace_rays(
                 cmd_buf,
-                shader_binding_table.raygen_region(),
-                shader_binding_table.miss_region(),
-                shader_binding_table.hit_region(),
-                shader_binding_table.callable_region(),
+                self.shader_binding_table.raygen_region(),
+                self.shader_binding_table.miss_region(),
+                self.shader_binding_table.hit_region(),
+                self.shader_binding_table.callable_region(),
                 extent.width,
                 extent.height,
                 extent.depth, //for now it's one because of the Extent2D.into()

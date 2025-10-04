@@ -51,7 +51,7 @@ fn render_and_save() -> SrResult<()> {
     let camera = Camera::default()
         .set_position(na::Point3::new(13.0, 13.0, 25.0))
         .set_target(na::Point3::new(0.0, 13.0, 0.0))
-        .set_fov(45.0);
+        .set_fov_y(45.0);
     renderer.set_camera(camera)?;
 
     let image_buf = renderer.render_to_host_memory().unwrap();

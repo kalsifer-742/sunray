@@ -1,4 +1,3 @@
-use crate::error::SrResult;
 use nalgebra as na;
 
 pub struct Camera {
@@ -23,8 +22,8 @@ pub(crate) struct CameraMatrices {
 }
 
 impl Camera {
-    pub fn new(position: na::Point3<f32>, target: na::Point3<f32>, fov_y: f32) -> SrResult<Self> {
-        Ok(Self { position, target, fov_y })
+    pub fn new(position: na::Point3<f32>, target: na::Point3<f32>, fov_y: f32) -> Self {
+        Self { position, target, fov_y }
     }
 
     pub(crate) fn as_matrices(&self, extent: ash::vk::Extent3D) -> CameraMatrices {
@@ -75,7 +74,7 @@ impl Camera {
         self
     }
 
-    pub fn set_fov(mut self, fov: f32) -> Self {
+    pub fn set_fov_y(mut self, fov: f32) -> Self {
         self.fov_y = fov;
 
         self

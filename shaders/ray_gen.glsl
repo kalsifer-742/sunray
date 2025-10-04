@@ -12,6 +12,15 @@ struct ray_payload_t {
 };
 layout(location = 0) rayPayloadEXT ray_payload_t prd;
 
+layout(push_constant) uniform push_constant_t {
+    bool use_srgb;
+};
+
+float remove_srgb_curve(float x) {
+    // source: https://github.com/Microsoft/DirectX-Graphics-Samples/blob/master/MiniEngine/Core/Shaders/ColorSpaceUtility.hlsli
+    // Approximately pow(x, 2.2)
+    return x < 0.04045 ?  x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
+}
 
 void main() {
     const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5); //the coordinates are of the corner, +0.5 gets the pixel center
@@ -41,5 +50,8 @@ void main() {
         0                       // payload (location = 0)
     );
 
-    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(prd.color, 1.0));
+    vec3 color =
+        use_srgb ? vec3(remove_srgb_curve(prd.color.x), remove_srgb_curve(prd.color.y), remove_srgb_curve(prd.color.z))
+        : prd.color;
+    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(color, 1.0));
 }
