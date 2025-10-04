@@ -1,6 +1,9 @@
 use std::{collections::HashMap, rc::Rc};
 
-use crate::{error::SrResult, vulkan_abstraction};
+use crate::{
+    error::{ErrorSource, SrError, SrResult},
+    vulkan_abstraction,
+};
 
 use nalgebra as na;
 
@@ -61,20 +64,25 @@ impl Gltf {
         })
     }
 
-    pub fn create_scenes(
-        &self,
-    ) -> SrResult<(
-        usize,
-        Vec<crate::Scene>,
-        Vec<vulkan_abstraction::gltf::Texture>,
-        Vec<vulkan_abstraction::gltf::Image>,
-        Vec<vulkan_abstraction::gltf::Sampler>,
-        Vec<PrimitiveDataMap>,
-    )> {
+    pub fn create_default_scene(&self) -> SrResult<(crate::Scene, crate::SceneData)> {
         // find the defualt scene index
         let default_scene_index = match self.document.default_scene() {
             Some(s) => s.index(),
             None => 0,
+        };
+
+        self.create_scene(default_scene_index)
+    }
+
+    pub fn create_scene(&self, scene_index: usize) -> SrResult<(crate::Scene, crate::SceneData)> {
+        let gltf_scene = match self.document.scenes().enumerate().find(|(index, _)| *index == scene_index) {
+            Some((_, scene)) => scene,
+            None => {
+                return Err(SrError::new(
+                    Some(ErrorSource::CUSTOM("scene creation from gltf".to_string())),
+                    format!("No scene with index: {} found", scene_index),
+                ));
+            }
         };
 
         let samplers = self
@@ -108,36 +116,40 @@ impl Gltf {
             })
             .collect::<Vec<_>>();
 
-        let mut scenes = vec![];
-        let mut primitive_data_maps = vec![];
-        // load all scenes by default
-        for gltf_scene in self.document.scenes() {
-            let mut nodes = vec![];
-            let mut primitive_data_map: PrimitiveDataMap = PrimitiveDataMap::new();
-            for gltf_node in gltf_scene.nodes() {
-                let node = self.explore(&gltf_node, &mut primitive_data_map)?;
-                nodes.push(node);
-            }
-            scenes.push(crate::Scene::new(nodes)?);
-            primitive_data_maps.push(primitive_data_map);
+        let mut nodes: Vec<Node> = vec![];
+        let mut primitive_data_map: PrimitiveDataMap = PrimitiveDataMap::new();
+        for gltf_node in gltf_scene.nodes() {
+            // the root nodes do not have a parent transform to apply
+            let transform = na::Matrix4::identity();
+            let node = self.explore(&gltf_node, transform, &mut primitive_data_map)?;
+            nodes.push(node);
         }
 
-        Ok((default_scene_index, scenes, textures, images, samplers, primitive_data_maps))
+        let scene = crate::Scene::new(nodes)?;
+        let scene_data = crate::SceneData {
+            textures,
+            images,
+            samplers,
+            primitive_data_map,
+        };
+
+        Ok((scene, scene_data))
     }
 
     fn explore(
         &self,
         gltf_node: &gltf::Node,
+        parent_transform: na::Matrix4<f32>,
         primitive_data_map: &mut PrimitiveDataMap,
     ) -> SrResult<vulkan_abstraction::gltf::Node> {
-        let (transform, mesh) = self.process_node(gltf_node, primitive_data_map)?;
+        let (transform, mesh) = self.process_node(gltf_node, parent_transform, primitive_data_map)?;
 
         let children = if gltf_node.children().len() == 0 {
             None
         } else {
             let mut children = vec![];
             for gltf_child in gltf_node.children() {
-                let child = self.explore(&gltf_child, primitive_data_map)?;
+                let child = self.explore(&gltf_child, transform, primitive_data_map)?;
                 children.push(child);
             }
 
@@ -150,12 +162,13 @@ impl Gltf {
     fn process_node(
         &self,
         gltf_node: &gltf::Node,
+        parent_transform: na::Matrix4<f32>,
         primitive_data_map: &mut PrimitiveDataMap,
     ) -> SrResult<(na::Matrix4<f32>, Option<vulkan_abstraction::gltf::Mesh>)> {
         // the trasnform can also be given decomposed in: translation, rotation and scale
         // but the gltf crate takes care of this:
         // "If the transform is Decomposed, then the matrix is generated with the equation matrix = translation * rotation * scale."
-        let transform = na::Matrix4::from(gltf_node.transform().matrix());
+        let transform = parent_transform * na::Matrix4::from(gltf_node.transform().matrix());
         let mut mesh = None;
 
         // TODO: this code does not manage multiple nodes pointing to the same meshes

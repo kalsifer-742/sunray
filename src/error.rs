@@ -8,6 +8,7 @@ pub enum ErrorSource {
     VULKAN(vk::Result),
     GLTF(gltf::Error),
     ALLOCATOR(gpu_allocator::AllocationError),
+    CUSTOM(String),
 }
 
 #[derive(Debug)]
@@ -74,6 +75,7 @@ impl Display for ErrorSource {
             ErrorSource::VULKAN(e) => e.fmt(f),
             ErrorSource::GLTF(e) => e.fmt(f),
             ErrorSource::ALLOCATOR(e) => e.fmt(f),
+            ErrorSource::CUSTOM(e) => e.fmt(f),
         }
     }
 }

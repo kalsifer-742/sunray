@@ -7,5 +7,8 @@ pub struct Sampler {
 
 pub struct Texture {
     pub sampler: Option<usize>,
-    pub source: usize, // this is technically not required by the spec
+    /// The image index
+    ///
+    /// (technically it is not required by the spec)
+    pub source: usize,
 }

@@ -1,12 +1,3 @@
-// type Color = [f32; 4];
-
-// type PbrVvalues = (Color, f32, f32);
-
-// pub enum PbrMetallicRoughnessProperties {
-//     Values(PbrVvalues),
-//     Textures(usize, usize),
-// }
-
 #[derive(Clone)]
 pub struct PbrMetallicRoughnessProperties {
     pub base_color_factor: [f32; 4],

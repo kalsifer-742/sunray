@@ -131,6 +131,7 @@ impl Renderer {
             vk::SamplerAddressMode::REPEAT,
             vk::SamplerAddressMode::REPEAT,
             vk::SamplerAddressMode::REPEAT,
+            vk::SamplerMipmapMode::LINEAR,
         )?;
 
         let default_sampler = vulkan_abstraction::Sampler::new(
@@ -140,6 +141,7 @@ impl Renderer {
             vk::SamplerAddressMode::REPEAT,
             vk::SamplerAddressMode::REPEAT,
             vk::SamplerAddressMode::REPEAT,
+            vk::SamplerMipmapMode::LINEAR,
         )?;
 
         Ok((
@@ -268,23 +270,18 @@ impl Renderer {
 
     pub fn load_gltf(&mut self, path: &str) -> SrResult<()> {
         let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
-        let (default_scene_index, scenes, _textures, _images, _samplers, mut scenes_data) = gltf.create_scenes()?;
-        let scene_data = scenes_data.get_mut(default_scene_index).unwrap();
-        let default_scene = scenes.get(default_scene_index).unwrap();
+        let (default_scene, scene_data) = gltf.create_default_scene()?;
 
-        self.load_scene(default_scene, scene_data)?;
+        self.load_scene(&default_scene, scene_data)?;
         Ok(())
     }
 
-    pub fn load_scene(&mut self, scene: &Scene, scene_data: &mut vulkan_abstraction::gltf::PrimitiveDataMap) -> SrResult<()> {
-        let mut materials = Vec::new();
-        let blas_instances = scene.load(&self.core, &mut self.blases, &mut materials, scene_data)?;
-        self.tlas.rebuild(&blas_instances)?;
-        let textures = [];
-        let images = [];
-        let samplers = [];
-        let fallback_texture = vulkan_abstraction::Texture(&self.fallback_texture_image, &self.fallback_texture_sampler);
+    pub fn load_scene(&mut self, scene: &crate::Scene, scene_data: crate::SceneData) -> SrResult<()> {
+        let (blas_instances, materials, textures, samplers, images) =
+            scene.load_into_gpu(&self.core, &mut self.blases, scene_data)?;
 
+        let fallback_texture = vulkan_abstraction::Texture(&self.fallback_texture_image, &self.fallback_texture_sampler);
+        self.tlas.rebuild(&blas_instances)?;
         self.shader_data_buffers.update(
             &blas_instances,
             &materials,

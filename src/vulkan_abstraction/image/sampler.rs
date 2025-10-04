@@ -17,6 +17,7 @@ impl Sampler {
         address_mode_u: vk::SamplerAddressMode,
         address_mode_v: vk::SamplerAddressMode,
         address_mode_w: vk::SamplerAddressMode,
+        mipmap_mode: vk::SamplerMipmapMode,
     ) -> SrResult<Self> {
         let create_info = vk::SamplerCreateInfo::default()
             .flags(vk::SamplerCreateFlags::empty())
@@ -37,7 +38,7 @@ impl Sampler {
             .compare_enable(false)
             .compare_op(vk::CompareOp::ALWAYS)
             // mipmapping
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mipmap_mode(mipmap_mode)
             .mip_lod_bias(0.0)
             .min_lod(0.0)
             .max_lod(0.0);
