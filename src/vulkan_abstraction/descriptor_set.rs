@@ -224,7 +224,7 @@ impl DescriptorSets {
         })
     }
 
-    pub fn get_handles(&self) -> &[vk::DescriptorSet] {
+    pub fn inner(&self) -> &[vk::DescriptorSet] {
         &self.descriptor_sets
     }
 }

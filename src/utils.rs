@@ -1,4 +1,4 @@
-pub(crate) fn get_env_var_as_bool(name: &str) -> Option<bool> {
+pub(crate) fn env_var_as_bool(name: &str) -> Option<bool> {
     match std::env::var(name) {
         Ok(s) => match s.parse::<i32>() {
             Ok(v) => Some(v != 0),

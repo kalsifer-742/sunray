@@ -62,7 +62,7 @@ impl ShaderBindingTable {
         let handles = unsafe {
             core.rt_pipeline_device()
                 .get_ray_tracing_shader_group_handles(
-                    rt_pipeline.get_handle(),
+                    rt_pipeline.inner(),
                     0,
                     handle_count,
                     data_size,
@@ -126,16 +126,16 @@ impl ShaderBindingTable {
             callable_region,
         })
     }
-    pub fn get_raygen_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
+    pub fn raygen_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
         &self.raygen_region
     }
-    pub fn get_miss_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
+    pub fn miss_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
         &self.miss_region
     }
-    pub fn get_hit_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
+    pub fn hit_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
         &self.hit_region
     }
-    pub fn get_callable_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
+    pub fn callable_region(&self) -> &vk::StridedDeviceAddressRegionKHR {
         &self.callable_region
     }
 }

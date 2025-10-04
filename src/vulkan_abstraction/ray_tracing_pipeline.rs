@@ -204,10 +204,10 @@ impl RayTracingPipeline {
         })
     }
 
-    pub fn get_handle(&self) -> vk::Pipeline {
+    pub fn inner(&self) -> vk::Pipeline {
         self.pipeline
     }
-    pub fn get_layout(&self) -> vk::PipelineLayout {
+    pub fn layout(&self) -> vk::PipelineLayout {
         self.pipeline_layout
     }
 }

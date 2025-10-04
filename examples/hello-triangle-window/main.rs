@@ -51,16 +51,14 @@ impl App {
     fn build_resources(&mut self, size: (u32, u32)) -> SrResult<()> {
         self.resources = None;
 
-        let instance_exts = utils::enumerate_required_extensions(
-            self.window.as_ref().unwrap().raw_display_handle(),
-        )?;
-
         let display_handle = self.window.as_ref().unwrap().raw_display_handle().clone();
         let window_handle = self.window.as_ref().unwrap().raw_window_handle().clone();
-        let create_surface =
-            move |entry: &ash::Entry, instance: &ash::Instance| -> SrResult<vk::SurfaceKHR> {
-                crate::utils::create_surface(entry, instance, display_handle, window_handle, None)
-            };
+
+        let instance_exts = utils::enumerate_required_extensions(display_handle)?;
+
+        let create_surface = move |entry: &ash::Entry, instance: &ash::Instance| -> SrResult<vk::SurfaceKHR> {
+            crate::utils::create_surface(entry, instance, display_handle, window_handle, None)
+        };
 
         // build sunray renderer and surface
         let (mut renderer, surface) = sunray::Renderer::new_with_surface(
@@ -90,8 +88,7 @@ impl App {
                 let cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&core))?;
 
                 unsafe {
-                    let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::empty());
+                    let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default();
 
                     core.device()
                         .inner()
@@ -119,13 +116,10 @@ impl App {
         let img_acquired_sems = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(&core)))
             .collect::<Result<Vec<_>, _>>()?;
-        let img_rendered_fences = (0..MAX_FRAMES_IN_FLIGHT)
-            .map(|_| vk::Fence::null())
-            .collect::<Vec<_>>();
+        let img_rendered_fences = vec![vk::Fence::null(); MAX_FRAMES_IN_FLIGHT];
 
-        let ready_to_present_sems = swapchain
-            .images()
-            .iter()
+        let ready_to_present_sems =
+            swapchain.images().iter()
             .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(&core)))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -210,8 +204,7 @@ impl App {
                 let cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&core))?;
 
                 unsafe {
-                    let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::empty());
+                    let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default();
 
                     core.device()
                         .inner()
@@ -294,10 +287,11 @@ impl App {
         let y = 13.0;
         let dist = 30.0;
         let position = na::Point3::new(dist * time.cos(), y, dist * time.sin());
+        let target = na::Point3::new(0.0, y, 0.0);
         let fov_y = 45.0;
         self.res_mut().renderer.set_camera(Camera::new(
             position,
-            na::Point3::new(0.0, y, 0.0),
+            target,
             fov_y,
         )?)?;
 
@@ -306,15 +300,7 @@ impl App {
         //acquire next image
         let img_acquired_sem = self.res().img_acquired_sems[frame_index].inner();
         let img_rendered_fence = self.res().img_rendered_fences[frame_index];
-        if img_rendered_fence != vk::Fence::null() {
-            unsafe {
-                self.res().renderer.core().device().inner().wait_for_fences(
-                    &[img_rendered_fence],
-                    true,
-                    u64::MAX,
-                )
-            }?
-        }
+        vulkan_abstraction::wait_fence(self.res().renderer.core().device(), img_rendered_fence)?;
         let img_index = self.acquire_next_image(img_acquired_sem)?;
 
         let swapchain_image = self.res().swapchain.images()[img_index];

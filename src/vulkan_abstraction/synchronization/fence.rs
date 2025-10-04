@@ -5,6 +5,13 @@ use crate::{
 use ash::vk;
 use std::rc::Rc;
 
+pub fn wait_fence(device: &vulkan_abstraction::Device, fence: vk::Fence) -> SrResult<()> {
+    if fence != vk::Fence::null() {
+        unsafe { device.inner().wait_for_fences(&[fence], true, u64::MAX) }?;
+    }
+    Ok(())
+}
+
 pub struct Fence {
     device: Rc<vulkan_abstraction::Device>,
     handle: vk::Fence,
@@ -39,7 +46,6 @@ impl Fence {
         Ok(())
     }
     pub fn submit(&mut self) -> SrResult<vk::Fence> {
-
         self.wait()?;
         self.fence_waited = false;
         Ok(self.handle)
@@ -51,13 +57,8 @@ impl Fence {
     }
     pub fn wait(&mut self) -> SrResult<()> {
         if !self.fence_waited {
-            unsafe {
-                self.device
-                    .inner()
-                    .wait_for_fences(&[self.handle], true, u64::MAX)?;
-            }
+            wait_fence(&self.device, self.handle)?;
             self.fence_waited = true;
-
         }
 
         self.reset()?;

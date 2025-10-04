@@ -63,18 +63,14 @@ impl Queue {
             .command_buffers(&command_buffers)
             .signal_semaphores(&[]);
 
-        let fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(&self.device))?;
+        let mut fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(&self.device))?;
 
         unsafe {
             self.device
                 .inner()
-                .queue_submit(self.queue, &[submit_info], fence.inner())
+                .queue_submit(self.queue, &[submit_info], fence.submit()?)
         }?;
-        unsafe {
-            self.device
-                .inner()
-                .wait_for_fences(&[fence.inner()], true, u64::MAX)
-        }?;
+        fence.wait()?;
 
         Ok(())
     }

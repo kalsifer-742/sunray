@@ -12,6 +12,8 @@ use std::{collections::HashMap, rc::Rc};
 
 use ash::vk;
 
+use crate::utils::env_var_as_bool;
+
 struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
     pub blit_cmd_buf: vulkan_abstraction::CmdBuffer,
@@ -21,6 +23,8 @@ struct ImageDependentData {
     #[allow(unused)]
     descriptor_sets: vulkan_abstraction::DescriptorSets,
 }
+
+pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::SurfaceKHR>;
 
 pub struct Renderer {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
@@ -40,29 +44,7 @@ pub struct Renderer {
     core: Rc<vulkan_abstraction::Core>,
 }
 
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        match self.core().queue().wait_idle() {
-            Ok(()) => {}
-            Err(e) => match e.get_source() {
-                Some(ErrorSource::VULKAN(e)) => {
-                    log::warn!("VkQueueWaitIdle s returned {e:?} in sunray::Renderer::drop")
-                }
-                _ => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
-            },
-        }
-    }
-}
-
-pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::SurfaceKHR>;
-
 impl Renderer {
-    // useful environment variables, set to 1 or 0
-    const ENABLE_VALIDATION_LAYER_ENV_VAR: &'static str = "ENABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
-    const ENABLE_GPUAV_ENV_VAR_NAME: &'static str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled, defaults to 0
-    const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &'static str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
-    const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
-
     pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
         Ok(Self::new_impl(image_extent, image_format, &[], None)?.0)
     }
@@ -91,10 +73,10 @@ impl Renderer {
         create_surface: Option<&CreateSurfaceFn>,
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
         let with_validation_layer =
-            utils::get_env_var_as_bool(Self::ENABLE_VALIDATION_LAYER_ENV_VAR)
-                .unwrap_or(Self::IS_DEBUG_BUILD);
+            env_var_as_bool(ENABLE_VALIDATION_LAYER_ENV_VAR)
+                .unwrap_or(IS_DEBUG_BUILD);
         let with_gpuav =
-            utils::get_env_var_as_bool(Self::ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
+            env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
         let (core, surface) = vulkan_abstraction::Core::new_with_surface(
             with_validation_layer,
             with_gpuav,
@@ -118,8 +100,8 @@ impl Renderer {
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
             Rc::clone(&core),
             &descriptor_set_layout,
-            utils::get_env_var_as_bool(Self::ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR)
-                .unwrap_or(Self::IS_DEBUG_BUILD),
+            env_var_as_bool(ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR)
+                .unwrap_or(IS_DEBUG_BUILD),
         )?;
 
         let shader_binding_table =
@@ -133,12 +115,12 @@ impl Renderer {
                 .map(|(x, y)| {
                     // black/fucsia checkboard pattern
                     if (x + y).is_multiple_of(2) {
-                        [0x00, 0x00, 0x00, 0xff]
+                        0xff000000
                     } else {
-                        [0xff, 0x00, 0xff, 0xff]
+                        0xffff00ff
                     }
                 })
-                .collect::<Vec<[u8; 4]>>();
+                .collect::<Vec<u32>>();
 
             let image = vulkan_abstraction::Image::new_from_data(
                 Rc::clone(&core),
@@ -385,13 +367,7 @@ impl Renderer {
         )?;
 
         let wait_fence = self.render_to_image(dst_image.inner(), vk::Semaphore::null())?;
-
-        unsafe {
-            self.core
-                .device()
-                .inner()
-                .wait_for_fences(&[wait_fence], true, u64::MAX)
-        }?;
+        vulkan_abstraction::wait_fence(self.core.device(), wait_fence)?;
 
         Ok(dst_image.get_raw_image_data_with_no_padding()?)
     }
@@ -427,19 +403,19 @@ impl Renderer {
             device.cmd_bind_pipeline(
                 cmd_buf,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
-                rt_pipeline.get_handle(),
+                rt_pipeline.inner(),
             );
             device.cmd_bind_descriptor_sets(
                 cmd_buf,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
-                rt_pipeline.get_layout(),
+                rt_pipeline.layout(),
                 0,
-                descriptor_sets.get_handles(),
+                descriptor_sets.inner(),
                 &[],
             );
             device.cmd_push_constants(
                 cmd_buf,
-                rt_pipeline.get_layout(),
+                rt_pipeline.layout(),
                 vk::ShaderStageFlags::RAYGEN_KHR
                     | vk::ShaderStageFlags::CLOSEST_HIT_KHR
                     | vk::ShaderStageFlags::MISS_KHR,
@@ -451,10 +427,10 @@ impl Renderer {
             );
             core.rt_pipeline_device().cmd_trace_rays(
                 cmd_buf,
-                shader_binding_table.get_raygen_region(),
-                shader_binding_table.get_miss_region(),
-                shader_binding_table.get_hit_region(),
-                shader_binding_table.get_callable_region(),
+                shader_binding_table.raygen_region(),
+                shader_binding_table.miss_region(),
+                shader_binding_table.hit_region(),
+                shader_binding_table.callable_region(),
                 extent.width,
                 extent.height,
                 extent.depth, //for now it's one because of the Extent2D.into()
@@ -565,5 +541,25 @@ impl Renderer {
 
     pub fn core(&self) -> &Rc<vulkan_abstraction::Core> {
         &self.core
+    }
+}
+
+// useful environment variables, set to 1 or 0
+const ENABLE_VALIDATION_LAYER_ENV_VAR: &'static str = "ENABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
+const ENABLE_GPUAV_ENV_VAR_NAME: &'static str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled, defaults to 0
+const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &'static str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
+const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        match self.core().queue().wait_idle() {
+            Ok(()) => {}
+            Err(e) => match e.get_source() {
+                Some(ErrorSource::VULKAN(e)) => {
+                    log::warn!("VkQueueWaitIdle s returned {e:?} in sunray::Renderer::drop")
+                }
+                _ => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
+            },
+        }
     }
 }
