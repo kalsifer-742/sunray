@@ -338,7 +338,7 @@ impl App {
             Ok(()) => {}
             Err(e) => {
                 match e.get_source() {
-                    Some(ErrorSource::VULKAN(vk::Result::ERROR_OUT_OF_DATE_KHR)) => {
+                    ErrorSource::Vulkan(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                         log::warn!("{e}"); // we still warn because this isn't really the best behaviour
                     }
                     _ => {

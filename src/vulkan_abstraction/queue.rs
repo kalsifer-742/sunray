@@ -32,8 +32,7 @@ impl Queue {
     ) -> SrResult<()> {
         // NOTE: consider using VkQueueSubmit2 from the extension VK_KHR_synchronization2 which adds more dst stages (VkPipelineStageFlags2) like BLIT
         if cfg!(debug_assertions) && wait_semaphores.len() != wait_dst_stages.len() {
-            return Err(SrError::new(
-                None,
+            return Err(SrError::new_custom(
                 "Incorrect parameters to Queue::submit_async: wait_semaphores.len() != wait_dst_stages.len()".to_string(),
             ));
         }

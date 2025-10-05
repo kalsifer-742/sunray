@@ -20,9 +20,8 @@ impl IndexBuffer {
         let idx_type = match get_index_type::<T>() {
             Some(idx_type) => idx_type,
             None => {
-                return Err(SrError::new(
-                    None,
-                    String::from("attempting to construct IndexBuffer from invalid type"),
+                return Err(SrError::new_custom(
+                    "attempting to construct IndexBuffer from invalid type".to_string(),
                 ));
             }
         };
@@ -50,9 +49,8 @@ impl IndexBuffer {
         let idx_type = match get_index_type::<T>() {
             Some(idx_type) => idx_type,
             None => {
-                return Err(SrError::new(
-                    None,
-                    String::from("attempting to construct IndexBuffer from invalid type"),
+                return Err(SrError::new_custom(
+                    "attempting to construct IndexBuffer from invalid type".to_string(),
                 ));
             }
         };

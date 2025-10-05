@@ -81,7 +81,7 @@ impl Device {
                     _ => 0,
                 }
             })
-            .ok_or(SrError::new(None, String::from("No suitable GPU found!")))?;
+            .ok_or(SrError::new_custom("No suitable GPU found!".to_string()))?;
 
         let device = {
             let queue_priorities = vec![1.0; 1]; // TODO: use more than 1 queue?
@@ -177,9 +177,11 @@ impl Device {
         let available_exts_set: HashSet<&CStr> = available_exts
             .iter()
             .map(|props| props.extension_name_as_c_str())
-            .collect::<Result<_,_>>()
+            .collect::<Result<_, _>>()
             .map_err(|e| {
-                SrError::new(None, format!("Error while checking device extension support. Could not convert extension name to CStr with message: {e}"))
+                SrError::new_custom(format!(
+                    "Error while checking device extension support. Could not convert extension name to CStr with message: {e}"
+                ))
             })?;
 
         let all_exts_are_available = required_exts_set.is_subset(&available_exts_set);

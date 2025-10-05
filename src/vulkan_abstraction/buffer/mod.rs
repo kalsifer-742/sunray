@@ -30,7 +30,7 @@ pub fn get_memory_type_index(
         }
     }
     if idx < 0 {
-        return Err(SrError::new(None, String::from("Vertex Buffer Memory Type not supported!")));
+        return Err(SrError::new_custom("Vertex Buffer Memory Type not supported!".to_string()));
     }
 
     Ok(idx as u32)
@@ -204,9 +204,8 @@ impl Buffer {
             return Ok(());
         }
         if dst.is_null() {
-            return Err(SrError::new(
-                None,
-                String::from("attempted to clone from a non-null buffer to a null buffer"),
+            return Err(SrError::new_custom(
+                "attempted to clone from a non-null buffer to a null buffer".to_string(),
             ));
         }
 

@@ -73,7 +73,7 @@ impl Drop for Fence {
         match self.wait() {
             Ok(()) => {}
             Err(e) => match e.get_source() {
-                Some(ErrorSource::VULKAN(e)) => {
+                ErrorSource::Vulkan(e) => {
                     log::warn!("VkWaitForFences returned {e:?} in Fence::drop")
                 }
                 _ => log::error!("VkWaitForFences returned {e} in Fence::drop"),

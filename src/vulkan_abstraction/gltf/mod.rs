@@ -1,7 +1,7 @@
 use std::{collections::HashMap, rc::Rc};
 
 use crate::{
-    error::{ErrorSource, SrError, SrResult},
+    error::{SrError, SrResult},
     vulkan_abstraction,
 };
 
@@ -78,10 +78,10 @@ impl Gltf {
         let gltf_scene = match self.document.scenes().enumerate().find(|(index, _)| *index == scene_index) {
             Some((_, scene)) => scene,
             None => {
-                return Err(SrError::new(
-                    Some(ErrorSource::CUSTOM("scene creation from gltf".to_string())),
-                    format!("No scene with index: {} found", scene_index),
-                ));
+                return Err(SrError::new_custom(format!(
+                    "gltf: No scene with index: {} found",
+                    scene_index
+                )));
             }
         };
 

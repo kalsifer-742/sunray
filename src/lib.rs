@@ -550,7 +550,7 @@ impl Drop for Renderer {
         match self.core().queue().wait_idle() {
             Ok(()) => {}
             Err(e) => match e.get_source() {
-                Some(ErrorSource::VULKAN(e)) => {
+                ErrorSource::Vulkan(e) => {
                     log::warn!("VkQueueWaitIdle s returned {e:?} in sunray::Renderer::drop")
                 }
                 _ => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),

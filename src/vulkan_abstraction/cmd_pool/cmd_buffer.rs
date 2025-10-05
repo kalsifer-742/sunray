@@ -22,13 +22,13 @@ pub fn new_command_buffer(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::
     let v = new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::PRIMARY, 1)?;
     v.into_iter()
         .next()
-        .ok_or_else(|| SrError::new(None, String::from("Error in new_command_buffer")))
+        .ok_or_else(|| SrError::new_custom("Error in new_command_buffer".to_string()))
 }
 pub fn new_command_buffer_secondary(cmd_pool: &vulkan_abstraction::CmdPool, device: &ash::Device) -> SrResult<vk::CommandBuffer> {
     let v = new_command_buffer_vec_impl(cmd_pool, device, vk::CommandBufferLevel::SECONDARY, 1)?;
     v.into_iter()
         .next()
-        .ok_or_else(|| SrError::new(None, String::from("Error in new_command_buffer_secondary")))
+        .ok_or_else(|| SrError::new_custom("Error in new_command_buffer_secondary".to_string()))
 }
 
 fn new_command_buffer_vec_impl(
@@ -78,7 +78,7 @@ impl Drop for CmdBuffer {
             match self.fence.wait() {
                 Ok(()) => {}
                 Err(e) => match e.get_source() {
-                    Some(ErrorSource::VULKAN(e)) => {
+                    ErrorSource::Vulkan(e) => {
                         log::warn!("VkWaitForFences returned {e:?} in CmdBuffer::drop")
                     }
                     _ => log::error!("VkWaitForFences returned {e} in CmdBuffer::drop"),

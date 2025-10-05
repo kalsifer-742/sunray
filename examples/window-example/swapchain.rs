@@ -58,9 +58,8 @@ impl Swapchain {
                 *format
             } else {
                 //or else get the first format the device offers
-                let format = *formats.first().ok_or(SrError::new(
-                    None,
-                    String::from("Physical device does not support any surface formats"),
+                let format = *formats.first().ok_or(SrError::new_custom(
+                    "Physical device does not support any surface formats".to_string(),
                 ))?;
 
                 log::warn!("the BGRA8 SRGB format is not supported by the current physical device; falling back to {format:?}");

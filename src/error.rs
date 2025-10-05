@@ -5,24 +5,30 @@ pub type SrResult<T> = std::result::Result<T, SrError>;
 
 #[derive(Debug)]
 pub enum ErrorSource {
-    VULKAN(vk::Result),
-    GLTF(gltf::Error),
-    ALLOCATOR(gpu_allocator::AllocationError),
-    CUSTOM(String),
+    Vulkan(vk::Result),
+    Gltf(gltf::Error),
+    GpuAllocator(gpu_allocator::AllocationError),
+    Shaderc(shaderc::Error),
+    Custom(String),
 }
 
 #[derive(Debug)]
 pub struct SrError {
-    source: Option<ErrorSource>,
+    source: ErrorSource,
     description: String,
 }
 
 impl SrError {
-    pub fn new(source: Option<ErrorSource>, description: String) -> Self {
+    pub fn new_custom(error: String) -> Self {
+        let description = format!("UNEXPECTED CUSTOM ERROR: {error}");
+
+        Self::new(ErrorSource::Custom(error), description)
+    }
+    fn new(source: ErrorSource, description: String) -> Self {
         Self::new_with_backtrace(source, description, std::backtrace::Backtrace::capture())
     }
 
-    pub fn new_with_backtrace(source: Option<ErrorSource>, description: String, bt: std::backtrace::Backtrace) -> Self {
+    fn new_with_backtrace(source: ErrorSource, description: String, bt: std::backtrace::Backtrace) -> Self {
         let description = if bt.status() == BacktraceStatus::Captured {
             format!("{description}\n{bt}")
         } else {
@@ -31,8 +37,8 @@ impl SrError {
 
         Self { source, description }
     }
-    pub fn get_source(&self) -> Option<&ErrorSource> {
-        self.source.as_ref()
+    pub fn get_source(&self) -> &ErrorSource {
+        &self.source
     }
 }
 
@@ -43,7 +49,7 @@ impl From<gltf::Error> for SrError {
             e => format!("UNEXPECTED GLTF ERROR: {e}"),
         };
 
-        Self::new(Some(ErrorSource::GLTF(value)), description)
+        Self::new(ErrorSource::Gltf(value), description)
     }
 }
 
@@ -54,29 +60,23 @@ impl From<vk::Result> for SrError {
             e => format!("UNEXPECTED VULKAN ERROR: {e}"),
         };
 
-        Self::new(Some(ErrorSource::VULKAN(value)), description)
+        Self::new(ErrorSource::Vulkan(value), description)
     }
 }
 
 impl From<gpu_allocator::AllocationError> for SrError {
     fn from(value: gpu_allocator::AllocationError) -> Self {
-        let description = match value {
-            //TODO: provide description for some errors
-            ref e => format!("UNEXPECTED GPU_ALLOCATOR ERROR: {e}"),
-        };
+        let description = format!("UNEXPECTED GPU_ALLOCATOR ERROR: {value}");
 
-        Self::new(Some(ErrorSource::ALLOCATOR(value)), description)
+        Self::new(ErrorSource::GpuAllocator(value), description)
     }
 }
 
-impl Display for ErrorSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ErrorSource::VULKAN(e) => e.fmt(f),
-            ErrorSource::GLTF(e) => e.fmt(f),
-            ErrorSource::ALLOCATOR(e) => e.fmt(f),
-            ErrorSource::CUSTOM(e) => e.fmt(f),
-        }
+impl From<shaderc::Error> for SrError {
+    fn from(value: shaderc::Error) -> Self {
+        let description = format!("UNEXPECTED SHADERC ERROR: {value}");
+
+        Self::new(ErrorSource::Shaderc(value), description)
     }
 }
 
@@ -86,17 +86,14 @@ impl Display for SrError {
     }
 }
 
-impl std::error::Error for ErrorSource {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
 impl std::error::Error for SrError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.source {
-            Some(src) => Some(src),
-            None => None,
+            ErrorSource::Vulkan(error) => Some(error),
+            ErrorSource::Gltf(error) => Some(error),
+            ErrorSource::GpuAllocator(error) => Some(error),
+            ErrorSource::Shaderc(error) => Some(error),
+            ErrorSource::Custom(_string) => None,
         }
     }
 }
