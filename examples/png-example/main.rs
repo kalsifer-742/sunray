@@ -42,7 +42,7 @@ fn render_to_file(image_buf: &[u8], image_extent: (u32, u32), path: &str, format
 
 fn render_and_save() -> SrResult<()> {
     let path = "examples/png-example/render.png";
-    let image_extent = (800, 600);
+    let image_extent = (1600, 1200);
     let image_format = get_vk_format(ExtendedColorType::Rgba8);
     let mut renderer = Renderer::new(image_extent, image_format)?;
 

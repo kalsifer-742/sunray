@@ -7,7 +7,7 @@ use ash::vk;
 pub struct BlasInstance<'a> {
     pub blas: &'a vulkan_abstraction::BLAS,
     pub transform: vk::TransformMatrixKHR,
-    pub blas_instance_index: u32, // blas custom index, contains the index of the instance, NOT of the blas, so we can fetch instance-specific information in the shader
+    pub blas_instance_index: u32, // contains the index of the instance, NOT of the blas, so we can fetch instance-specific information in the shader, by passing it as gl_InstanceCustomIndexEXT
 }
 
 // Bottom-Level Acceleration Structure

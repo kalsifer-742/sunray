@@ -19,10 +19,10 @@ vec4 sample_texture(in uint texture_index, in vec2 tex_coords, in vec4 fallback_
 
 
 //given 3 vertices, a texture coordinate attribute and barycentric coordinates interpolate the texture coordinate attribute
-#define INTERPOLATE_TEX_COORDS(tex_coord_attribute, v0, v1, v2, barycentrics) \
-          vec2(v0.tex_coord_attribute[0], v0.tex_coord_attribute[1]) * barycentrics.x \
-        + vec2(v1.tex_coord_attribute[0], v1.tex_coord_attribute[1]) * barycentrics.y \
-        + vec2(v2.tex_coord_attribute[0], v2.tex_coord_attribute[1]) * barycentrics.z
+#define INTERPOLATE_VERTEX_ATTRIBUTE(attribute, triangle, barycentrics) \
+          triangle[0].attribute * barycentrics.x \
+        + triangle[1].attribute * barycentrics.y \
+        + triangle[2].attribute * barycentrics.z
 
 // take a value that should be interpreted as linear and return the equivalent that should be interpreted as sRGB.
 // this is useful to write to an sRGB image from a compute or raytracing shader.

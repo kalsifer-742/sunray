@@ -3,7 +3,6 @@
 
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_buffer_reference2 : require
-//uint32_t
 #extension GL_EXT_shader_explicit_arithmetic_types : require // uint32_t
 
 // the actual payload is not defined here because raygen would define it as RayPayloadEXT, whereas hit/miss would define it as RayPayloadInEXT
@@ -13,6 +12,7 @@ struct ray_payload_t {
 
 struct vertex_t {
     vec3 position;
+    vec3 normal;
     vec2 base_color_tex_coord;
     vec2 metallic_roughness_tex_coord;
     vec2 normal_tex_coord;

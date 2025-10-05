@@ -256,6 +256,10 @@ impl Gltf {
                         })
                     });
 
+                    reader.read_normals().unwrap().enumerate().for_each(|(i, normal)| {
+                        vertices[i].normal = normal;
+                    });
+
                     let index_buffer = {
                         let indices = if primitive.indices().is_some() {
                             // get vertices index
