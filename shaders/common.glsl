@@ -8,6 +8,7 @@
 // the actual payload is not defined here because raygen would define it as RayPayloadEXT, whereas hit/miss would define it as RayPayloadInEXT
 struct ray_payload_t {
     vec3 color;
+    bool shadow_ray_miss;
 };
 
 struct vertex_t {

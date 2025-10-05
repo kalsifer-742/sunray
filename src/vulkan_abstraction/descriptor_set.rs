@@ -32,7 +32,7 @@ impl DescriptorSetLayout {
                 .binding(Self::TLAS_BINDING)
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             // output image layout binding
             vk::DescriptorSetLayoutBinding::default()
                 .binding(Self::OUTPUT_IMAGE_BINDING)

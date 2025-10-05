@@ -199,7 +199,7 @@ impl RayTracingPipeline {
         let pipeline_create_info = vk::RayTracingPipelineCreateInfoKHR::default()
             .stages(&stages)
             .groups(&shader_groups)
-            .max_pipeline_ray_recursion_depth(1)
+            .max_pipeline_ray_recursion_depth(2)
             .layout(pipeline_layout);
 
         let pipelines = unsafe {

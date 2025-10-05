@@ -45,7 +45,35 @@ void main() {
     float light_intensity = 1.0;
     vec3 light_direction = normalize(vec3(-1.0, -1.0, -0.5));
 
-    float lighting = max(dot(-light_direction, world_normal), 0.2);
+    float light = max(dot(-light_direction, world_normal), 0.2);
 
-    prd.color = lighting * base_color.xyz + emissive_color.xyz;
+    // SHADOW
+    float shadow = 1.0;
+    prd.shadow_ray_miss = false;
+    vec3 light_pos = vec3(5.0, 5.0, -5.0);
+    vec3 light_dir = normalize(light_pos - world_pos);
+
+    uint ray_flags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+    vec3 shadow_ray_origin = world_pos + world_normal * 0.001;
+    vec3 shadow_ray_direction = light_dir;
+    float tMin = 0.001;
+    float tMax = 1000.0;
+    traceRayEXT(
+        tlas,
+        ray_flags,              
+        0xFF,                   
+        0,
+        0,                    
+        0,                   
+        shadow_ray_origin,          
+        tMin,                  
+        shadow_ray_direction,          
+        tMax,                 
+        0                       
+    );
+    if(prd.shadow_ray_miss) {
+        shadow = 0.2;
+    }
+
+    prd.color = light * shadow * base_color.xyz + emissive_color.xyz;
 }
