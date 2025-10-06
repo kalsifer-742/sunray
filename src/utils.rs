@@ -1,3 +1,5 @@
+#![macro_use]
+
 pub(crate) fn env_var_as_bool(name: &str) -> Option<bool> {
     match std::env::var(name) {
         Ok(s) => match s.parse::<i32>() {
@@ -36,4 +38,26 @@ pub(crate) fn realign_data(bytes: &[u8], starting_alignment: usize, target_align
     }
 
     ret
+}
+
+#[repr(C)] // guarantee 'bytes' comes after '_align'
+pub struct AlignedAs<Align, Bytes: ?Sized> {
+    pub _align: [Align; 0],
+    pub bytes: Bytes,
+}
+
+macro_rules! include_bytes_align_as {
+    ($align_ty:ty, $path:expr) => {
+        {  // const block expression to encapsulate the static
+            use $crate::utils::AlignedAs;
+
+            // this assignment is made possible by CoerceUnsized
+            static ALIGNED: &AlignedAs::<$align_ty, [u8]> = &AlignedAs {
+                _align: [],
+                bytes: *include_bytes!($path),
+            };
+
+            &ALIGNED.bytes
+        }
+    };
 }

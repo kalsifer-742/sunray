@@ -8,7 +8,6 @@ pub enum ErrorSource {
     Vulkan(vk::Result),
     Gltf(gltf::Error),
     GpuAllocator(gpu_allocator::AllocationError),
-    Shaderc(shaderc::Error),
     Custom(String),
 }
 
@@ -72,14 +71,6 @@ impl From<gpu_allocator::AllocationError> for SrError {
     }
 }
 
-impl From<shaderc::Error> for SrError {
-    fn from(value: shaderc::Error) -> Self {
-        let description = format!("UNEXPECTED SHADERC ERROR: {value}");
-
-        Self::new(ErrorSource::Shaderc(value), description)
-    }
-}
-
 impl Display for SrError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.description.fmt(f)
@@ -92,7 +83,6 @@ impl std::error::Error for SrError {
             ErrorSource::Vulkan(error) => Some(error),
             ErrorSource::Gltf(error) => Some(error),
             ErrorSource::GpuAllocator(error) => Some(error),
-            ErrorSource::Shaderc(error) => Some(error),
             ErrorSource::Custom(_string) => None,
         }
     }
