@@ -7,3 +7,4 @@ void main() {
     prd.color = vec3(0, 0, 0.2);
     prd.shadow_ray_miss = true;
 }
+

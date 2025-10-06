@@ -48,11 +48,10 @@ void main() {
     float light = light_intensity * max(dot(-light_dir, world_normal), 0.2);
 
     // SHADOW
-    float shadow = 1.0;
     ray_payload_out.shadow_ray_miss = false;
 
     uint ray_flags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
-    vec3 shadow_ray_origin = world_pos; // + world_normal * 0.001; // why add world_normal * 0.001? we already have tMin=0.001
+    vec3 shadow_ray_origin = world_pos + world_normal * 0.001;
     vec3 shadow_ray_direction = -light_dir;
     float tMin = 0.001;
     float tMax = light_dist; // anything behind the light should not cause a shadow
@@ -67,11 +66,9 @@ void main() {
         tMin,                  
         shadow_ray_direction,          
         tMax,
-        1 // payload has location=1
+        1 // ray_payload_out has location=1
     );
-    if(ray_payload_out.shadow_ray_miss) {
-        shadow = 0.2;
-    }
+    float shadow = ray_payload_out.shadow_ray_miss ? 0.8 : 0.0;
 
-    ray_payload_in.color = light * (1.0 - shadow) * base_color.xyz + emissive_color.xyz;
+    ray_payload_in.color = light * shadow * base_color.xyz + emissive_color.xyz;
 }

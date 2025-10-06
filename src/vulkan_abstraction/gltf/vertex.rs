@@ -25,10 +25,12 @@ pub struct Vertex {
     pub _padding0: [f32; 1],
     pub normal: [f32; 3],
     pub _padding1: [f32; 1],
+    pub tangent: [f32; 3],
+    pub _padding2: [f32; 1],
     pub base_color_tex_coord: [f32; 2],
     pub metallic_roughness_tex_coord: [f32; 2],
     pub normal_tex_coord: [f32; 2],
     pub occlusion_tex: [f32; 2],
     pub emissive_tex: [f32; 2],
-    pub _padding2: [f32; 2],
+    pub _padding3: [f32; 2],
 }

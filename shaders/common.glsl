@@ -15,6 +15,7 @@ struct ray_payload_t {
 struct vertex_attributes_t {
     vec3 position;
     vec3 normal;
+    vec3 tangent;
     vec2 base_color_tex_coord;
     vec2 metallic_roughness_tex_coord;
     vec2 normal_tex_coord;

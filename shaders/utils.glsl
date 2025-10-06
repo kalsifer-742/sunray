@@ -28,6 +28,7 @@ vertex_attributes_t interpolate_vertex_attributes(in vertex_attributes_t triangl
     vertex_attributes_t ret;
     ret.position = INTERPOLATE_VERTEX_ATTRIBUTE(position, triangle, barycentrics);
     ret.normal = INTERPOLATE_VERTEX_ATTRIBUTE(normal, triangle, barycentrics);
+    ret.tangent = INTERPOLATE_VERTEX_ATTRIBUTE(tangent, triangle, barycentrics);
     ret.base_color_tex_coord = INTERPOLATE_VERTEX_ATTRIBUTE(base_color_tex_coord, triangle, barycentrics);
     ret.metallic_roughness_tex_coord = INTERPOLATE_VERTEX_ATTRIBUTE(metallic_roughness_tex_coord, triangle, barycentrics);
     ret.normal_tex_coord = INTERPOLATE_VERTEX_ATTRIBUTE(normal_tex_coord, triangle, barycentrics);
@@ -46,12 +47,6 @@ vertex_attributes_t interpolate_vertex_attributes(in vertex_attributes_t triangl
 float remove_srgb_curve(float x) {
     // Approximately pow(x, 2.2)
     return x < 0.04045 ?  x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
-}
-
-
-float distance_squared(vec3 a, vec3 b) {
-    vec3 c = a - b;
-    return dot(c, c);
 }
 
 #endif
