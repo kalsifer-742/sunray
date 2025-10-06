@@ -9,9 +9,10 @@
 struct ray_payload_t {
     vec3 color;
     bool shadow_ray_miss;
+    float shadow_ray_hit_dist;
 };
 
-struct vertex_t {
+struct vertex_attributes_t {
     vec3 position;
     vec3 normal;
     vec2 base_color_tex_coord;
@@ -22,7 +23,7 @@ struct vertex_t {
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) buffer vertex_buffer_reference_t {
-    vertex_t v[];
+    vertex_attributes_t v[];
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) buffer index_buffer_reference_t {
