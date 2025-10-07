@@ -4,9 +4,15 @@ Rust hardware ray-tracing library
 
 ![prova](/docs//render.png)
 
-This project was developed by [kalsifer-742](https://github.com/kalsifer-742) and [@circled-square](https://github.com/circled-square) supervised by Professor [Marco Patrignani](https://squera.github.io/) for the bachelor thesis at the University of Trento, Italy
+This project was developed by [kalsifer-742](https://github.com/kalsifer-742) and [circled-square](https://github.com/circled-square) supervised by Professor [Marco Patrignani](https://squera.github.io/) for the bachelor thesis at the University of Trento, Italy
 
 ## Contribution
+
+If you wish to contribute to the project you may check our issues, or if you found a bug or missing feature feel free to create one. 
+You may also contact us at the e-mail addresses linked to our GitHub accounts.
+
+If you're studying at University of Trento and are looking for a thesis subject you can ask Professor Marco Patrignani 
+to be your supervisor to work on this project and we will be available if you need help or clarifications.
 
 ## Comparison
 
