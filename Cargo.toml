@@ -8,6 +8,7 @@ repository = "https://github.com/Kalsifer-742/sunray.git"
 readme = "README.md"
 keywords = ["graphics", "rendering", "gamedev"]
 categories = ["multimedia", "graphics", "hardware-support", "game-development"]
+exclude = ["examples/assets/Lantern.glb", "examples/.gitignore", ".gitignore"]
 
 [dependencies]
 ash = { version = "0.38.0", features = ["linked"] }
