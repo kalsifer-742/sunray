@@ -13,8 +13,8 @@
 //! - visible (invalidate caches) - the memory is **available** and is **visible** to the pipeline stage + access mask combination
 //!
 //! ### References:
-//! - https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/
-//! - https://www.sctheblog.com/blog/vulkan-synchronization/
+//! - <https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/>
+//! - <https://www.sctheblog.com/blog/vulkan-synchronization/>
 
 use ash::vk;
 

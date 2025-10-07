@@ -162,7 +162,7 @@ impl AccelerationStructure {
     /// - Change the number of geometries or instances in the structure.
     /// - Change the geometry flags for any geometry in the structure.
     /// - Change the number of vertices or primitives for any geometry in the structure."
-    /// (from https://docs.vulkan.org/spec/latest/chapters/accelstructures.html#acceleration-structure-update)
+    /// (from <https://docs.vulkan.org/spec/latest/chapters/accelstructures.html#acceleration-structure-update>)
     ///
     /// Basically from what I can tell only the following operations are allowed in an update:
     /// For BLAS:
