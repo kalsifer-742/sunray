@@ -1,5 +1,9 @@
 use std::{fs::File, io::Write};
 
+/*
+* This build script has the sole purpose of compiling glsl shaders in the shaders/ directory, turning them into .spirv files under $OUT_DIR
+ */
+
 // this must be the same as what is specified in ray_tracing_pipeline.rs
 const SHADER_ENTRY_POINT: &str = "main";
 
