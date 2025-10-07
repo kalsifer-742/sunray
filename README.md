@@ -4,7 +4,7 @@ Rust hardware ray-tracing library
 
 ![prova](/docs//render.png)
 
-This project was developed by Enrico Dalla Croce and [@circled-square](https://github.com/circled-square) supervised by Professor Marco Patrignani for the bachelor thesis at the University of Trento, Italy
+This project was developed by [kalsifer-742](https://github.com/kalsifer-742) and [@circled-square](https://github.com/circled-square) supervised by Professor [Marco Patrignani](https://squera.github.io/) for the bachelor thesis at the University of Trento, Italy
 
 ## Contribution
 
