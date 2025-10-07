@@ -3,16 +3,16 @@ name = "sunray"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
-description = "feature-rich hardware ray-tracing library"
+description = "hardware ray-tracing library"
 repository = "https://github.com/Kalsifer-742/sunray.git"
 readme = "README.md"
-keywords = ["graphics", "gamedev"]
-categories = ["graphics", "hardware-support", "game-development"]
+keywords = ["graphics", "rendering", "gamedev"]
+categories = ["multimedia", "graphics", "hardware-support", "game-development"]
 
 [dependencies]
 ash = { version = "0.38.0", features = ["linked"] }
 nalgebra = "0.34"
-gltf = "1.4.1"
+gltf = { version = "1.4.1", features = ["KHR_lights_punctual"]}
 log = { version = "0.4.28", features = ["release_max_level_warn"] }
 gpu-allocator = "0.28.0"
 bytemuck = "1.24.0"

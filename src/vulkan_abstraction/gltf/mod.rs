@@ -169,144 +169,159 @@ impl Gltf {
         // but the gltf crate takes care of this:
         // "If the transform is Decomposed, then the matrix is generated with the equation matrix = translation * rotation * scale."
         let transform = parent_transform * na::Matrix4::from(gltf_node.transform().matrix());
-        let mut mesh = None;
 
-        // TODO: this code does not manage multiple nodes pointing to the same meshes
-        // fix proposal: check for the primitive id
-        if let Some(gltf_mesh) = gltf_node.mesh() {
-            let mut primitives = vec![];
+        // I dont'use map because `?`` does not work inside a closure
+        let mesh = match gltf_node.mesh() {
+            Some(gltf_mesh) => Some(self.process_mesh(gltf_mesh, primitive_data_map)?),
+            None => None,
+        };
 
-            for (i, primitive) in gltf_mesh.primitives().filter(|p| Self::is_primitive_supported(p)).enumerate() {
-                let vertex_position_accessor_index = primitive
-                    .attributes() // ATTRIBUTES are required in the spec
-                    .filter(|(semantic, _)| *semantic == gltf::Semantic::Positions) // POSITION is always defined
-                    .next()
-                    .unwrap()
-                    .1
-                    .index();
+        if let Some(_camera) = gltf_node.camera() {
+            todo!()
+        }
 
-                let indices_accessor_index = match primitive.indices() {
-                    Some(accessor) => accessor.index(),
-                    None => i, // this is a cheap fix in the case that the primitive is a non-indexed geometry
-                };
-
-                let primitive_unique_key = (vertex_position_accessor_index, indices_accessor_index);
-
-                let (material, tex_coords) = {
-                    let material = primitive.material();
-                    let material_pbr = primitive.material().pbr_metallic_roughness();
-
-                    let base_color_factor = material_pbr.base_color_factor();
-                    let metallic_factor = material_pbr.metallic_factor();
-                    let roughness_factor = material_pbr.roughness_factor();
-                    let emissive_factor = material.emissive_factor();
-                    let alpha_mode = material.alpha_mode();
-                    let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
-                    let double_sided = material.double_sided();
-
-                    // The code is repeated because the type of the textures are not the same
-                    // TODO: crate a macro
-                    let (base_color_texture_index, base_color_tex_coord_index) =
-                        get_texture_indices!(material_pbr, base_color_texture);
-                    let (metallic_roughness_texture_index, metallic_roughness_tex_coord_index) =
-                        get_texture_indices!(material_pbr, metallic_roughness_texture);
-                    let (normal_texture_index, normal_tex_coord_index) = get_texture_indices!(material, normal_texture);
-                    let (occlusion_texture_index, occlusion_tex_coord_index) = get_texture_indices!(material, occlusion_texture);
-                    let (emissive_texture_index, emissive_tex_coord_index) = get_texture_indices!(material, emissive_texture);
-
-                    let pbr_metallic_roughness_properties = vulkan_abstraction::gltf::PbrMetallicRoughnessProperties {
-                        base_color_factor,
-                        metallic_factor,
-                        roughness_factor,
-                        base_color_texture_index,
-                        metallic_roughness_texture_index,
-                    };
-
-                    let material = vulkan_abstraction::gltf::Material {
-                        pbr_metallic_roughness_properties,
-                        normal_texture_index,
-                        occlusion_texture_index,
-                        emissive_factor,
-                        emissive_texture_index,
-                        alpha_mode,
-                        alpha_cutoff,
-                        double_sided,
-                    };
-
-                    let tex_coords = (
-                        base_color_tex_coord_index,
-                        metallic_roughness_tex_coord_index,
-                        normal_tex_coord_index,
-                        occlusion_tex_coord_index,
-                        emissive_tex_coord_index,
-                    );
-
-                    (material, tex_coords)
-                };
-
-                if !primitive_data_map.contains_key(&primitive_unique_key) {
-                    let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
-
-                    let mut vertices: Vec<vulkan_abstraction::gltf::Vertex> = vec![];
-                    // get vertices positions
-                    reader.read_positions().unwrap().for_each(|position| {
-                        vertices.push(Vertex {
-                            position,
-                            ..Default::default()
-                        })
-                    });
-
-                    reader.read_normals().unwrap().enumerate().for_each(|(i, normal)| {
-                        vertices[i].normal = normal;
-                    });
-
-                    let index_buffer = {
-                        let indices = if primitive.indices().is_some() {
-                            // get vertices index
-                            let indices = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
-
-                            indices
-                        } else {
-                            // if the primitive is a non-indexed geometry we create the indices
-                            let indices = (0..vertices.len() as u32 / 3).collect::<Vec<_>>();
-
-                            indices
-                        };
-
-                        let index_buffer =
-                            vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(Rc::clone(&self.core), &indices)?;
-
-                        index_buffer
-                    };
-
-                    // This could also be done with zip, but the code would be equally long and with a lot of nested tuples
-                    // I thought of moving the zip operation to a separate function but the type of reader doesn't allow you to pass it around
-                    insert_tex_coords!(reader, vertices, tex_coords.0, base_color_tex_coord);
-                    insert_tex_coords!(reader, vertices, tex_coords.1, metallic_roughness_tex_coord);
-                    insert_tex_coords!(reader, vertices, tex_coords.2, normal_tex_coord);
-                    insert_tex_coords!(reader, vertices, tex_coords.3, occlusion_tex);
-                    insert_tex_coords!(reader, vertices, tex_coords.4, emissive_tex);
-
-                    let vertex_buffer =
-                        vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), &vertices)?;
-
-                    let primitive_data = vulkan_abstraction::gltf::PrimitiveData {
-                        vertex_buffer,
-                        index_buffer,
-                    };
-
-                    primitive_data_map.insert(primitive_unique_key, primitive_data);
-                }
-
-                primitives.push(vulkan_abstraction::gltf::Primitive {
-                    unique_key: primitive_unique_key,
-                    material,
-                });
-            }
-            mesh = Some(vulkan_abstraction::gltf::Mesh::new(primitives)?);
+        if let Some(_light) = gltf_node.light() {
+            todo!()
         }
 
         Ok((transform, mesh))
+    }
+
+    fn process_mesh(
+        &self,
+        gltf_mesh: gltf::Mesh,
+        primitive_data_map: &mut PrimitiveDataMap,
+    ) -> SrResult<vulkan_abstraction::gltf::Mesh> {
+        let mut primitives = vec![];
+
+        for (i, primitive) in gltf_mesh.primitives().filter(|p| Self::is_primitive_supported(p)).enumerate() {
+            let vertex_position_accessor_index = primitive
+                .attributes() // ATTRIBUTES are required in the spec
+                .filter(|(semantic, _)| *semantic == gltf::Semantic::Positions) // POSITION is always defined
+                .next()
+                .unwrap()
+                .1
+                .index();
+
+            let indices_accessor_index = match primitive.indices() {
+                Some(accessor) => accessor.index(),
+                None => i, // this is a cheap fix in the case that the primitive is a non-indexed geometry
+            };
+
+            let primitive_unique_key = (vertex_position_accessor_index, indices_accessor_index);
+
+            let (material, tex_coords) = {
+                let material = primitive.material();
+                let material_pbr = primitive.material().pbr_metallic_roughness();
+
+                let base_color_factor = material_pbr.base_color_factor();
+                let metallic_factor = material_pbr.metallic_factor();
+                let roughness_factor = material_pbr.roughness_factor();
+                let emissive_factor = material.emissive_factor();
+                let alpha_mode = material.alpha_mode();
+                let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
+                let double_sided = material.double_sided();
+
+                // The code is repeated because the type of the textures are not the same
+                // TODO: crate a macro
+                let (base_color_texture_index, base_color_tex_coord_index) =
+                    get_texture_indices!(material_pbr, base_color_texture);
+                let (metallic_roughness_texture_index, metallic_roughness_tex_coord_index) =
+                    get_texture_indices!(material_pbr, metallic_roughness_texture);
+                let (normal_texture_index, normal_tex_coord_index) = get_texture_indices!(material, normal_texture);
+                let (occlusion_texture_index, occlusion_tex_coord_index) = get_texture_indices!(material, occlusion_texture);
+                let (emissive_texture_index, emissive_tex_coord_index) = get_texture_indices!(material, emissive_texture);
+
+                let pbr_metallic_roughness_properties = vulkan_abstraction::gltf::PbrMetallicRoughnessProperties {
+                    base_color_factor,
+                    metallic_factor,
+                    roughness_factor,
+                    base_color_texture_index,
+                    metallic_roughness_texture_index,
+                };
+
+                let material = vulkan_abstraction::gltf::Material {
+                    pbr_metallic_roughness_properties,
+                    normal_texture_index,
+                    occlusion_texture_index,
+                    emissive_factor,
+                    emissive_texture_index,
+                    alpha_mode,
+                    alpha_cutoff,
+                    double_sided,
+                };
+
+                let tex_coords = (
+                    base_color_tex_coord_index,
+                    metallic_roughness_tex_coord_index,
+                    normal_tex_coord_index,
+                    occlusion_tex_coord_index,
+                    emissive_tex_coord_index,
+                );
+
+                (material, tex_coords)
+            };
+
+            if !primitive_data_map.contains_key(&primitive_unique_key) {
+                let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
+
+                let mut vertices: Vec<vulkan_abstraction::gltf::Vertex> = vec![];
+
+                // get vertices position and normal
+                std::iter::zip(reader.read_positions().unwrap(), reader.read_normals().unwrap()).for_each(
+                    |(position, normal)| {
+                        vertices.push(vulkan_abstraction::gltf::Vertex {
+                            position,
+                            normal,
+                            ..Default::default()
+                        })
+                    },
+                );
+
+                let index_buffer = {
+                    let indices = if primitive.indices().is_some() {
+                        // get vertices index
+                        let indices = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
+
+                        indices
+                    } else {
+                        // if the primitive is a non-indexed geometry we create the indices
+                        let indices = (0..vertices.len() as u32 / 3).collect::<Vec<_>>();
+
+                        indices
+                    };
+
+                    let index_buffer =
+                        vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(Rc::clone(&self.core), &indices)?;
+
+                    index_buffer
+                };
+
+                // This could also be done with zip, but the code would be equally long and with a lot of nested tuples
+                // I thought of moving the zip operation to a separate function but the type of reader doesn't allow you to pass it around
+                insert_tex_coords!(reader, vertices, tex_coords.0, base_color_tex_coord);
+                insert_tex_coords!(reader, vertices, tex_coords.1, metallic_roughness_tex_coord);
+                insert_tex_coords!(reader, vertices, tex_coords.2, normal_tex_coord);
+                insert_tex_coords!(reader, vertices, tex_coords.3, occlusion_tex);
+                insert_tex_coords!(reader, vertices, tex_coords.4, emissive_tex);
+
+                let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), &vertices)?;
+
+                let primitive_data = vulkan_abstraction::gltf::PrimitiveData {
+                    vertex_buffer,
+                    index_buffer,
+                };
+
+                primitive_data_map.insert(primitive_unique_key, primitive_data);
+            }
+
+            primitives.push(vulkan_abstraction::gltf::Primitive {
+                unique_key: primitive_unique_key,
+                material,
+            });
+        }
+
+        vulkan_abstraction::gltf::Mesh::new(primitives)
     }
 
     fn is_primitive_supported(primitive: &gltf::Primitive) -> bool {
