@@ -43,9 +43,9 @@ void main() {
     vec3 light_pos = vec3(5.0, 5.0, -5.0);
     vec3 light_dir = normalize(world_pos - light_pos);
     float light_dist = distance(world_pos, light_pos);
-    float light_intensity = 2.0;
+    float light_intensity = 4.0;
 
-    float light = light_intensity * max(dot(-light_dir, world_normal), 0.2);
+    float light = light_intensity * max(dot(-light_dir, world_normal), 0.2) / sqrt(light_dist);
 
     // SHADOW
     ray_payload_out.shadow_ray_miss = false;
@@ -68,7 +68,7 @@ void main() {
         tMax,
         1 // ray_payload_out has location=1
     );
-    float shadow = ray_payload_out.shadow_ray_miss ? 0.8 : 0.0;
+    float shadow = ray_payload_out.shadow_ray_miss ? 1.0 : 0.2;
 
-    ray_payload_in.color = light * shadow * base_color.xyz + emissive_color.xyz;
+    ray_payload_in.color = max(light * shadow, 0.15) * base_color.xyz + emissive_color.xyz;
 }
