@@ -23,7 +23,7 @@ to be your supervisor to work on this project and we will be available if you ne
 | [manta-ray](https://github.com/ange-yaghi/manta-ray)                 |       ❌        |      ✅      |     ❌     |        ✅         |   ❌    |   ✅   |   ❌   |    ✅    |   ✅   |   ✅   |   ✅   |     ✅     |    ✅    |   ❌   |  N/A  | ✅ Blender |                               |
 | [luxcore](https://luxcorerender.org/)                                |       ✅        |      ✅      |     ❌     |        ?         |   ?    |   ✅   |   ❌   |    ✅    |   ?   |   ?   |   ✅   |     ✅     |    ?    |   ❌   |  N/A  | ✅ Blender |                               |
 | [akari_render](https://github.com/shiinamiyuki/akari_render)         |       ❌        |      ✅      |     ?     |        ?         |   ?    |   ✅   |   ❌   |    ✅    |   ?   |   ?   |   ✅   |     ✅     |    ?    |   ✅   |   ❌   | ✅ Blender |    Rebuild blender to install |
-| [rustracer](https://github.com/KaminariOS/rustracer)                 |       ❌        |      ✅      |     ❌     |        ✅         |   ❌    |   ✅   |   ✅   |    ❌    |   ❌   |   ❌   |   ✅   |     ✅     |    ❌    |   ✅   |   ❌   |     ❌     |                      uses Nix |
+| [KaminariOS/rustracer](https://github.com/KaminariOS/rustracer)      |       ❌        |      ✅      |     ❌     |        ✅         |   ❌    |   ✅   |   ✅   |    ❌    |   ❌   |   ❌   |   ✅   |     ✅     |    ❌    |   ✅   |   ❌   |     ❌     |                      uses Nix |
 | [RayTracingInVulkan](https://github.com/GPSnoopy/RayTracingInVulkan) |       ✅        |      ✅      |     ✅     |        ✅         |   ❌    |   ✅   |   ✅   |    ❌    |   ?   |   ✅   |   ✅   |  partial  |    ❌    |   ❌   |  N/A  |     ❌     |                               |
 | [referencePT](https://github.com/boksajak/referencePT)               |       ❌        |      ✅      |     ?     |        ?         |   ?    |   ✅   |   ✅   |    ❌    |   ❌   |   ?   |   ✅   |     ✅     |    ?    |   ❌   |  N/A  |     ❌     |                               |
 | [gbrt](https://github.com/giulianbiolo/gbrt)                         |       ❌        |      ❌      |     ❌     |        ❌         |   ❌    |   ❌   |   ❌   |    ❌    |   ✅   |   ✅   |   ✅   |     ❌     |    ❌    |   ✅   |   ❌   |     ❌     |                               |
@@ -33,7 +33,7 @@ to be your supervisor to work on this project and we will be available if you ne
 | [hanamaru-renderer](https://github.com/gam0022/hanamaru-renderer)    |       ❌        |      ❌      |     ❌     |        ?         |   ?    |   ❌   |   ❌   |    ❌    |   ?   |   ✅   |   ✅   |     ✅     |    ✅    |   ✅   |   ❌   |     ❌     |          docs are in japanese |
 | [rtwlib](https://crates.io/crates/rtwlib)                            |       ✅        |      ❌      |     ❌     |        ✅         |   ❌    |   ❌   |   ❌   |    ❌    |   ❌   |   ❌   |   ❌   |     ❌     |    ❌    |   ✅   |   ✅   |     ❌     |                               |
 | [rustic-zen](https://crates.io/crates/rustic-zen)                    |       ❌        |      ❌      |     ✅     |        ?         |   ?    |   ❌   |   ❌   |    ❌    |   ?   |   ?   |   ?   |     ?     |    ?    |   ✅   |   ✅   |     ❌     |                            2D |
-| [rustracer](https://crates.io/crates/rustracer)                      |       ❌        |      ❌      |     ❌     |        ✅         |   ❌    |   ❌   |   ❌   |    ❌    |   ❌   |   ❌   |   ❌   |     ❌     |    ❌    |   ✅   |   ✅   |     ❌     |                               |
+| [andros21/rustracer](https://crates.io/crates/rustracer)             |       ❌        |      ❌      |     ❌     |        ✅         |   ❌    |   ❌   |   ❌   |    ❌    |   ❌   |   ❌   |   ❌   |     ❌     |    ❌    |   ✅   |   ✅   |     ❌     |                               |
 |                                                                      |                |             |           |                  |        |       |       |         |       |       |       |           |         |       |       |           |                               |
 | [sunray](https://github.com/Kalsifer-742/sunray)                     |       ✅        |      ✅      |     ✅     |        ✅         |   ❌    |   ✅   |   ✅   |    ❌    |   ❌   |   ✅   |   ✅   |  partial  |    ❌    |   ✅   |   ✅   |     ❌     |                               |
 
@@ -95,6 +95,7 @@ to be your supervisor to work on this project and we will be available if you ne
     - https://gpuopen.com/learn/concurrent-execution-asynchronous-queues/
 
 ### Miscelleaneus
+- [graphics APIs](https://github.com/Vincent-Therrien/gpu-arena)
 - [Semantic Versioning 2.0.0](https://semver.org/)
 - #### Coordinate Systems
   - [nalgebra computer-graphics recipes](https://nalgebra.rs/docs/user_guide/cg_recipes)
