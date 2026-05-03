@@ -22,6 +22,7 @@ use crate::vulkan_abstraction;
 
 pub mod fence;
 pub mod semaphore;
+pub mod access_type;
 
 pub use fence::*;
 pub use semaphore::*;

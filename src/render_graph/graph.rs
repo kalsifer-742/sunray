@@ -1,7 +1,7 @@
 use crate::error::SrResult;
 use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer, RaytracingDescriptorSets};
 use ash::vk;
-use ash::vk::CommandBuffer;
+use ash::vk::{CommandBuffer, DescriptorPool};
 use derive_builder::Builder;
 use enum_as_inner::EnumAsInner;
 use std::any::Any;
@@ -42,15 +42,15 @@ type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> Sr
 
 struct ResourceRef {
     pub(crate) raw: RawResourceHandle,
-    pub(crate) usage: PassResourceAccessSyncType,
+    pub(crate) usage: PassResourceAccessType,
 }
 
 pub(crate) struct RenderPass {
-    read: Vec<ResourceRef>,
-    write: Vec<ResourceRef>,
-    render_fn: Option<Box<DynRenderFn>>,
-    name: String,
-    idx: usize,
+    pub(crate)  read: Vec<ResourceRef>,
+    pub(crate)  write: Vec<ResourceRef>,
+    pub(crate)  render_fn: Option<Box<DynRenderFn>>,
+    pub(crate)  name: String,
+    pub(crate)  idx: usize,
 }
 
 #[allow(dead_code)]
@@ -122,6 +122,10 @@ struct RgRasterPipeline {
     //TODO
 }
 
+
+struct CommonPipelineData {
+    descriptor_set:   ,
+}
 pub(crate ) enum Shader{
     //TODO supported shaders, for now glsl
     Glsl(PathBuf)
@@ -135,7 +139,7 @@ struct RgRaytracingPipeline {
 
 pub struct RenderGraph<State: RenderGraphState> {
     //TODO debug hooks and tools
-    passes: Vec<RenderPass>,
+    pub(crate) passes: Vec<RenderPass>,
     resources: Vec<GraphResourceInfo>,
 
     pub(crate) compute_pipelines: Vec<RgComputePipeline>,
@@ -143,7 +147,7 @@ pub struct RenderGraph<State: RenderGraphState> {
     pub(crate) rt_pipelines: Vec<RgRaytracingPipeline>,
 
     // transient_resources: TransientResources,
-    frame_descriptor_set: vk::DescriptorSet, //for the internal data?
+    frame_descriptor_set: vk::DescriptorSet, //
     state_data: State,
 }
 
@@ -175,6 +179,7 @@ impl RenderGraph<Setup> {
             compute_pipelines: vec![],
             raster_pipelines: vec![],
             rt_pipelines: vec![],
+            frame_descriptor_set: Default::default(),
             state_data: Setup::default(),
         })
     }
@@ -200,27 +205,6 @@ impl RenderGraph<Setup> {
     }
 }
 
-pub struct RenderPassBuilder {
-    render_pass: RenderPass,
-}
-impl RenderPassBuilder {
-    pub fn new(name: impl Into<String>) -> Self {
-        let render_pass = RenderPass {
-            read: vec![],
-            write: vec![],
-            render_fn: None,
-            name: name.into(),
-            idx: 0,
-        };
-        Self { render_pass }
-    }
-
-    fn submit(mut self, render_graph: &mut RenderGraph<Setup>) -> RenderPass {
-        //TODO possible drop trait to submit as well
-        self.render_pass.idx = render_graph.passes.len();
-        self.render_pass
-    }
-}
 
 pub struct BuiltRenderGraph {
     cmd_buffer: CmdBuffer
@@ -238,3 +222,7 @@ impl<T: Sized> TypeEquals for T {
         value
     }
 }
+
+PassBuilder : read/write/usage delle risorse
+Compile : creare il grafo e dipendenza
+

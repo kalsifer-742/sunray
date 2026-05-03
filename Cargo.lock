@@ -2875,8 +2875,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vk-sync-fork"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40715787bd1fc80a678622af093ae7a27aa42a22a4e974892d2fc2573fa7be3a"
+source = "git+https://github.com/MatteoBallardin/vk-sync-rs.git#b49bd511a5883c9ac91ef45d219419b57a8fe420"
 dependencies = [
  "ash",
 ]

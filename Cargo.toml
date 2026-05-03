@@ -19,7 +19,7 @@ gpu-allocator = "0.28.0"
 bytemuck = "1.24.0"
 image = "0.25.8"
 parking_lot = "0.12.5"
-vk-sync-fork = "0.5.2"
+vk-sync-fork = {git = "https://github.com/MatteoBallardin/vk-sync-rs.git"}
 rand = "0.10.1"
 slotmap = "1.1.1"
 rspirv-reflect = "0.9.0"
