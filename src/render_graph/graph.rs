@@ -1,7 +1,7 @@
 use crate::error::SrResult;
 use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer, RaytracingDescriptorSets};
 use ash::vk;
-use ash::vk::{CommandBuffer, DescriptorPool};
+use ash::vk::{CommandBuffer, DescriptorPool, DescriptorSet};
 use derive_builder::Builder;
 use enum_as_inner::EnumAsInner;
 use std::any::Any;
@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
 use vk_sync_fork as vk_sync;
+use crate::render_graph::pass_builder::RenderPassBuilder;
 
 pub trait Resource {
     type Desc: ResourceDesc;
@@ -40,7 +41,7 @@ pub struct Handle<ResourceType: Resource> {
 
 type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
 
-struct ResourceRef {
+pub(crate) struct ResourceRef {
     pub(crate) raw: RawResourceHandle,
     pub(crate) usage: PassResourceAccessType,
 }
@@ -52,6 +53,8 @@ pub(crate) struct RenderPass {
     pub(crate)  name: String,
     pub(crate)  idx: usize,
 }
+
+
 
 #[allow(dead_code)]
 fn global_barrier(core: &Core, cb: &CmdBuffer, previous_accesses: &[vk_sync::AccessType], next_accesses: &[vk_sync::AccessType]) {
@@ -124,8 +127,12 @@ struct RgRasterPipeline {
 
 
 struct CommonPipelineData {
-    descriptor_set:   ,
+    //TODO temp theorically the binding number
+    descriptor_set:  HashMap<u32,rspirv_reflect::DescriptorInfo >,
 }
+
+
+
 pub(crate ) enum Shader{
     //TODO supported shaders, for now glsl
     Glsl(PathBuf)
@@ -145,7 +152,7 @@ pub struct RenderGraph<State: RenderGraphState> {
     pub(crate) compute_pipelines: Vec<RgComputePipeline>,
     pub(crate) raster_pipelines: Vec<RgRasterPipeline>,
     pub(crate) rt_pipelines: Vec<RgRaytracingPipeline>,
-
+    pub(crate) passes_data: HashMap<u32,CommonPipelineData >,
     // transient_resources: TransientResources,
     frame_descriptor_set: vk::DescriptorSet, //
     state_data: State,
@@ -164,8 +171,8 @@ pub enum PassResourceAccessSyncType {
 
 #[derive(Copy, Clone)]
 pub struct PassResourceAccessType {
-    access_type: vk_sync::AccessType,
-    sync_type: PassResourceAccessSyncType,
+    pub(crate) access_type: vk_sync::AccessType,
+    pub(crate) sync_type: PassResourceAccessSyncType,
 }
 
 pub(crate) struct Render {}
@@ -203,8 +210,20 @@ impl RenderGraph<Setup> {
         let render_pass = render_pass_builder.submit(self);
         todo!()
     }
+
+    pub fn compile(mut self) -> RenderGraph<Built> {
+
+    }
+
 }
 
+
+pub(crate) struct Built {
+
+}
+impl RenderGraphState for Built{
+
+}
 
 pub struct BuiltRenderGraph {
     cmd_buffer: CmdBuffer
@@ -223,6 +242,4 @@ impl<T: Sized> TypeEquals for T {
     }
 }
 
-PassBuilder : read/write/usage delle risorse
-Compile : creare il grafo e dipendenza
 

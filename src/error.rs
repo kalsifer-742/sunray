@@ -1,5 +1,6 @@
 use ash::vk;
 use std::{backtrace::BacktraceStatus, fmt::Display};
+use crate::render_graph;
 
 pub type SrResult<T> = std::result::Result<T, SrError>;
 
@@ -9,6 +10,7 @@ pub enum ErrorSource {
     Vulkan(vk::Result),
     Gltf(gltf::Error),
     GpuAllocator(gpu_allocator::AllocationError),
+    RenderGraph(render_graph::graph_error::GraphError),
     Custom(String),
 }
 
