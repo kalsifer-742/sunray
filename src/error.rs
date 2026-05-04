@@ -86,6 +86,7 @@ impl std::error::Error for SrError {
             ErrorSource::Vulkan(error) => Some(error),
             ErrorSource::Gltf(error) => Some(error),
             ErrorSource::GpuAllocator(error) => Some(error),
+            ErrorSource::RenderGraph(error) => Some(error),
             ErrorSource::Custom(_string) => None,
         }
     }

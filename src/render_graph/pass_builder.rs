@@ -1,4 +1,3 @@
-use vk_sync_fork::is_write_access;
 use crate::error::{SrError, SrResult};
 use crate::render_graph::graph::{
     Handle, PassResourceAccessSyncType, PassResourceAccessType, RenderGraph, RenderPass, Resource, ResourceRef, Setup,
