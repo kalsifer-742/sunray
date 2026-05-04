@@ -1,27 +1,60 @@
-use crate::render_graph::graph::{ResourceDesc, TransientResources};
+use crate::render_graph::graph::{Handle, RawResourceHandle, ResourceDesc, TransientResources};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use ash::vk::CommandBuffer;
+use ash::vk;
+use ash::vk::{CommandBuffer, DescriptorSet};
+use derive_builder::Builder;
 use rspirv_reflect::DescriptorInfo;
 use crate::error::SrResult;
 use crate::vulkan_abstraction::RaytracingDescriptorSets;
 
+/// The maximum number of descriptor sets bound simultaneously.
+///
+/// Vulkan guarantees a minimum hardware support of 4 bound descriptor sets
+/// (`maxBoundDescriptorSets`). To maximize binding efficiency, resources are
+/// grouped into sets based on their frequency of update:
+///
+/// * **Set 0 (Global/Frame):** Data that changes once per frame.
+///   *(e.g., Camera View/Projection matrices, global time, directional lights)*
+/// * **Set 1 (Pass/Scene):** Data that changes per render pass.
+///   *(e.g., Environment maps, shadow maps, subpass inputs)*
+/// * **Set 2 (Material):** Data that changes when switching materials.
+///   *(e.g., Albedo/Normal textures, roughness/metallic factors)*
+/// * **Set 3 (Object/Draw):** Data that changes per individual draw call.
+///   *(e.g., Model transform matrices, animation bone data)*
+pub const MAX_DESCRIPTOR_SETS: usize = 4;
+
+
+//TODO unire il punto comune magari con trait
 pub struct RayTracingShaderDesc{
+    pub descriptor_set_opts: [Option<(u32, DescriptorSetLayoutOpts)>; MAX_DESCRIPTOR_SETS],
     pub(crate) shader: ShaderSource,
     pub(crate) pipeline_stage : RasterPipelineStage,
 }
 
 pub struct RasterShaderDesc{
+    pub descriptor_set_opts: [Option<(u32, DescriptorSetLayoutOpts)>; MAX_DESCRIPTOR_SETS],
     pub(crate) shader: ShaderSource,
     pub(crate) pipeline_stage : RasterPipelineStage,
 }
 
 pub struct ComputeShaderDesc{
+    pub descriptor_set_opts: [Option<(u32, DescriptorSetLayoutOpts)>; MAX_DESCRIPTOR_SETS],
     pub(crate) shader: ShaderSource,
 }
 
-pub struct DescriptorSetOps{
-        
+
+
+type DescriptorSetLayout = HashMap<u32, rspirv_reflect::DescriptorInfo>;
+type StageDescriptorSetLayouts = HashMap<u32, DescriptorSetLayout>;
+
+#[derive(Builder, Default, Debug, Clone)]
+#[builder(pattern = "owned", derive(Clone))]
+pub struct DescriptorSetLayoutOpts {
+    #[builder(setter(strip_option), default)]
+    pub flags: Option<vk::DescriptorSetLayoutCreateFlags>,
+    #[builder(setter(strip_option), default)]
+    pub replace: Option<DescriptorSetLayout>,
 }
 
 struct RgComputePipeline {
