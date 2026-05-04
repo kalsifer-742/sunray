@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use vk_sync_fork as vk_sync;
 use crate::render_graph::pass_builder::RenderPassBuilder;
 
@@ -19,10 +20,23 @@ pub trait Resource {
 pub trait ResourceDesc: Clone + std::fmt::Debug + Into<GraphResourceDesc> {
     type Resource: Resource;
 }
+
 #[derive(Clone, Copy)]
 pub(crate) struct RawResourceHandle {
     pub(crate) id: u32,
     pub(crate) version: u32,
+    render_state_index: u32 ,
+}
+
+pub struct Handle<ResourceType: Resource> {
+    pub(crate) raw: RawResourceHandle,
+    pub(crate) desc: <ResourceType as Resource>::Desc,
+    pub(crate) marker: PhantomData<ResourceType>,
+}
+
+pub(crate) struct ResourceRef {
+    pub(crate) raw: RawResourceHandle,
+    pub(crate) usage: PassResourceAccessType,
 }
 
 pub enum AnyRenderResource {
@@ -32,19 +46,10 @@ pub enum AnyRenderResource {
     ImportedBuffer(Arc<dyn Buffer>),
     ImportedRayTracingAcceleration(Arc<AccelerationStructure>),
 }
-pub struct Handle<ResourceType: Resource> {
-    //TODO an handle should be tied to the lifetime of the setup phase of the graph
-    pub(crate) raw: RawResourceHandle,
-    pub(crate) desc: <ResourceType as Resource>::Desc,
-    pub(crate) marker: PhantomData<ResourceType>,
-}
+
 
 type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
 
-pub(crate) struct ResourceRef {
-    pub(crate) raw: RawResourceHandle,
-    pub(crate) usage: PassResourceAccessType,
-}
 
 pub(crate) struct RenderPass {
     pub(crate)  read: Vec<ResourceRef>,
@@ -70,12 +75,12 @@ fn global_barrier(core: &Core, cb: &CmdBuffer, previous_accesses: &[vk_sync::Acc
     );
 }
 
+
 pub struct TransientResources {
     //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
 }
 
 #[derive(Clone)]
-
 pub enum GraphResourceImportInfo {
     Image {
         resource: Arc<Image>,
@@ -117,7 +122,6 @@ pub(crate) struct Setup {}
 impl RenderGraphState for Setup {}
 
 struct RgComputePipeline {
-
     //TODO
 }
 
@@ -125,38 +129,6 @@ struct RgRasterPipeline {
     //TODO
 }
 
-
-struct CommonPipelineData {
-    //TODO temp theorically the binding number
-    descriptor_set:  HashMap<u32,rspirv_reflect::DescriptorInfo >,
-}
-
-
-
-pub(crate ) enum Shader{
-    //TODO supported shaders, for now glsl
-    Glsl(PathBuf)
-}
-struct RgRaytracingPipeline {
-    raytracing_descriptor_sets: RaytracingDescriptorSets,
-    shader : Shader
-    //TODO
-
-}
-
-pub struct RenderGraph<State: RenderGraphState> {
-    //TODO debug hooks and tools
-    pub(crate) passes: Vec<RenderPass>,
-    resources: Vec<GraphResourceInfo>,
-
-    pub(crate) compute_pipelines: Vec<RgComputePipeline>,
-    pub(crate) raster_pipelines: Vec<RgRasterPipeline>,
-    pub(crate) rt_pipelines: Vec<RgRaytracingPipeline>,
-    pub(crate) passes_data: HashMap<u32,CommonPipelineData >,
-    // transient_resources: TransientResources,
-    frame_descriptor_set: vk::DescriptorSet, //
-    state_data: State,
-}
 
 pub(crate) struct PassResourceRef {
     pub handle: RawResourceHandle,
@@ -175,7 +147,52 @@ pub struct PassResourceAccessType {
     pub(crate) sync_type: PassResourceAccessSyncType,
 }
 
-pub(crate) struct Render {}
+struct ShaderDesc{
+    shader: Shader,
+}
+
+pub(crate ) enum Shader{
+    //TODO supported shaders, for now glsl
+    Glsl(PathBuf)
+}
+pub trait RenderPassFactory{
+
+    fn render_fn(self) -> ( Box<DynRenderFn>, HashMap<u32,rspirv_reflect::DescriptorInfo > , Vec<ShaderDesc> );
+
+
+
+}
+
+struct CommonPipelineData {
+    //TODO temp theorically the binding number
+    descriptor_set:  HashMap<u32,rspirv_reflect::DescriptorInfo >,
+
+}
+
+struct RgRaytracingPipeline {
+    raytracing_descriptor_sets: RaytracingDescriptorSets,
+    shader : Shader
+}
+
+
+pub struct RenderGraph<State: RenderGraphState> {
+    state_index:  u32,
+
+    //TODO debug hooks and tools
+    pub(crate) passes: Vec<RenderPass>,
+    resources: Vec<GraphResourceInfo>,
+
+    pub(crate) compute_pipelines: Vec<RgComputePipeline>,
+    pub(crate) raster_pipelines: Vec<RgRasterPipeline>,
+    pub(crate) rt_pipelines: Vec<RgRaytracingPipeline>,
+    pub(crate) passes_data: HashMap<u32,CommonPipelineData >,
+    // transient_resources: TransientResources,
+    frame_descriptor_set: vk::DescriptorSet, //
+    state_data: State,
+}
+
+
+
 impl RenderGraph<Setup> {
     pub fn new() -> SrResult<Self> {
         Ok(RenderGraph {
@@ -196,7 +213,7 @@ impl RenderGraph<Setup> {
     {
         self.create_raw_resource(desc.clone().into());
         Handle {
-            raw: RawResourceHandle { id: 0, version: 0 },
+            raw: RawResourceHandle { id: 0, version: 0, render_state_index: self.state_index },
             desc: TypeEquals::same(desc),
             marker: Default::default(),
         }
@@ -216,6 +233,9 @@ impl RenderGraph<Setup> {
     }
 
 }
+
+
+pub(crate) struct Render {}
 
 
 pub(crate) struct Built {

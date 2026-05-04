@@ -26,11 +26,11 @@ impl SrError {
 
         Self::new(ErrorSource::Custom(error), description)
     }
-    fn new(source: ErrorSource, description: String) -> Self {
+    pub(crate) fn new(source: ErrorSource, description: String) -> Self {
         Self::new_with_backtrace(source, description, std::backtrace::Backtrace::capture())
     }
 
-    fn new_with_backtrace(source: ErrorSource, description: String, bt: std::backtrace::Backtrace) -> Self {
+    pub(crate) fn new_with_backtrace(source: ErrorSource, description: String, bt: std::backtrace::Backtrace) -> Self {
         let description = if bt.status() == BacktraceStatus::Captured {
             format!("{description}\n{bt}")
         } else {
@@ -90,3 +90,5 @@ impl std::error::Error for SrError {
         }
     }
 }
+
+

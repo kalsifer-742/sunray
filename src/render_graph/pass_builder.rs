@@ -1,4 +1,5 @@
-use crate::error::SrResult;
+use vk_sync_fork::is_write_access;
+use crate::error::{SrError, SrResult};
 use crate::render_graph::graph::{
     Handle, PassResourceAccessSyncType, PassResourceAccessType, RenderGraph, RenderPass, Resource, ResourceRef, Setup,
 };
@@ -26,7 +27,8 @@ impl RenderPassBuilder {
     }
 
     pub fn read<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
-        if !access_type.is_write() {
+
+        if ! access_type.is_write_access() {
             self.render_pass.read.push(ResourceRef {
                 raw: resource.raw,
                 usage: PassResourceAccessType {
@@ -36,13 +38,13 @@ impl RenderPassBuilder {
             });
             Ok(())
         } else {
-            Err(GraphError::IncorrectRenderAccessFlags)
+            Err( SrError::new(GraphError::IncorrectRenderAccessFlags.into() , format!( "asked to read with such access {access_type:?}" ) ))
         }
     }
 
     pub fn write<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
         //TODO more complex not always sync write+write and read+write
-        if access_type.is_write() {
+        if access_type.is_write_access() {
             self.render_pass.read.push(ResourceRef {
                 raw: resource.raw,
                 usage: PassResourceAccessType {
@@ -52,7 +54,7 @@ impl RenderPassBuilder {
             });
             Ok(())
         } else {
-            Err(GraphError::IncorrectRenderAccessFlags)
+            Err( SrError::new(GraphError::IncorrectRenderAccessFlags.into() , format!( "asked to write with such access {access_type:?}" ) ))
         }
     }
 }
