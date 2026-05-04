@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use vk_sync_fork as vk_sync;
 use crate::render_graph::pass_builder::RenderPassBuilder;
+use crate::render_graph::pass_factories::DynRenderFn;
 
 pub trait Resource {
     type Desc: ResourceDesc;
@@ -48,7 +49,6 @@ pub enum AnyRenderResource {
 }
 
 
-type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
 
 
 pub(crate) struct RenderPass {
@@ -121,13 +121,6 @@ pub trait RenderGraphState {}
 pub(crate) struct Setup {}
 impl RenderGraphState for Setup {}
 
-struct RgComputePipeline {
-    //TODO
-}
-
-struct RgRasterPipeline {
-    //TODO
-}
 
 
 pub(crate) struct PassResourceRef {
@@ -147,32 +140,8 @@ pub struct PassResourceAccessType {
     pub(crate) sync_type: PassResourceAccessSyncType,
 }
 
-struct ShaderDesc{
-    shader: Shader,
-}
-
-pub(crate ) enum Shader{
-    //TODO supported shaders, for now glsl
-    Glsl(PathBuf)
-}
-pub trait RenderPassFactory{
-
-    fn render_fn(self) -> ( Box<DynRenderFn>, HashMap<u32,rspirv_reflect::DescriptorInfo > , Vec<ShaderDesc> );
 
 
-
-}
-
-struct CommonPipelineData {
-    //TODO temp theorically the binding number
-    descriptor_set:  HashMap<u32,rspirv_reflect::DescriptorInfo >,
-
-}
-
-struct RgRaytracingPipeline {
-    raytracing_descriptor_sets: RaytracingDescriptorSets,
-    shader : Shader
-}
 
 
 pub struct RenderGraph<State: RenderGraphState> {
@@ -196,6 +165,7 @@ pub struct RenderGraph<State: RenderGraphState> {
 impl RenderGraph<Setup> {
     pub fn new() -> SrResult<Self> {
         Ok(RenderGraph {
+            state_index: 0,
             passes: vec![],
             resources: vec![],
             //transient_resources: TransientResources {},
@@ -203,6 +173,7 @@ impl RenderGraph<Setup> {
             compute_pipelines: vec![],
             raster_pipelines: vec![],
             rt_pipelines: vec![],
+            passes_data: Default::default(),
             frame_descriptor_set: Default::default(),
             state_data: Setup::default(),
         })
@@ -228,9 +199,9 @@ impl RenderGraph<Setup> {
         todo!()
     }
 
-    pub fn compile(mut self) -> RenderGraph<Built> {
-
-    }
+    // pub fn compile(mut self) -> RenderGraph<Built> {
+    //
+    // }
 
 }
 
