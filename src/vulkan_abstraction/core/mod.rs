@@ -62,7 +62,7 @@ impl Core {
         let surface_support = match create_surface.as_ref() {
             Some(f) => Some((
                 f(&entry, instance.inner())?,
-                khr::surface::Instance::new(&entry, instance.inner()),
+                khr::surface::Instance::load(&entry, instance.inner()),
             )),
             None => None,
         };
@@ -97,8 +97,8 @@ impl Core {
             allocation_sizes: Default::default(),
         })?;
 
-        let acceleration_structure_device = khr::acceleration_structure::Device::new(&instance.inner(), &device.inner());
-        let ray_tracing_pipeline_device = khr::ray_tracing_pipeline::Device::new(&instance.inner(), &device.inner());
+        let acceleration_structure_device = khr::acceleration_structure::Device::load(&instance.inner(), &device.inner());
+        let ray_tracing_pipeline_device = khr::ray_tracing_pipeline::Device::load(&instance.inner(), &device.inner());
 
         let graphics_queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0, device.graphics_queue_family_index())?;
 

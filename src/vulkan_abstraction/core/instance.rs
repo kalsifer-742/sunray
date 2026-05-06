@@ -4,7 +4,7 @@ use std::{
 };
 
 use ash::{ext, vk};
-
+use ash::vk::TaggedStructure;
 use crate::error::SrResult;
 
 pub struct Instance {
@@ -216,13 +216,13 @@ impl Instance {
             .enabled_extension_names(&instance_extensions);
 
         let instance_create_info = if enable_layer_settings {
-            instance_create_info.push_next(layer_settings_create_info.as_mut().unwrap())
+            instance_create_info.push(layer_settings_create_info.as_mut().unwrap())
         } else {
             instance_create_info
         };
 
         let instance_create_info = if enable_debug_utils {
-            instance_create_info.push_next(debug_messenger_create_info.as_mut().unwrap())
+            instance_create_info.push(debug_messenger_create_info.as_mut().unwrap())
         } else {
             instance_create_info
         };
@@ -230,7 +230,7 @@ impl Instance {
         let instance = unsafe { entry.create_instance(&instance_create_info, None) }?;
 
         let (debug_utils_instance, debug_messenger) = if enable_debug_utils {
-            let debug_utils_instance = ext::debug_utils::Instance::new(&entry, &instance);
+            let debug_utils_instance = ext::debug_utils::Instance::load(&entry, &instance);
             let debug_messenger = unsafe {
                 debug_utils_instance.create_debug_utils_messenger(debug_messenger_create_info.as_ref().unwrap(), None)
             }?;

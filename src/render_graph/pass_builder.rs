@@ -1,62 +1,151 @@
 use crate::error::{SrError, SrResult};
-use crate::render_graph::graph::{
-    Handle, PassResourceAccessSyncType, PassResourceAccessType, RenderGraph, RenderPass, Resource, ResourceRef, Setup,
-};
+use crate::render_graph::graph::{Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource, ResourceRef, Setup, TransientResources};
+use ash::vk;
+use ash::vk::CommandBuffer;
+use derive_builder::Builder;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use crate::render_graph::graph_error::GraphError;
 
-pub struct RenderPassBuilder {
-    render_pass: RenderPass,
+pub enum BindingElement {
+    //TODO maybe compile time check the value corresponds to the inserted one
+    RgResource {
+        resource: RawResourceHandle,
+    },
+
+    /// Buffer Device Address: Directly pass a 64-bit GPU pointer. TODO this is unsafe and suggested by gemini
+    /// Highly recommended for SSBOs in a modern bindless engine.
+    DeviceAddress {
+        resource: vk::DeviceMemory,
+    },
 }
-impl RenderPassBuilder {
-    pub fn new(name: impl Into<String>) -> Self {
-        let render_pass = RenderPass {
-            read: vec![],
-            write: vec![],
-            render_fn: None,
-            name: name.into(),
-            idx: 0,
-        };
-        Self { render_pass }
-    }
 
-    pub(crate) fn submit(mut self, render_graph: &mut RenderGraph<Setup>) -> RenderPass {
-        //TODO possible drop trait to submit as well
-        self.render_pass.idx = render_graph.passes.len();
-        self.render_pass
-    }
+pub enum BindingIntent {
+    Single { name: &'static str },
+    ArrayElement { name: &'static str, array_index: u32 },
+}
 
+type DescriptorsLayout = HashMap<String, rspirv_reflect::DescriptorInfo>;
+
+type DescriptorOps = HashMap<BindingIntent, BindingElement>;
+pub struct RayTracingShaderDesc {
+    pub descriptor_operations: DescriptorOps,
+    pub(crate) shader: ShaderSource,
+}
+
+pub struct RasterShaderDesc {
+    //TODO
+    pub descriptor_operations: DescriptorOps,
+    pub(crate) shader: ShaderSource,
+    pub(crate) pipeline_stage: RasterPipelineStage,
+}
+
+pub struct ComputeShaderDesc {
+    pub descriptor_operations: DescriptorOps,
+    pub(crate) shader: ShaderSource,
+}
+
+pub(crate) struct PassCommonData {
+    pub(crate) read: Vec<ResourceRef>,
+    pub(crate) write: Vec<ResourceRef>,
+
+    pub(crate) name: String,
+    id: usize,
+}
+
+pub struct PassCommonDataBuilder {
+    pass_common_data: PassCommonData,
+}
+impl PassCommonDataBuilder {
+    pub fn new(rg: &mut RenderGraph<Setup>, name: impl Into<String>) -> Self {
+        Self {
+            pass_common_data: PassCommonData {
+                read: vec![],
+                write: vec![],
+                name: name.into(),
+                id: rg.next_pass_id(),
+            },
+        }
+    }
     pub fn read<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
-
-        if ! access_type.is_write_access() {
-            self.render_pass.read.push(ResourceRef {
+        if !access_type.is_write_access() {
+            self.pass_common_data.read.push(ResourceRef {
                 raw: resource.raw,
-                usage: PassResourceAccessType {
+                access: PassResourceAccessType {
                     access_type,
-                    sync_type: PassResourceAccessSyncType::SkipSyncIfSameAccessType,
+                    sync_type: PassResourceAccessSyncType::NeverSync,
                 },
             });
             Ok(())
         } else {
-            Err( SrError::new(GraphError::IncorrectRenderAccessFlags.into() , format!( "asked to read with such access {access_type:?}" ) ))
+            Err( SrError::new(GraphError::IncorrectRenderAccessFlags.into() , format!( "asked to read with such access: {access_type:?}" ) ))
         }
     }
 
     pub fn write<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
         //TODO more complex not always sync write+write and read+write
         if access_type.is_write_access() {
-            self.render_pass.read.push(ResourceRef {
+            self.pass_common_data.write.push(ResourceRef {
                 raw: resource.raw,
-                usage: PassResourceAccessType {
+                access: PassResourceAccessType {
                     access_type,
                     sync_type: PassResourceAccessSyncType::AlwaysSync,
                 },
             });
             Ok(())
         } else {
-            Err( SrError::new(GraphError::IncorrectRenderAccessFlags.into() , format!( "asked to write with such access {access_type:?}" ) ))
+            Err( SrError::new(GraphError::IncorrectRenderAccessFlags.into() , format!( "asked to write with such access: {access_type:?}" ) ))
         }
     }
+
 }
 
 
 
+#[derive(Builder)]
+#[builder(pattern = "owned")]
+pub(crate) struct RaytracingRenderPass {
+    common: PassCommonData,
+    ray_gen: RayTracingShaderDesc,
+    #[builder(setter(each = "add_closest_hit"))]
+    closest_hit: Vec<RayTracingShaderDesc>,
+    #[builder(setter(each = "add_miss"))]
+    miss: Vec<RayTracingShaderDesc>,
+    trace_extent: [u32; 3],
+}
+
+pub(crate) struct RasterRenderPass {
+    //TODO
+}
+#[derive(Builder)]
+#[builder(pattern = "owned")]
+pub(crate) struct ComputeRenderPass {
+    common: PassCommonData,
+    #[builder(setter(each = "add_shader"))]
+    shaders: Vec<ShaderSource>,
+    entry_point: String,
+}
+
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+pub enum RayTracingPipelineStage {
+    RayGen,
+    RayMiss,
+    RayClosestHit,
+}
+
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+pub enum RasterPipelineStage {
+    //TODO check for missing since I don't raster yet like task, mesh, tessellation , geometry
+    Vertex,
+    Pixel,
+}
+
+pub trait ShaderDesc {}
+
+#[derive(Clone, Debug)]
+pub enum ShaderSource {
+    //TODO supported shaders, for now glsl
+    Glsl(PathBuf),
+}
+
+pub(crate) type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones

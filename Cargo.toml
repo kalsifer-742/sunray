@@ -11,15 +11,15 @@ categories = ["multimedia", "graphics", "hardware-support", "game-development"]
 exclude = ["examples/assets/Lantern.glb", "examples/.gitignore", ".gitignore"]
 
 [dependencies]
-ash = { version = "0.38.0", features = ["linked"] }
+ash = { git = "https://github.com/ash-rs/ash.git" , features = ["linked"] }
 nalgebra = "0.34"
 gltf = { version = "1.4.1", features = ["KHR_lights_punctual", "KHR_materials_emissive_strength", "KHR_materials_transmission", "KHR_materials_ior"] }
 log = { version = "0.4.28", features = ["release_max_level_warn"] }
-gpu-allocator = "0.28.0"
+gpu-allocator = {  git = "https://github.com/MatteoBallardin/gpu-allocator.git" }
 bytemuck = "1.24.0"
 image = "0.25.8"
 parking_lot = "0.12.5"
-vk-sync-fork = {git = "https://github.com/MatteoBallardin/vk-sync-rs.git"}
+vk-sync-fork = {git = "https://github.com/MatteoBallardin/vk-sync-rs.git" , branch = "1.4"}
 rand = "0.10.1"
 slotmap = "1.1.1"
 rspirv-reflect = "0.9.0"

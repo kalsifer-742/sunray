@@ -3,6 +3,7 @@ use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::{Buffer, TLAS};
 use ash::vk;
 use std::rc::Rc;
+use ash::vk::TaggedStructure;
 
 pub struct RaytracingDescriptorSetLayout {
     descriptor_set_layout: vk::DescriptorSetLayout,
@@ -219,7 +220,7 @@ impl RaytracingDescriptorSets {
         push_write(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .push_next(&mut write_descriptor_set_acceleration_structure)
+                .push(&mut write_descriptor_set_acceleration_structure)
                 .dst_set(descriptor_sets[0])
                 .dst_binding(RaytracingDescriptorSetLayout::TLAS_BINDING)
                 .descriptor_count(1), // Added descriptor_count

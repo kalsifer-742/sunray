@@ -1,18 +1,13 @@
 use crate::error::SrResult;
-use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer, RaytracingDescriptorSets};
-use ash::vk;
-use ash::vk::{CommandBuffer, DescriptorPool, DescriptorSet};
-use derive_builder::Builder;
+use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass, RenderPassBuilder};
+use crate::vulkan_abstraction::{
+    AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer,
+};
 use enum_as_inner::EnumAsInner;
-use std::any::Any;
-use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
+use ash::vk::RenderPass;
 use vk_sync_fork as vk_sync;
-use crate::render_graph::pass_builder::RenderPassBuilder;
-use crate::render_graph::pass_factories::DynRenderFn;
 
 pub trait Resource {
     type Desc: ResourceDesc;
@@ -22,22 +17,24 @@ pub trait ResourceDesc: Clone + std::fmt::Debug + Into<GraphResourceDesc> {
     type Resource: Resource;
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct RawResourceHandle {
     pub(crate) id: u32,
     pub(crate) version: u32,
-    render_state_index: u32 ,
+    pub(super) render_state_index: u32,
 }
 
+#[derive(Clone, Debug)]
 pub struct Handle<ResourceType: Resource> {
     pub(crate) raw: RawResourceHandle,
     pub(crate) desc: <ResourceType as Resource>::Desc,
     pub(crate) marker: PhantomData<ResourceType>,
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct ResourceRef {
     pub(crate) raw: RawResourceHandle,
-    pub(crate) usage: PassResourceAccessType,
+    pub(crate) access: PassResourceAccessType,
 }
 
 pub enum AnyRenderResource {
@@ -47,19 +44,6 @@ pub enum AnyRenderResource {
     ImportedBuffer(Arc<dyn Buffer>),
     ImportedRayTracingAcceleration(Arc<AccelerationStructure>),
 }
-
-
-
-
-pub(crate) struct RenderPass {
-    pub(crate)  read: Vec<ResourceRef>,
-    pub(crate)  write: Vec<ResourceRef>,
-    pub(crate)  render_fn: Option<Box<DynRenderFn>>,
-    pub(crate)  name: String,
-    pub(crate)  idx: usize,
-}
-
-
 
 #[allow(dead_code)]
 fn global_barrier(core: &Core, cb: &CmdBuffer, previous_accesses: &[vk_sync::AccessType], next_accesses: &[vk_sync::AccessType]) {
@@ -74,7 +58,6 @@ fn global_barrier(core: &Core, cb: &CmdBuffer, previous_accesses: &[vk_sync::Acc
         &[],
     );
 }
-
 
 pub struct TransientResources {
     //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
@@ -114,69 +97,57 @@ pub enum GraphResourceInfo {
     Imported(GraphResourceImportInfo),
 }
 
-struct PipelineCache {}
-
 pub trait RenderGraphState {}
 #[derive(Default)]
 pub(crate) struct Setup {}
 impl RenderGraphState for Setup {}
 
-
-
-pub(crate) struct PassResourceRef {
-    pub handle: RawResourceHandle,
-    pub access: PassResourceAccessType,
-}
-
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum PassResourceAccessSyncType {
     AlwaysSync,
     SkipSyncIfSameAccessType,
+    NeverSync,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct PassResourceAccessType {
     pub(crate) access_type: vk_sync::AccessType,
     pub(crate) sync_type: PassResourceAccessSyncType,
 }
 
-
-
-
+pub enum AnyRenderPass {
+    Rt(RaytracingRenderPass),
+    Raster(RasterRenderPass),
+    Computer(ComputeRenderPass)
+}
 
 pub struct RenderGraph<State: RenderGraphState> {
-    state_index:  u32,
-
+    state_index: u32,
+    next_pass_id: usize,
     //TODO debug hooks and tools
-    pub(crate) passes: Vec<RenderPass>,
     resources: Vec<GraphResourceInfo>,
-
-    pub(crate) compute_pipelines: Vec<RgComputePipeline>,
-    pub(crate) raster_pipelines: Vec<RgRasterPipeline>,
-    pub(crate) rt_pipelines: Vec<RgRaytracingPipeline>,
-    pub(crate) passes_data: HashMap<u32,CommonPipelineData >,
-    // transient_resources: TransientResources,
-    frame_descriptor_set: vk::DescriptorSet, //
+    passes : Vec<AnyRenderPass>,
+     transient_resources: TransientResources,
     state_data: State,
 }
 
-
-
 impl RenderGraph<Setup> {
+    
     pub fn new() -> SrResult<Self> {
         Ok(RenderGraph {
             state_index: 0,
+            next_pass_id: 0,
             passes: vec![],
             resources: vec![],
-            //transient_resources: TransientResources {},
-            //frame_descriptor_set: Default::default(),
-            compute_pipelines: vec![],
-            raster_pipelines: vec![],
-            rt_pipelines: vec![],
-            passes_data: Default::default(),
-            frame_descriptor_set: Default::default(),
+            transient_resources: TransientResources {},
             state_data: Setup::default(),
         })
+    }
+
+    pub(super) fn next_pass_id(&mut self) -> usize {
+        let id = self.next_pass_id;
+        self.next_pass_id += 1;
+        id
     }
     pub fn create<Desc: ResourceDesc>(&mut self, desc: Desc) -> Handle<<Desc as ResourceDesc>::Resource>
     where
@@ -184,7 +155,11 @@ impl RenderGraph<Setup> {
     {
         self.create_raw_resource(desc.clone().into());
         Handle {
-            raw: RawResourceHandle { id: 0, version: 0, render_state_index: self.state_index },
+            raw: RawResourceHandle {
+                id: 0,
+                version: 0,
+                render_state_index: self.state_index,
+            },
             desc: TypeEquals::same(desc),
             marker: Default::default(),
         }
@@ -199,26 +174,18 @@ impl RenderGraph<Setup> {
         todo!()
     }
 
-    // pub fn compile(mut self) -> RenderGraph<Built> {
-    //
-    // }
-
+    pub fn compile(mut self) -> RenderGraph<Built> {
+    
+    }
 }
-
 
 pub(crate) struct Render {}
 
-
-pub(crate) struct Built {
-
-}
-impl RenderGraphState for Built{
-
-}
+pub(crate) struct Built {}
+impl RenderGraphState for Built {}
 
 pub struct BuiltRenderGraph {
-    cmd_buffer: CmdBuffer
-    //ready to execute
+    cmd_buffer: CmdBuffer, //ready to execute
 }
 
 pub trait TypeEquals {
@@ -232,5 +199,3 @@ impl<T: Sized> TypeEquals for T {
         value
     }
 }
-
-

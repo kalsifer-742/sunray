@@ -9,6 +9,7 @@ use ash::{
     khr,
     vk::{self, FormatFeatureFlags},
 };
+use ash::vk::TaggedStructure;
 
 pub struct Device {
     device: ash::Device,
@@ -130,11 +131,11 @@ impl Device {
 
             let device_create_info = vk::DeviceCreateInfo::default()
                 .enabled_extension_names(&device_extensions)
-                .push_next(&mut vk12_features)
-                .push_next(&mut vk13_features)
-                .push_next(&mut physical_device_rt_pipeline_features)
-                .push_next(&mut physical_device_acceleration_structure_features)
-                .push_next(&mut physical_device_features)
+                .push(&mut vk12_features)
+                .push(&mut vk13_features)
+                .push(&mut physical_device_rt_pipeline_features)
+                .push(&mut physical_device_acceleration_structure_features)
+                .push(&mut physical_device_features)
                 .queue_create_infos(&queue_create_infos);
 
             unsafe { instance.create_device(physical_device, &device_create_info, None) }?
@@ -152,8 +153,8 @@ impl Device {
                 vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
 
             let mut physical_device_properties = vk::PhysicalDeviceProperties2::default()
-                .push_next(&mut physical_device_rt_pipeline_properties)
-                .push_next(&mut physical_device_acceleration_structure_properties);
+                .push(&mut physical_device_rt_pipeline_properties)
+                .push(&mut physical_device_acceleration_structure_properties);
 
             unsafe { instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
 
