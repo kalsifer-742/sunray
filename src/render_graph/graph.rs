@@ -1,9 +1,10 @@
 use crate::error::SrResult;
-use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
+use crate::render_graph::pass_builder::{ComputeRenderPass, DynRenderFn, RasterRenderPass, RaytracingRenderPass};
 use crate::vulkan_abstraction::{
     AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer,
 };
 use enum_as_inner::EnumAsInner;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use vk_sync_fork as vk_sync;
@@ -58,9 +59,6 @@ fn global_barrier(core: &Core, cb: &CmdBuffer, previous_accesses: &[vk_sync::Acc
     );
 }
 
-pub struct TransientResources {
-    //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
-}
 
 #[derive(Clone)]
 pub enum GraphResourceImportInfo {
@@ -124,8 +122,9 @@ pub struct PassResourceAccessType {
 pub enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
-    Compute(ComputeRenderPass)
+    Compute(ComputeRenderPass),
 }
+
 
 pub struct RenderGraph<State: RenderGraphState> {
     state_index: u32,
@@ -133,13 +132,12 @@ pub struct RenderGraph<State: RenderGraphState> {
     next_resource_id: u32,
     //TODO debug hooks and tools
     virtual_resources: Vec<GraphResourceInfo>,
-    passes : Vec<AnyRenderPass>,
-     transient_resources: TransientResources,
+    passes: Vec<AnyRenderPass>,
+    transient_resources: TransientResources,
     state_data: State,
 }
 
 impl RenderGraph<Setup> {
-    
     pub fn new() -> SrResult<Self> {
         Ok(RenderGraph {
             state_index: 0,
@@ -164,7 +162,7 @@ impl RenderGraph<Setup> {
     }
     pub fn create<Desc: ResourceDesc>(&mut self, desc: Desc) -> Handle<<Desc as ResourceDesc>::Resource>
     where
-        Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
+        Desc: TypeEquals<Other=<<Desc as ResourceDesc>::Resource as Resource>::Desc>,
     {
         self.create_raw_resource(desc.clone().into());
         Handle {
@@ -182,11 +180,10 @@ impl RenderGraph<Setup> {
         self.virtual_resources.push(GraphResourceInfo::Created(resource_desc));
     }
 
-    pub fn import< Desc: ResourceDesc>(&mut self, desc: &(impl RgImportable<Desc> + Into<GraphResourceImportInfo> ) ) -> Handle<<Desc as ResourceDesc>::Resource>
+    pub fn import<Desc: ResourceDesc>(&mut self, desc: &(impl RgImportable<Desc> + Into<GraphResourceImportInfo> )) -> Handle<<Desc as ResourceDesc>::Resource>
     where
-        Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
+        Desc: TypeEquals<Other=<<Desc as ResourceDesc>::Resource as Resource>::Desc>,
     {
-
         self.virtual_resources.push(GraphResourceInfo::Imported(desc.into()));
         Handle {
             raw: RawResourceHandle {
@@ -204,8 +201,8 @@ impl RenderGraph<Setup> {
     }
 
 
-    pub fn compile(mut self) -> RenderGraph<Built> {//TODO with a lot of reordering and a virtual layer there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is site, to be published the paper at https://dl.acm.org/profile/99661091135
-
+    pub fn compile(mut self) -> RenderGraph<Built> { //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is site, to be published the paper at https://dl.acm.org/profile/99661091135
+        let mut actual_resources = ResourceDeref
 
         for pass in self.passes.iter_mut() {
             let common = &mut match pass {
@@ -226,22 +223,43 @@ impl RenderGraph<Setup> {
         }
 
 
-
-        let mut actual_resources = ResourceDeref
-        let mut graph =   ;
+        let mut graph = ;
     }
 }
 
-pub trait RgImportable<ResDesc : ResourceDesc> { //TODO do I want to take ownership of the data?
+pub(super) struct CompiledPass {
+    render: Box<DynRenderFn>,
+    pub(crate) name: String,
+    id: u32,
+}
+
+#[derive(Default)]
+pub struct TransientResources {
+    external_images: HashMap<u32, Arc<Image>>,
+    transient_images: HashMap<u32, Image>,
+    external_buffers: HashMap<u32, Arc<dyn Buffer>>,
+    transient_buffers: HashMap<u32, Box<dyn Buffer>>,
+    external_raytracing_ac: HashMap<u32, Arc<AccelerationStructure>>,
+    transient_raytracing_ac: HashMap<u32,AccelerationStructure>,
+    //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
+}
+impl TransientResources {
+    pub fn populate(&mut self , virtual_resources: &[GraphResourceInfo]) {
+
+    }
+}
+
+pub trait RgImportable<ResDesc: ResourceDesc> { //TODO do I want to take ownership of the data?
     //TODO I don't know how to obligate to return a created
     fn import(&self) -> ResDesc;
 }
 
 
-
 pub(crate) struct Render {}
 
-pub(crate) struct Built {}
+pub(crate) struct Built {
+
+}
 impl RenderGraphState for Built {}
 
 pub struct BuiltRenderGraph {

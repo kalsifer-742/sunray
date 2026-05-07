@@ -83,6 +83,7 @@ impl PassCommonDataBuilder {
     }
 
     pub fn write<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
+        //TODO this needs to change the resource version
         //TODO more complex not always sync write+write and read+write and render graph state id lookup
 
         if access_type.is_write_access() {
@@ -170,4 +171,4 @@ pub enum ShaderSource {
     Glsl(PathBuf),
 }
 
-pub(crate) type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
+pub(crate) type DynRenderFn =  dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
