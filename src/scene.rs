@@ -3,6 +3,7 @@ use std::{collections::HashMap, rc::Rc};
 use crate::{error::SrResult, vulkan_abstraction};
 
 use ash::vk;
+use gltf::image::Format;
 use nalgebra as na;
 use crate::vulkan_abstraction::ResourceManager;
 
@@ -246,13 +247,14 @@ fn to_vk_image(
     Ok(image)
 }
 
-// Becuase of the oprhan rule of rust
+// Because of the orphan rule of rust
 // it is not possible to implement the trait from
 // for the types gltf::image::Format and vk::Format
 // so I created a custom trait
 pub trait FromGltf<T> {
     fn from_gltf(value: T) -> Self;
 }
+
 
 impl FromGltf<gltf::image::Format> for vk::Format {
     fn from_gltf(value: gltf::image::Format) -> Self {

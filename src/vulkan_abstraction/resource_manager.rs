@@ -77,7 +77,8 @@ impl ResourceManager {
             vk::BufferUsageFlags::STORAGE_BUFFER,
             "Entity transforms GPU buffer",
         )?;
-
+        
+        
         let mut instances_buffer = vulkan_abstraction::StagingBuffer::new(
             Rc::clone(&core),
             MAX_TLAS_INSTANCES as vk::DeviceSize,

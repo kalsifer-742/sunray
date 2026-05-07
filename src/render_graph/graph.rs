@@ -83,11 +83,27 @@ impl Into<GraphResourceInfo> for GraphResourceImportInfo {
         GraphResourceInfo::Imported(self)
     }
 }
+#[derive(Clone, Debug)]
+pub struct ImageDesc {
 
-pub struct ImageDesc {}
+}
 
-pub struct BufferDesc {}
-pub struct RaytracingASDesc {}
+impl Into<GraphResourceDesc> for ImageDesc {
+    fn into(self) -> GraphResourceDesc {
+        GraphResourceDesc::Image(self)
+    }
+}
+
+impl ResourceDesc for ImageDesc {
+    type Resource = Image;
+}
+
+pub struct BufferDesc {
+
+}
+pub struct RaytracingASDesc {
+
+}
 
 pub enum GraphResourceDesc {
     Image(ImageDesc),
@@ -138,16 +154,16 @@ pub struct RenderGraph<State: RenderGraphState> {
 }
 
 impl RenderGraph<Setup> {
-    pub fn new() -> SrResult<Self> {
-        Ok(RenderGraph {
+    pub fn new() -> Self {
+        RenderGraph {
             state_index: 0,
             next_pass_id: 0,
             next_resource_id: 0,
             passes: vec![],
             virtual_resources: vec![],
-            transient_resources: TransientResources {},
+            transient_resources: TransientResources::default(),
             state_data: Setup::default(),
-        })
+        }
     }
 
     pub(super) fn next_pass_id(&mut self) -> u32 {
