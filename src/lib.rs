@@ -12,7 +12,7 @@ pub use scene::*;
 use std::{collections::HashMap, rc::Rc};
 
 use ash::vk;
-use crate::render_graph::graph::ImageDesc;
+
 use crate::utils::env_var_as_bool;
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
@@ -429,11 +429,6 @@ impl Renderer {
     }
 
     pub fn build_image_dependent_data(&mut self, images: &[vk::Image]) -> SrResult<()> {
-        
-        let rg = render_graph::graph::RenderGraph::new();
-        let image_handle= rg.create(ImageDesc{});
-        
-        
         for post_blit_image in images {
             let raytrace_result_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
