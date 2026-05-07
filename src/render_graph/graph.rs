@@ -1,12 +1,11 @@
 use crate::error::SrResult;
-use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass, RenderPassBuilder};
+use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
 use crate::vulkan_abstraction::{
     AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer,
 };
 use enum_as_inner::EnumAsInner;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use ash::vk::RenderPass;
 use vk_sync_fork as vk_sync;
 
 pub trait Resource {
@@ -80,6 +79,13 @@ pub enum GraphResourceImportInfo {
     SwapchainImage,
 }
 
+
+impl Into<GraphResourceInfo> for GraphResourceImportInfo {
+    fn into(self) -> GraphResourceInfo {
+        GraphResourceInfo::Imported(self)
+    }
+}
+
 pub struct ImageDesc {}
 
 pub struct BufferDesc {}
@@ -118,14 +124,15 @@ pub struct PassResourceAccessType {
 pub enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
-    Computer(ComputeRenderPass)
+    Compute(ComputeRenderPass)
 }
 
 pub struct RenderGraph<State: RenderGraphState> {
     state_index: u32,
-    next_pass_id: usize,
+    next_pass_id: u32,
+    next_resource_id: u32,
     //TODO debug hooks and tools
-    resources: Vec<GraphResourceInfo>,
+    virtual_resources: Vec<GraphResourceInfo>,
     passes : Vec<AnyRenderPass>,
      transient_resources: TransientResources,
     state_data: State,
@@ -137,16 +144,22 @@ impl RenderGraph<Setup> {
         Ok(RenderGraph {
             state_index: 0,
             next_pass_id: 0,
+            next_resource_id: 0,
             passes: vec![],
-            resources: vec![],
+            virtual_resources: vec![],
             transient_resources: TransientResources {},
             state_data: Setup::default(),
         })
     }
 
-    pub(super) fn next_pass_id(&mut self) -> usize {
+    pub(super) fn next_pass_id(&mut self) -> u32 {
         let id = self.next_pass_id;
         self.next_pass_id += 1;
+        id
+    }
+    pub(super) fn next_resource_id(&mut self) -> u32 {
+        let id = self.next_resource_id;
+        self.next_resource_id += 1;
         id
     }
     pub fn create<Desc: ResourceDesc>(&mut self, desc: Desc) -> Handle<<Desc as ResourceDesc>::Resource>
@@ -156,7 +169,7 @@ impl RenderGraph<Setup> {
         self.create_raw_resource(desc.clone().into());
         Handle {
             raw: RawResourceHandle {
-                id: 0,
+                id: self.next_resource_id(),
                 version: 0,
                 render_state_index: self.state_index,
             },
@@ -166,18 +179,65 @@ impl RenderGraph<Setup> {
     }
 
     pub fn create_raw_resource(&mut self, resource_desc: GraphResourceDesc) {
-        self.resources.push(GraphResourceInfo::Created(resource_desc));
+        self.virtual_resources.push(GraphResourceInfo::Created(resource_desc));
     }
 
-    pub fn add_render_pass(&mut self, render_pass_builder: RenderPassBuilder) {
-        let render_pass = render_pass_builder.submit(self);
-        todo!()
+    pub fn import< Desc: ResourceDesc>(&mut self, desc: &(impl RgImportable<Desc> + Into<GraphResourceImportInfo> ) ) -> Handle<<Desc as ResourceDesc>::Resource>
+    where
+        Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
+    {
+
+        self.virtual_resources.push(GraphResourceInfo::Imported(desc.into()));
+        Handle {
+            raw: RawResourceHandle {
+                id: self.next_resource_id(),
+                version: 0,
+                render_state_index: self.state_index,
+            },
+            desc: TypeEquals::same(desc.import()),
+            marker: Default::default(),
+        }
     }
 
-    pub fn compile(mut self) -> RenderGraph<Built> {
-    
+    pub fn add_render_pass(&mut self, render_pass: AnyRenderPass) {
+        self.passes.push(render_pass)
+    }
+
+
+    pub fn compile(mut self) -> RenderGraph<Built> {//TODO with a lot of reordering and a virtual layer there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is site, to be published the paper at https://dl.acm.org/profile/99661091135
+
+
+        for pass in self.passes.iter_mut() {
+            let common = &mut match pass {
+                AnyRenderPass::Rt(rt) => {
+                    rt.common
+                }
+                AnyRenderPass::Raster(raster) => {
+                    raster.common
+                }
+                AnyRenderPass::Compute(compute) => {
+                    compute.common
+                }
+            };
+
+            for read in common.read.iter_mut() {
+                read.access.
+            }
+        }
+
+
+
+        let mut actual_resources = ResourceDeref
+        let mut graph =   ;
     }
 }
+
+pub trait RgImportable<ResDesc : ResourceDesc> { //TODO do I want to take ownership of the data?
+    //TODO I don't know how to obligate to return a created
+    fn import(&self) -> ResDesc;
+}
+
+
 
 pub(crate) struct Render {}
 

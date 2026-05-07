@@ -1,5 +1,5 @@
 use crate::error::{SrError, SrResult};
-use crate::render_graph::graph::{Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource, ResourceRef, Setup, TransientResources};
+use crate::render_graph::graph::{AnyRenderPass, Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource, ResourceRef, Setup, TransientResources};
 use ash::vk;
 use ash::vk::CommandBuffer;
 use derive_builder::Builder;
@@ -50,14 +50,14 @@ pub(crate) struct PassCommonData {
     pub(crate) write: Vec<ResourceRef>,
 
     pub(crate) name: String,
-    id: usize,
+    id: u32,
 }
 
 pub struct PassCommonDataBuilder {
     pass_common_data: PassCommonData,
 }
 impl PassCommonDataBuilder {
-    pub fn new(rg: &mut RenderGraph<Setup>, name: impl Into<String>) -> Self {
+    pub fn new(rg: & mut RenderGraph<Setup>, name: impl Into<String>) -> Self {
         Self {
             pass_common_data: PassCommonData {
                 read: vec![],
@@ -83,7 +83,8 @@ impl PassCommonDataBuilder {
     }
 
     pub fn write<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
-        //TODO more complex not always sync write+write and read+write
+        //TODO more complex not always sync write+write and read+write and render graph state id lookup
+
         if access_type.is_write_access() {
             self.pass_common_data.write.push(ResourceRef {
                 raw: resource.raw,
@@ -101,29 +102,50 @@ impl PassCommonDataBuilder {
 }
 
 
+impl Into<AnyRenderPass>  for RaytracingRenderPass {
+    fn into(self) -> AnyRenderPass {
+        AnyRenderPass::Rt(self)
+    }
+}
+
+impl Into<AnyRenderPass>  for RasterRenderPass {
+    fn into(self) -> AnyRenderPass {
+        AnyRenderPass::Raster(self)
+    }
+}
+
+impl Into<AnyRenderPass>  for ComputeRenderPass {
+    fn into(self) -> AnyRenderPass {
+        AnyRenderPass::Compute(self)
+    }
+}
+
+
 
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 pub(crate) struct RaytracingRenderPass {
-    common: PassCommonData,
-    ray_gen: RayTracingShaderDesc,
+    pub(super) common: PassCommonData,
+    pub(super) ray_gen: RayTracingShaderDesc,
     #[builder(setter(each = "add_closest_hit"))]
-    closest_hit: Vec<RayTracingShaderDesc>,
+    pub(super) closest_hit: Vec<RayTracingShaderDesc>,
     #[builder(setter(each = "add_miss"))]
-    miss: Vec<RayTracingShaderDesc>,
-    trace_extent: [u32; 3],
+    pub(super) miss: Vec<RayTracingShaderDesc>,
+    pub(super) trace_extent: [u32; 3],
 }
 
+
 pub(crate) struct RasterRenderPass {
+    pub(super) common: PassCommonData,
     //TODO
 }
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 pub(crate) struct ComputeRenderPass {
-    common: PassCommonData,
+    pub(super) common: PassCommonData,
     #[builder(setter(each = "add_shader"))]
-    shaders: Vec<ShaderSource>,
-    entry_point: String,
+    pub(super) shaders: Vec<ShaderSource>,
+    pub(super) entry_point: String,
 }
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
