@@ -196,18 +196,19 @@ impl RenderGraph<Setup> {
         self.virtual_resources.push(GraphResourceInfo::Created(resource_desc));
     }
 
-    pub fn import<Desc: ResourceDesc>(&mut self, desc: &(impl RgImportable<Desc> + Into<GraphResourceImportInfo> )) -> Handle<<Desc as ResourceDesc>::Resource>
+    pub fn import<Desc: ResourceDesc>(&mut self, res: impl RgImportable<Desc> + Into<GraphResourceImportInfo> ) -> Handle<<Desc as ResourceDesc>::Resource>
     where
         Desc: TypeEquals<Other=<<Desc as ResourceDesc>::Resource as Resource>::Desc>,
     {
-        self.virtual_resources.push(GraphResourceInfo::Imported(desc.into()));
+        let desc = res.import();
+        self.virtual_resources.push(GraphResourceInfo::Imported(res.into()));
         Handle {
             raw: RawResourceHandle {
                 id: self.next_resource_id(),
                 version: 0,
                 render_state_index: self.state_index,
             },
-            desc: TypeEquals::same(desc.import()),
+            desc: TypeEquals::same(desc),
             marker: Default::default(),
         }
     }
@@ -217,7 +218,7 @@ impl RenderGraph<Setup> {
     }
 
 
-    pub fn compile(mut self) -> RenderGraph<Built> { //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is site, to be published the paper at https://dl.acm.org/profile/99661091135
+    pub fn compile(mut self) -> RenderGraph<Built> { //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is the site where it will be published the paper https://dl.acm.org/profile/99661091135
         let mut actual_resources = ResourceDeref
 
         for pass in self.passes.iter_mut() {
@@ -266,8 +267,8 @@ impl TransientResources {
 }
 
 pub trait RgImportable<ResDesc: ResourceDesc> { //TODO do I want to take ownership of the data?
-    //TODO I don't know how to obligate to return a created
     fn import(&self) -> ResDesc;
+    
 }
 
 

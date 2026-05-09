@@ -4,11 +4,12 @@ pub use sampler::*;
 pub use texture::*;
 
 use std::rc::Rc;
-
+use std::sync::Arc;
 use ash::vk;
 
 use crate::vulkan_abstraction::Buffer;
 use crate::{error::SrResult, utils, vulkan_abstraction};
+use crate::render_graph::graph::{GraphResourceImportInfo, ImageDesc, RgImportable};
 
 pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
@@ -20,6 +21,20 @@ pub struct Image {
     extent: vk::Extent3D,
     format: vk::Format,
 }
+
+impl RgImportable<ImageDesc> for Image{
+    fn import(&self) -> ImageDesc {
+        ImageDesc{
+
+        }
+    }
+}
+impl  Into<GraphResourceImportInfo> for Image{
+    fn into(self) -> GraphResourceImportInfo {
+        todo!()
+    }
+}
+
 
 impl Image {
     pub fn new_from_data(
