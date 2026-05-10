@@ -34,6 +34,13 @@ unsafe impl Send for SubHeap {}
 pub struct DescriptorHeap {
     resource: SubHeap,
     sampler: SubHeap,
+    /// Per-type descriptor sizes (queried from the device). Used as the `size` field of the
+    /// HostAddressRangeEXT for each write — the spec requires the range size to be at least
+    /// the size of the descriptor type being written, and writing exactly that size keeps us
+    /// within the slot the driver promised us.
+    image_descriptor_size: usize,
+    buffer_descriptor_size: usize,
+    sampler_descriptor_size: usize,
     ext: ext::descriptor_heap::Device,
     device: ash::Device,
 }
@@ -84,6 +91,9 @@ impl DescriptorHeap {
         Ok(Self {
             resource,
             sampler,
+            image_descriptor_size: props.image_descriptor_size.max(1) as usize,
+            buffer_descriptor_size: props.buffer_descriptor_size.max(1) as usize,
+            sampler_descriptor_size: props.sampler_descriptor_size.max(1) as usize,
             ext: ext.clone(),
             device: device.clone(),
         })
@@ -175,7 +185,7 @@ impl DescriptorHeap {
             .data(vk::ResourceDescriptorDataEXT {
                 p_image: &image_info,
             });
-        self.write_resource(slot, resource_info)
+        self.write_resource(slot, resource_info, self.image_descriptor_size)
     }
 
     pub fn write_buffer(
@@ -192,7 +202,7 @@ impl DescriptorHeap {
             .data(vk::ResourceDescriptorDataEXT {
                 p_address_range: &range,
             });
-        self.write_resource(slot, resource_info)
+        self.write_resource(slot, resource_info, self.buffer_descriptor_size)
     }
 
     pub fn write_acceleration_structure(
@@ -211,7 +221,8 @@ impl DescriptorHeap {
             .data(vk::ResourceDescriptorDataEXT {
                 p_address_range: &range,
             });
-        self.write_resource(slot, resource_info)
+        // AS descriptor size is reported as the buffer descriptor size on this extension.
+        self.write_resource(slot, resource_info, self.buffer_descriptor_size)
     }
 
     pub fn write_sampler(&mut self, slot: DescriptorSlot, info: &vk::SamplerCreateInfo<'_>) -> SrResult<()> {
@@ -219,7 +230,7 @@ impl DescriptorHeap {
         let dst = self.sampler_dst(slot.index);
         let dst_range = [vk::HostAddressRangeEXT {
             address: dst.as_ptr() as *mut c_void,
-            size: self.sampler.stride as usize,
+            size: self.sampler_descriptor_size,
             _marker: std::marker::PhantomData,
         }];
         unsafe { self.ext.write_sampler_descriptors(std::slice::from_ref(info), &dst_range) }?;
@@ -243,11 +254,16 @@ impl DescriptorHeap {
         }
     }
 
-    fn write_resource(&mut self, slot: DescriptorSlot, info: vk::ResourceDescriptorInfoEXT<'_>) -> SrResult<()> {
+    fn write_resource(
+        &mut self,
+        slot: DescriptorSlot,
+        info: vk::ResourceDescriptorInfoEXT<'_>,
+        descriptor_size: usize,
+    ) -> SrResult<()> {
         let dst = self.resource_dst(slot.index);
         let dst_range = [vk::HostAddressRangeEXT {
             address: dst.as_ptr() as *mut c_void,
-            size: self.resource.stride as usize,
+            size: descriptor_size,
             _marker: std::marker::PhantomData,
         }];
         unsafe { self.ext.write_resource_descriptors(std::slice::from_ref(&info), &dst_range) }?;

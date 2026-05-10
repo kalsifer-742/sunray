@@ -27,3 +27,6 @@ Pipeline caching
 Slang che però richiede il compilatore di shader,che va fatto girare aot o jit
 Strategy Patter per fsr/dlss/ 
 Egui invece di bevy_ui
+
+4. Pipeline layout changes — every pipeline gets the heap-creation flag and a push-constant range; shaders rewritten to read from the heap.
+5. Migrate passes one at a time, delete descriptor_sets/ last.Fix

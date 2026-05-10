@@ -4,6 +4,7 @@ pub mod cmd_pool;
 pub mod compute_pipeline;
 pub mod core;
 pub mod descriptor_heap;
+#[deprecated(note = "This module is being phased out in favor of descriptor heaps ")]
 pub mod descriptor_sets;
 pub mod gltf;
 pub mod image;

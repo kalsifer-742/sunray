@@ -4,7 +4,8 @@
       "Bash(cargo build *)",
       "Bash(cargo check *)",
       "Read(//c/Users/MatGa/.cargo/git/checkouts/ash-b4604afb699e89f5/**)",
-      "Bash(grep \"^error\\\\|src\\\\\\\\\\\\\\\\\")"
+      "Bash(grep \"^error\\\\|src\\\\\\\\\\\\\\\\\")",
+      "Bash(cargo metadata *)"
     ]
   }
 }

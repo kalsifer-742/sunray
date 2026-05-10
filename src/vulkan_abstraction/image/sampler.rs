@@ -6,8 +6,10 @@ use ash::vk;
 use crate::vulkan_abstraction::descriptor_heap::DescriptorSlot;
 use crate::{error::SrResult, vulkan_abstraction};
 
-/// Plain-data copy of the sampler parameters, kept so we can re-build a
-/// `SamplerCreateInfo` on demand for descriptor-heap writes.
+/// Plain-data copy of the sampler parameters. Under the descriptor-heap model the sampler
+/// is materialised by `vkWriteSamplerDescriptorsEXT` from a `SamplerCreateInfo` directly,
+/// so there is no `vkCreateSampler` / `vkDestroySampler` round-trip and no `vk::Sampler`
+/// handle to track — these params are the entire sampler.
 #[derive(Copy, Clone)]
 struct SamplerParams {
     min_filter: vk::Filter,
@@ -21,7 +23,6 @@ struct SamplerParams {
 
 pub struct Sampler {
     core: Rc<vulkan_abstraction::Core>,
-    sampler: vk::Sampler,
     params: SamplerParams,
     /// Lazily-allocated heap slot for this sampler.
     slot: Cell<Option<DescriptorSlot>>,
@@ -47,18 +48,11 @@ impl Sampler {
             max_anisotropy: core.device().properties().limits.max_sampler_anisotropy,
         };
 
-        let sampler = unsafe { core.device().inner().create_sampler(&params.to_create_info(), None) }?;
-
         Ok(Self {
             core,
-            sampler,
             params,
             slot: Cell::new(None),
         })
-    }
-
-    pub fn inner(&self) -> vk::Sampler {
-        self.sampler
     }
 
     /// Heap slot for this sampler in the sampler heap. Allocated and written on first call.
@@ -100,12 +94,6 @@ impl Drop for Sampler {
     fn drop(&mut self) {
         if let Some(s) = self.slot.get() {
             self.core.descriptor_heap_mut().free(s);
-        }
-
-        let device = self.core.device().inner();
-
-        unsafe {
-            device.destroy_sampler(self.sampler, None);
         }
     }
 }
