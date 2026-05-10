@@ -18,6 +18,7 @@ pub struct Device {
     physical_device_properties: vk::PhysicalDeviceProperties,
     physical_device_rt_pipeline_properties: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>,
     physical_device_acceleration_structure_properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'static>,
+    physical_device_descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
     graphics_queue_family_index: u32,
     transfer_queue_family_index: Option<u32>,
     surface_support_details: Option<RefCell<SurfaceSupportDetails>>,
@@ -123,6 +124,8 @@ impl Device {
                 vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
             let mut physical_device_acceleration_structure_features =
                 vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
+            let mut physical_device_descriptor_heap_features =
+                vk::PhysicalDeviceDescriptorHeapFeaturesEXT::default().descriptor_heap(true);
 
             // enable anisotropic filtering
             // TODO: does this make sense for raytracing
@@ -135,6 +138,7 @@ impl Device {
                 .push(&mut vk13_features)
                 .push(&mut physical_device_rt_pipeline_features)
                 .push(&mut physical_device_acceleration_structure_features)
+                .push(&mut physical_device_descriptor_heap_features)
                 .push(&mut physical_device_features)
                 .queue_create_infos(&queue_create_infos);
 
@@ -147,14 +151,18 @@ impl Device {
             physical_device_properties,
             physical_device_rt_pipeline_properties,
             physical_device_acceleration_structure_properties,
+            physical_device_descriptor_heap_properties,
         ) = {
             let mut physical_device_rt_pipeline_properties = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
             let mut physical_device_acceleration_structure_properties =
                 vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+            let mut physical_device_descriptor_heap_properties =
+                vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default();
 
             let mut physical_device_properties = vk::PhysicalDeviceProperties2::default()
                 .push(&mut physical_device_rt_pipeline_properties)
-                .push(&mut physical_device_acceleration_structure_properties);
+                .push(&mut physical_device_acceleration_structure_properties)
+                .push(&mut physical_device_descriptor_heap_properties);
 
             unsafe { instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
 
@@ -162,6 +170,7 @@ impl Device {
                 physical_device_properties.properties,
                 physical_device_rt_pipeline_properties,
                 physical_device_acceleration_structure_properties,
+                physical_device_descriptor_heap_properties,
             )
         };
 
@@ -172,6 +181,7 @@ impl Device {
             physical_device_memory_properties,
             physical_device_rt_pipeline_properties,
             physical_device_acceleration_structure_properties,
+            physical_device_descriptor_heap_properties,
             graphics_queue_family_index,
             transfer_queue_family_index,
             surface_support_details,
@@ -242,6 +252,10 @@ impl Device {
 
     pub fn acceleration_structure_properties(&self) -> &vk::PhysicalDeviceAccelerationStructurePropertiesKHR<'static> {
         &self.physical_device_acceleration_structure_properties
+    }
+
+    pub fn descriptor_heap_properties(&self) -> &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static> {
+        &self.physical_device_descriptor_heap_properties
     }
 
     pub fn memory_properties(&self) -> &vk::PhysicalDeviceMemoryProperties {

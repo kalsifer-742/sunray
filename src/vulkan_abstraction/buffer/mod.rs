@@ -20,10 +20,12 @@ use std::marker::PhantomData;
 pub use uniform_buffer::*;
 pub use vertex_buffer::*;
 
+use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::{error::*, vulkan_abstraction};
 use ash::vk;
 use ash::vk::{BufferUsageFlags, BufferUsageFlags2KHR, DeviceAddress, DeviceSize, Handle};
 use log::{error, info};
+use std::cell::Cell;
 use std::rc::Rc;
 //TODO revert capacity as vk::device length some methods signatures
 //TODO should gpu only buffer have a generic and some methods can be moved inside the buffer trait like new,new with data ecc.. with a default impl
@@ -93,6 +95,10 @@ pub struct RawBuffer {
     allocation: gpu_allocator::vulkan::Allocation,
     byte_size: u64,
     usage: BufferUsageFlags,
+    /// Lazily-allocated heap slot for `UNIFORM_BUFFER` descriptors.
+    uniform_slot: Cell<Option<DescriptorSlot>>,
+    /// Lazily-allocated heap slot for `STORAGE_BUFFER` descriptors.
+    storage_slot: Cell<Option<DescriptorSlot>>,
 }
 
 impl RawBuffer {
@@ -143,6 +149,8 @@ impl RawBuffer {
             allocation,
             byte_size,
             usage: buffer_usage_flags,
+            uniform_slot: Cell::new(None),
+            storage_slot: Cell::new(None),
         })
     }
 
@@ -153,7 +161,34 @@ impl RawBuffer {
             allocation: gpu_allocator::vulkan::Allocation::default(),
             byte_size: 0,
             usage: BufferUsageFlags::empty(),
+            uniform_slot: Cell::new(None),
+            storage_slot: Cell::new(None),
         }
+    }
+
+    /// Heap slot for `UNIFORM_BUFFER`. Lazily allocates on first call.
+    pub fn uniform_slot(&self) -> u32 {
+        self.descriptor_slot(&self.uniform_slot, ResourceDescriptorKind::UniformBuffer)
+    }
+
+    /// Heap slot for `STORAGE_BUFFER`. Lazily allocates on first call.
+    pub fn storage_slot(&self) -> u32 {
+        self.descriptor_slot(&self.storage_slot, ResourceDescriptorKind::StorageBuffer)
+    }
+
+    fn descriptor_slot(&self, cell: &Cell<Option<DescriptorSlot>>, kind: ResourceDescriptorKind) -> u32 {
+        if let Some(s) = cell.get() {
+            return s.shader_index();
+        }
+        debug_assert!(!self.buffer.is_null(), "cannot allocate descriptor slot for null buffer");
+        let info = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
+        let address = unsafe { self.core.device().inner().get_buffer_device_address(&info) };
+        let mut heap = self.core.descriptor_heap_mut();
+        let slot = heap.alloc_resource_slot(kind);
+        heap.write_buffer(slot, address, self.byte_size, kind)
+            .expect("descriptor heap write_buffer failed");
+        cell.set(Some(slot));
+        slot.shader_index()
     }
 
     pub fn map<V: Sized>(&self) -> SrResult<&[V]> {
@@ -180,6 +215,16 @@ impl RawBuffer {
 impl Drop for RawBuffer {
     fn drop(&mut self) {
         if self.buffer != vk::Buffer::null() {
+            {
+                let mut heap = self.core.descriptor_heap_mut();
+                if let Some(s) = self.uniform_slot.get() {
+                    heap.free(s);
+                }
+                if let Some(s) = self.storage_slot.get() {
+                    heap.free(s);
+                }
+            }
+
             let device = self.core.device().inner();
             unsafe {
                 device.destroy_buffer(self.buffer, None);

@@ -1,9 +1,11 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use ash::vk;
 use log::info;
 use crate::vulkan_abstraction::Buffer;
+use crate::vulkan_abstraction::descriptor_heap::DescriptorSlot;
 use crate::{error::*, vulkan_abstraction};
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
@@ -13,6 +15,7 @@ use crate::{error::*, vulkan_abstraction};
 // TODO: implement drop
 pub struct TLAS {
     tlas: vulkan_abstraction::AccelerationStructure,
+    slot: Cell<Option<DescriptorSlot>>,
 }
 
 impl TLAS {
@@ -36,7 +39,7 @@ impl TLAS {
             false,
         )?;
 
-        Ok(Self { tlas })
+        Ok(Self { tlas, slot: Cell::new(None) })
     }
     /// "the application must not use an update operation to do any of the following:
     /// - Change primitives or instances from active to inactive, or vice versa
@@ -128,7 +131,7 @@ impl TLAS {
             false,
         )?;
 
-        Ok(Self { tlas })
+        Ok(Self { tlas, slot: Cell::new(None) })
     }
 
     #[allow(unused)]
@@ -279,5 +282,34 @@ impl TLAS {
 
     pub fn inner(&self) -> vk::AccelerationStructureKHR {
         self.tlas.inner()
+    }
+
+    /// Heap slot for `ACCELERATION_STRUCTURE_KHR`. Lazily allocates on first call.
+    pub fn slot(&self) -> u32 {
+        if let Some(s) = self.slot.get() {
+            return s.shader_index();
+        }
+        let core = self.tlas.core();
+        let address = unsafe {
+            core.acceleration_structure_device()
+                .get_acceleration_structure_device_address(
+                    &vk::AccelerationStructureDeviceAddressInfoKHR::default()
+                        .acceleration_structure(self.tlas.inner()),
+                )
+        };
+        let mut heap = core.descriptor_heap_mut();
+        let slot = heap.alloc_resource_slot(crate::vulkan_abstraction::descriptor_heap::ResourceDescriptorKind::AccelerationStructure);
+        heap.write_acceleration_structure(slot, address)
+            .expect("descriptor heap write_acceleration_structure failed");
+        self.slot.set(Some(slot));
+        slot.shader_index()
+    }
+}
+
+impl Drop for TLAS {
+    fn drop(&mut self) {
+        if let Some(s) = self.slot.get() {
+            self.tlas.core().descriptor_heap_mut().free(s);
+        }
     }
 }

@@ -9,7 +9,7 @@ use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::Queue;
 use crate::{CreateSurfaceFn, error::*};
 use ash::vk::Semaphore;
-use ash::{khr, vk};
+use ash::{ext, khr, vk};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{Mutex, RawMutex};
 use std::cell::{Ref, RefCell, RefMut};
@@ -24,6 +24,9 @@ pub struct Core { //TODO core is completely single thread
 
     acceleration_structure_device: khr::acceleration_structure::Device,
     ray_tracing_pipeline_device: khr::ray_tracing_pipeline::Device,
+    descriptor_heap_device: ext::descriptor_heap::Device, //TODO don't know where to put these params as the almost seem more fit into the descriptor heap
+    descriptor_heap_instance: ext::descriptor_heap::Instance,
+    descriptor_heap: RefCell<vulkan_abstraction::DescriptorHeap>,
     //queue needs mutability for .present()
     graphics_queue: Mutex<vulkan_abstraction::Queue>,
     transfer_queue: Mutex<vulkan_abstraction::Queue>,
@@ -71,6 +74,7 @@ impl Core {
             khr::ray_tracing_pipeline::NAME,
             khr::acceleration_structure::NAME,
             khr::deferred_host_operations::NAME,
+            ext::descriptor_heap::NAME,
         ]
         .map(CStr::as_ptr);
 
@@ -87,7 +91,7 @@ impl Core {
             &surface_support,
         )?);
 
-        let allocator = Allocator::new(&AllocatorCreateDesc {
+        let mut allocator = Allocator::new(&AllocatorCreateDesc {
             instance: instance.inner().clone(),
             device: device.inner().clone(),
             physical_device: device.physical_device(),
@@ -99,6 +103,17 @@ impl Core {
 
         let acceleration_structure_device = khr::acceleration_structure::Device::load(&instance.inner(), &device.inner());
         let ray_tracing_pipeline_device = khr::ray_tracing_pipeline::Device::load(&instance.inner(), &device.inner());
+        let descriptor_heap_device = ext::descriptor_heap::Device::load(&instance.inner(), &device.inner());
+        let descriptor_heap_instance = ext::descriptor_heap::Instance::load(&entry, &instance.inner());
+
+        let descriptor_heap = vulkan_abstraction::DescriptorHeap::new(
+            device.inner(),
+            &descriptor_heap_device,
+            &mut allocator,
+            device.descriptor_heap_properties(),
+            vulkan_abstraction::DEFAULT_RESOURCE_CAPACITY,
+            vulkan_abstraction::DEFAULT_SAMPLER_CAPACITY,
+        )?;
 
         let graphics_queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0, device.graphics_queue_family_index())?;
 
@@ -138,6 +153,9 @@ impl Core {
                 allocator: RefCell::new(allocator),
                 acceleration_structure_device,
                 ray_tracing_pipeline_device,
+                descriptor_heap_device,
+                descriptor_heap_instance,
+                descriptor_heap: RefCell::new(descriptor_heap),
                 graphics_queue: parking_lot::Mutex::new(graphics_queue),
                 transfer_queue: parking_lot::Mutex::new(transfer_queue),
                 graphics_cmd_pool,
@@ -192,6 +210,22 @@ impl Core {
         &self.graphics_cmd_pool
     }
 
+    pub fn descriptor_heap(&self) -> Ref<'_, vulkan_abstraction::DescriptorHeap> {
+        self.descriptor_heap.borrow()
+    }
+
+    pub fn descriptor_heap_mut(&self) -> RefMut<'_, vulkan_abstraction::DescriptorHeap> {
+        self.descriptor_heap.borrow_mut()
+    }
+
+    pub fn descriptor_heap_device(&self) -> &ext::descriptor_heap::Device {
+        &self.descriptor_heap_device
+    }
+
+    pub fn descriptor_heap_instance(&self) -> &ext::descriptor_heap::Instance {
+        &self.descriptor_heap_instance
+    }
+
     pub fn transfer_cmd_pool(&self) -> &vulkan_abstraction::CmdPool {
         &self.transfer_cmd_pool
     }
@@ -225,5 +259,15 @@ impl Core {
         }
 
         Ok((transfer_complete_semaphore, transfer_fence))
+    }
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        // Free descriptor-heap GPU allocations explicitly while the allocator is still alive.
+        // Without this gpu-allocator panics on its own drop because of unfreed allocations.
+        let mut heap = self.descriptor_heap.borrow_mut();
+        let mut allocator = self.allocator.borrow_mut();
+        heap.shutdown(&mut allocator);
     }
 }
