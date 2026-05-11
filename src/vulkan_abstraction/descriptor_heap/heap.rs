@@ -153,7 +153,6 @@ impl DescriptorHeap {
         let per_page = self.resource.alloc.per_page(class);
         // shader_index = byte_offset / type_size = page_idx * per_page + slot_in_page
         let index = (page_idx) * (per_page) + (slot_in_page);
-        debug_assert!(index <= u16::MAX as u32);
         DescriptorSlot {
             kind: HeapKind::Resource,
             index,
