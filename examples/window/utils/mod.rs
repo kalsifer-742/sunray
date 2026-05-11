@@ -86,7 +86,7 @@ pub fn create_surface(
     instance: &ash::Instance,
     display_handle: RawDisplayHandle,
     window_handle: RawWindowHandle,
-    allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
+    allocation_callbacks: Option<&vk::AllocationCallbacks>,
 ) -> SrResult<vk::SurfaceKHR> {
     match (display_handle, window_handle) {
         (RawDisplayHandle::Windows(_), RawWindowHandle::Win32(window)) => {
@@ -94,7 +94,7 @@ pub fn create_surface(
                 .hwnd(window.hwnd as isize)
                 .hinstance(window.hinstance as isize);
 
-            let surface_fn = khr::win32_surface::Instance::new(entry, instance);
+            let surface_fn = khr::win32_surface::Instance::load(entry, instance);
 
             unsafe { surface_fn.create_win32_surface(&surface_desc, allocation_callbacks) }
         }
@@ -104,7 +104,7 @@ pub fn create_surface(
                 .display(display.display)
                 .surface(window.surface);
 
-            let surface_fn = khr::wayland_surface::Instance::new(entry, instance);
+            let surface_fn = khr::wayland_surface::Instance::load(entry, instance);
 
             unsafe { surface_fn.create_wayland_surface(&surface_desc, allocation_callbacks) }
         }
@@ -114,7 +114,7 @@ pub fn create_surface(
                 .dpy(display.display)
                 .window(window.window);
 
-            let surface_fn = khr::xlib_surface::Instance::new(entry, instance);
+            let surface_fn = khr::xlib_surface::Instance::load(entry, instance);
 
             unsafe { surface_fn.create_xlib_surface(&surface_desc, allocation_callbacks) }
         }
@@ -124,7 +124,7 @@ pub fn create_surface(
                 .connection(display.connection)
                 .window(window.window);
 
-            let surface_fn = khr::xcb_surface::Instance::new(entry, instance);
+            let surface_fn = khr::xcb_surface::Instance::load(entry, instance);
 
             unsafe { surface_fn.create_xcb_surface(&surface_desc, allocation_callbacks) }
         }
@@ -132,7 +132,7 @@ pub fn create_surface(
         (RawDisplayHandle::Android(_), RawWindowHandle::AndroidNdk(window)) => {
             let surface_desc = vk::AndroidSurfaceCreateInfoKHR::default().window(window.a_native_window);
 
-            let surface_fn = khr::android_surface::Instance::new(entry, instance);
+            let surface_fn = khr::android_surface::Instance::load(entry, instance);
 
             unsafe { surface_fn.create_android_surface(&surface_desc, allocation_callbacks) }
         }

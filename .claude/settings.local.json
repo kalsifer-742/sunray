@@ -5,7 +5,23 @@
       "Bash(cargo check *)",
       "Read(//c/Users/MatGa/.cargo/git/checkouts/ash-b4604afb699e89f5/**)",
       "Bash(grep \"^error\\\\|src\\\\\\\\\\\\\\\\\")",
-      "Bash(cargo metadata *)"
+      "Bash(cargo metadata *)",
+      "Bash(cargo tree *)",
+      "Bash(cargo search *)",
+      "Bash(cargo info *)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:shader-slang.org)",
+      "Read(//tmp/**)",
+      "Bash(sed -n '160,220p' /tmp/slang-rs-probe/src/lib.rs)",
+      "Bash(sed -n '660,793p' /tmp/slang-rs-probe/src/lib.rs)",
+      "WebFetch(domain:docs.shader-slang.org)",
+      "PowerShell(Test-Path *)",
+      "Bash(sed -n '40,75p' /tmp/slang-rs-probe/src/lib.rs)",
+      "Bash(sed -n '120,140p' /tmp/slang-rs-probe/src/lib.rs)"
     ]
   }
 }

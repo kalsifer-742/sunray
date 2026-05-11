@@ -26,6 +26,10 @@ pub struct Sampler {
     params: SamplerParams,
     /// Lazily-allocated heap slot for this sampler.
     slot: Cell<Option<DescriptorSlot>>,
+    /// TEMPORARY shim: legacy descriptor-set writes still want a `vk::Sampler` handle. Lazily
+    /// created on first `inner()` call so heap-only callers don't pay for the round-trip.
+    /// Remove once every pass binds via heap.
+    legacy_handle: Cell<vk::Sampler>,
 }
 
 impl Sampler {
@@ -52,7 +56,22 @@ impl Sampler {
             core,
             params,
             slot: Cell::new(None),
+            legacy_handle: Cell::new(vk::Sampler::null()),
         })
+    }
+
+    /// TEMPORARY shim: returns a real `vk::Sampler` for legacy descriptor-set writers.
+    /// Remove once every pass uses the heap.
+    pub fn inner(&self) -> vk::Sampler {
+        let cur = self.legacy_handle.get();
+        if cur != vk::Sampler::null() {
+            return cur;
+        }
+        let info = self.params.to_create_info();
+        let handle = unsafe { self.core.device().inner().create_sampler(&info, None) }
+            .expect("vkCreateSampler failed in legacy Sampler::inner shim");
+        self.legacy_handle.set(handle);
+        handle
     }
 
     /// Heap slot for this sampler in the sampler heap. Allocated and written on first call.
@@ -94,6 +113,10 @@ impl Drop for Sampler {
     fn drop(&mut self) {
         if let Some(s) = self.slot.get() {
             self.core.descriptor_heap_mut().free(s);
+        }
+        let legacy = self.legacy_handle.get();
+        if legacy != vk::Sampler::null() {
+            unsafe { self.core.device().inner().destroy_sampler(legacy, None) };
         }
     }
 }

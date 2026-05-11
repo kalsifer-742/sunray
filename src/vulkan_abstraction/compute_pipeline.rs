@@ -2,6 +2,7 @@ use crate::error::SrResult;
 use crate::vulkan_abstraction::TemporalAccumulationDescriptorSetLayout;
 use crate::vulkan_abstraction::{self, Core, DenoiseDescriptorSetLayout, PostProcessDescriptorSetLayout};
 use ash::vk;
+use ash::vk::TaggedStructure;
 use std::marker::PhantomData;
 use std::{ffi::CStr, rc::Rc};
 
@@ -60,10 +61,14 @@ pub struct TemporalAccumulationPushConstant {
     pub frame_count: u32,
 }
 
+/// Matches `PostprocessPC` in `shaders/postprocess.slang` (heap-mode). The two
+/// `DescriptorHandle` fields lower to a `uint32` shader index each.
 #[allow(dead_code)] // read by the gpu
 #[repr(C, packed)]
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct PostprocessPushConstant {
+    pub input_idx: u32,
+    pub output_idx: u32,
     pub exposure: f32,
 }
 
@@ -76,6 +81,70 @@ pub struct ComputePipeline<T: ComputeTypeDef> {
 }
 
 impl<T: ComputeTypeDef> ComputePipeline<T> {
+    /// Heap-mode constructor: pipeline layout has no descriptor sets, only push constants;
+    /// the pipeline itself is flagged `DESCRIPTOR_HEAP_EXT`. Caller supplies the SPIR-V
+    /// directly (e.g. from the Slang `ShaderCompiler`) since heap-mode shaders are not
+    /// the build-time-baked GLSL ones referenced by `T::spirv_bytes`.
+    pub fn new_heap(core: Rc<Core>, spirv_bytes: &[u8]) -> SrResult<Self> {
+        let device = core.device().inner();
+        let spirv_u32 = bytemuck::cast_slice(spirv_bytes);
+
+        let module_create_info = vk::ShaderModuleCreateInfo::default().code(spirv_u32);
+        let shader_module = unsafe { device.create_shader_module(&module_create_info, None) }?;
+
+        let shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
+            .name(SHADER_ENTRY_POINT)
+            .module(shader_module)
+            .stage(vk::ShaderStageFlags::COMPUTE);
+
+        let size = std::mem::size_of::<T::PushConstant>() as u32;
+        let push_constant_ranges = if size > 0 {
+            vec![
+                vk::PushConstantRange::default()
+                    .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                    .offset(0)
+                    .size(size),
+            ]
+        } else {
+            Vec::new()
+        };
+
+        // No descriptor set layouts — bindings come from the heap.
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .push_constant_ranges(&push_constant_ranges);
+
+        let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
+
+        let mut flags2 = vk::PipelineCreateFlags2CreateInfo::default()
+            .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
+
+        let pipeline_info = vk::ComputePipelineCreateInfo::default()
+            .stage(shader_stage_create_info)
+            .layout(pipeline_layout)
+            .push(&mut flags2);
+
+        let pipelines = unsafe {
+            device
+                .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .map_err(|(_, err)| {
+                    device.destroy_pipeline_layout(pipeline_layout, None);
+                    device.destroy_shader_module(shader_module, None);
+                    err
+                })?
+        };
+        let pipeline = pipelines[0];
+
+        unsafe { device.destroy_shader_module(shader_module, None) };
+
+        Ok(Self {
+            core,
+            pipeline,
+            pipeline_layout,
+            descriptor_set_layout: vk::DescriptorSetLayout::null(),
+            _marker: PhantomData,
+        })
+    }
+
     pub fn new(core: Rc<Core>, descriptor_set_layout: vk::DescriptorSetLayout) -> SrResult<Self> {
         let device = core.device().inner();
 

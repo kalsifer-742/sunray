@@ -10,7 +10,7 @@ use ash::vk;
 use crate::vulkan_abstraction::Buffer;
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::{error::SrResult, utils, vulkan_abstraction};
-use crate::render_graph::graph::{GraphResourceImportInfo, ImageDesc, RgImportable};
+use crate::render_graph::graph::{AnyRenderResource, GraphResourceImportInfo, ImageDesc, Resource, RgImportable};
 
 pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
@@ -27,6 +27,14 @@ pub struct Image {
     storage_slot: Cell<Option<DescriptorSlot>>,
     /// Lazily-allocated heap slot for SAMPLED_IMAGE descriptors.
     sampled_slot: Cell<Option<DescriptorSlot>>,
+}
+
+impl Resource for Image {
+    type Desc = ImageDesc;
+
+    fn borrow_resource(res: &AnyRenderResource) -> &Self {
+        todo!()
+    }
 }
 
 impl RgImportable<ImageDesc> for Image{

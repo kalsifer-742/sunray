@@ -1,6 +1,7 @@
 pub mod camera;
 pub mod error;
 pub mod scene;
+pub mod shader_compiler;
 pub mod utils;
 pub mod vulkan_abstraction;
 pub mod render_graph;
@@ -13,7 +14,7 @@ use std::{collections::HashMap, rc::Rc};
 
 use ash::vk;
 
-use crate::utils::env_var_as_bool;
+use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
 use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, PostProcessDescriptorSets, PostprocessPass, Reservoir, ReservoirGI, TemporalPass};
@@ -95,6 +96,11 @@ pub struct Renderer {
 
     blue_noise_image: vulkan_abstraction::Image,
     blue_noise_sampler: vulkan_abstraction::Sampler,
+
+    /// Slang compiler held for the renderer's lifetime — owns a `GlobalSession` and
+    /// is consulted when (re)building heap-mode pipelines.
+    #[allow(unused)]
+    shader_compiler: shader_compiler::ShaderCompiler,
 
     core: Rc<vulkan_abstraction::Core>,
 
@@ -182,9 +188,13 @@ impl Renderer {
         let denoise_pipeline =
             vulkan_abstraction::ComputePipeline::<DenoisePass>::new(Rc::clone(&core), denoise_descriptor_set_layout.inner())?;
 
-        let postprocess_pipeline = vulkan_abstraction::ComputePipeline::<PostprocessPass>::new(
+        let shaders_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let shader_compiler = shader_compiler::ShaderCompiler::new(shaders_dir)?;
+
+        let postprocess_spirv = shader_compiler.compile("postprocess", "main")?;
+        let postprocess_pipeline = vulkan_abstraction::ComputePipeline::<PostprocessPass>::new_heap(
             Rc::clone(&core),
-            postprocess_descriptor_set_layout.inner(),
+            &postprocess_spirv,
         )?;
 
         let image_dependant_data = HashMap::new();
@@ -303,6 +313,8 @@ impl Renderer {
 
                 resource_manager,
                 reservoir_gi_buffers,
+
+                shader_compiler,
 
                 core,
             },
@@ -658,15 +670,6 @@ impl Renderer {
         Ok(())
     }
 
-    fn na_mat4_to_vk_transform(m: nalgebra::Matrix4<f32>) -> vk::TransformMatrixKHR {
-        vk::TransformMatrixKHR {
-            matrix: [
-                m.m11, m.m12, m.m13, m.m14,
-                m.m21, m.m22, m.m23, m.m24,
-                m.m31, m.m32, m.m33, m.m34,
-            ],
-        }
-    }
 
     pub fn load_gltf(&mut self, path: &str) -> SrResult<Vec<vulkan_abstraction::EntityId>> {
         let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
@@ -690,7 +693,7 @@ impl Renderer {
         src: vulkan_abstraction::EntityId,
         transform: nalgebra::Matrix4<f32>,
     ) -> SrResult<vulkan_abstraction::EntityId> {
-        let vk_transform = Self::na_mat4_to_vk_transform(transform);
+        let vk_transform = na_mat4_to_vk_transform(transform);
         let id = self.resource_manager.clone_entity(src, vk_transform)?;
         self.resource_manager.rebuild_tlas()?;
         // rebuild_tlas calls AccelerationStructure::rebuild which creates a new
@@ -716,7 +719,7 @@ impl Renderer {
         id: vulkan_abstraction::EntityId,
         transform: nalgebra::Matrix4<f32>,
     ) -> SrResult<()> {
-        let vk_transform = Self::na_mat4_to_vk_transform(transform);
+        let vk_transform = na_mat4_to_vk_transform(transform);
         self.resource_manager.set_entity_transform(id, vk_transform)
     }
 
@@ -881,18 +884,16 @@ impl Renderer {
             )?;
 
             // 6. Post-process
-            // Use result of the last denoise pass
-            let final_denoise_idx = (DENOISE_PASSES % 2) as usize;
+            // Use result of the last denoise pass. Heap-mode: pass Image refs directly so
+            // we can read their lazy heap slots inside the dispatch helper.
+            let _final_denoise_idx = (DENOISE_PASSES % 2) as usize;
 
             (*this_ptr).cmd_postprocess_image(
                 cmd_buf,
-                &*postprocess_descriptor_sets_ptr,
                 result_extent.width,
                 result_extent.height,
-                //result_image,
-                self.denoising_images[0].inner(),
-                postprocessed_image,
-                final_denoise_idx,
+                &self.denoising_images[0],
+                &img_dependent_data.postprocess_result_image,
             )?;
 
             let return_to_general_barriers = [
@@ -1452,24 +1453,28 @@ impl Renderer {
     fn cmd_postprocess_image(
         &self,
         cmd_buf: vk::CommandBuffer,
-        descriptor_sets: &vulkan_abstraction::PostProcessDescriptorSets,
         width: u32,
         height: u32,
-        input_image: vk::Image,
-        output_image: vk::Image,
-        final_denoise_idx: usize, // ADDED: to track which descriptor set to bind
+        input_image: &vulkan_abstraction::Image,
+        output_image: &vulkan_abstraction::Image,
     ) -> SrResult<()> {
         let device = self.core.device().inner();
 
-        let push_constants = vulkan_abstraction::PostprocessPushConstant { exposure: EXPOSURE };
+        // Heap-mode: shader reads input/output via DescriptorHandle indices threaded
+        // through push constants. Allocating-and-writing the slots is lazy on the
+        // image; we just snapshot the current slot here.
+        let push_constants = vulkan_abstraction::PostprocessPushConstant {
+            input_idx: input_image.storage_slot(),
+            output_idx: output_image.storage_slot(),
+            exposure: EXPOSURE,
+        };
 
-        // 1. Synchronize: Wait for Denoise (Compute) to finish writing to input_image
         let input_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
             .dst_access_mask(vk::AccessFlags::SHADER_READ)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
-            .image(input_image)
+            .image(input_image.inner())
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
@@ -1478,13 +1483,12 @@ impl Renderer {
                 layer_count: 1,
             });
 
-        // Ensure final output image is ready
         let output_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::empty())
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::UNDEFINED) // CHANGED: Blit leaves this in GENERAL, so match it here
+            .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::GENERAL)
-            .image(output_image)
+            .image(output_image.inner())
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
@@ -1496,8 +1500,8 @@ impl Renderer {
         unsafe {
             device.cmd_pipeline_barrier(
                 cmd_buf,
-                vk::PipelineStageFlags::COMPUTE_SHADER, // Wait for Denoise
-                vk::PipelineStageFlags::COMPUTE_SHADER, // Block Post-process
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
@@ -1506,19 +1510,12 @@ impl Renderer {
 
             device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::COMPUTE, self.postprocess_pipeline.inner());
 
-            // CHANGED: Bind specifically Set 0 or Set 1 based on the denoise ping-pong result
-            device.cmd_bind_descriptor_sets(
-                cmd_buf,
-                vk::PipelineBindPoint::COMPUTE,
-                self.postprocess_pipeline.layout(),
-                0,
-                &[descriptor_sets.inner()[final_denoise_idx]],
-                &[],
-            );
+            // Bind the descriptor heaps (resource + sampler) for this dispatch.
+            self.core.descriptor_heap().cmd_bind(cmd_buf);
 
             device.cmd_push_constants(
                 cmd_buf,
-                self.denoise_pipeline.layout(),
+                self.postprocess_pipeline.layout(),
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 &std::mem::transmute::<
@@ -1527,7 +1524,6 @@ impl Renderer {
                 >(push_constants),
             );
 
-            // Dispatch post-process shader
             let group_x = (width + 15) / 16;
             let group_y = (height + 15) / 16;
             device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
@@ -1538,7 +1534,7 @@ impl Renderer {
                 .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
-                .image(output_image)
+                .image(output_image.inner())
                 .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
@@ -1667,22 +1663,7 @@ impl Renderer {
     #[deprecated = "use set_entity_transform with a proper EntityId"]
     pub fn set_object_transform(&mut self, instance_id: usize, transform: nalgebra::Matrix4<f32>) {
         // Vulkan expects a 3x4 row-major matrix for raytracing transforms
-        let vk_transform = vk::TransformMatrixKHR {
-            matrix: [
-                transform.m11,
-                transform.m12,
-                transform.m13,
-                transform.m14,
-                transform.m21,
-                transform.m22,
-                transform.m23,
-                transform.m24,
-                transform.m31,
-                transform.m32,
-                transform.m33,
-                transform.m34,
-            ],
-        };
+        let vk_transform = na_mat4_to_vk_transform(transform);
 
         let entity_id = vulkan_abstraction::EntityId(instance_id as u64);
         let _ = self.resource_manager.set_entity_transform(entity_id, vk_transform);

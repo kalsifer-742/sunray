@@ -5,6 +5,7 @@ use crate::{error::SrResult, vulkan_abstraction};
 use ash::vk;
 use gltf::image::Format;
 use nalgebra as na;
+use crate::utils::na_mat4_to_vk_transform;
 use crate::vulkan_abstraction::ResourceManager;
 
 type BlasInstanceInfo = (usize, na::Matrix4<f32>);
@@ -77,7 +78,7 @@ impl Scene {
                 |(blas_instance_index, (blas_index, transform))| vulkan_abstraction::BlasInstance {
                     blas_instance_index: blas_instance_index as u32,
                     blas: &blases[blas_index],
-                    transform: to_vk_transform(transform),
+                    transform: na_mat4_to_vk_transform(transform),
                 },
             )
             .collect::<Vec<_>>();
@@ -207,21 +208,7 @@ impl Scene {
     }
 }
 
-fn to_vk_transform(transform: na::Matrix4<f32>) -> vk::TransformMatrixKHR {
-    let c0 = transform.column(0);
-    let c1 = transform.column(1);
-    let c2 = transform.column(2);
-    let c3 = transform.column(3);
 
-    #[rustfmt::skip]
-    let matrix = [
-        c0[0], c1[0], c2[0], c3[0],
-        c0[1], c1[1], c2[1], c3[1],
-        c0[2], c1[2], c2[2], c3[2],
-    ];
-
-    vk::TransformMatrixKHR { matrix }
-}
 
 fn to_vk_image(
     core: &Rc<vulkan_abstraction::Core>,

@@ -42,7 +42,7 @@ impl Swapchain {
     ) -> SrResult<(vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>, vk::Extent2D)> {
         let instance = core.instance();
         let device = core.device();
-        let swapchain_device = khr::swapchain::Device::new(instance, device.inner());
+        let swapchain_device = khr::swapchain::Device::load(instance, device.inner());
 
         // for creating swapchain and swapchain_image_views
         let surface_format = {
@@ -154,7 +154,7 @@ impl Swapchain {
     }
 
     pub fn new(core: Rc<vulkan_abstraction::Core>, surface: vk::SurfaceKHR, window_extent: (u32, u32)) -> SrResult<Self> {
-        let swapchain_device = khr::swapchain::Device::new(core.instance(), core.device().inner());
+        let swapchain_device = khr::swapchain::Device::load(core.instance(), core.device().inner());
         let (swapchain, images, image_views, image_extent) = Self::build_swapchain(&core, surface, window_extent, None)?;
 
         Ok(Self {

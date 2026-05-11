@@ -219,28 +219,28 @@ impl RenderGraph<Setup> {
 
 
     pub fn compile(mut self) -> RenderGraph<Built> { //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is the site where it will be published the paper https://dl.acm.org/profile/99661091135
-        let mut actual_resources = ResourceDeref
+        // let mut actual_resources = ResourceDeref
 
         for pass in self.passes.iter_mut() {
-            let common = &mut match pass {
+            let common =match pass {
                 AnyRenderPass::Rt(rt) => {
-                    rt.common
+                    &mut rt.common
                 }
                 AnyRenderPass::Raster(raster) => {
-                    raster.common
+                    &mut raster.common
                 }
                 AnyRenderPass::Compute(compute) => {
-                    compute.common
+                    &mut compute.common
                 }
             };
 
-            for read in common.read.iter_mut() {
-                read.access.
-            }
+            // for read in common.read.iter_mut() {
+            //     read.access.
+            // }
         }
 
-
-        let mut graph = ;
+        todo!()
+        // let mut graph = ;
     }
 }
 
