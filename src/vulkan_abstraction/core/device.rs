@@ -126,6 +126,11 @@ impl Device {
                 vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
             let mut physical_device_descriptor_heap_features =
                 vk::PhysicalDeviceDescriptorHeapFeaturesEXT::default().descriptor_heap(true);
+            // VK_KHR_shader_untyped_pointers — required by SPV_KHR_untyped_pointers, which
+            // SPV_EXT_descriptor_heap depends on. Slang emits OpUntyped* ops in heap-mode SPIR-V
+            // so without this feature `vkCreateShaderModule` fails validation.
+            let mut physical_device_shader_untyped_pointers_features =
+                vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR::default().shader_untyped_pointers(true);
 
             // enable anisotropic filtering
             // TODO: does this make sense for raytracing
@@ -139,6 +144,7 @@ impl Device {
                 .push(&mut physical_device_rt_pipeline_features)
                 .push(&mut physical_device_acceleration_structure_features)
                 .push(&mut physical_device_descriptor_heap_features)
+                .push(&mut physical_device_shader_untyped_pointers_features)
                 .push(&mut physical_device_features)
                 .queue_create_infos(&queue_create_infos);
 

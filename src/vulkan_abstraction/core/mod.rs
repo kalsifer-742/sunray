@@ -75,6 +75,10 @@ impl Core {
             khr::acceleration_structure::NAME,
             khr::deferred_host_operations::NAME,
             ext::descriptor_heap::NAME,
+            // Required by SPV_KHR_untyped_pointers, which SPV_EXT_descriptor_heap depends on.
+            // The Slang heap-mode codegen emits OpUntyped* ops, so without this the SPIR-V
+            // module is rejected at vkCreateShaderModule.
+            vk::KHR_SHADER_UNTYPED_POINTERS_NAME,
         ]
         .map(CStr::as_ptr);
 

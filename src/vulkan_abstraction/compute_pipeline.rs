@@ -61,14 +61,19 @@ pub struct TemporalAccumulationPushConstant {
     pub frame_count: u32,
 }
 
-/// Matches `PostprocessPC` in `shaders/postprocess.slang` (heap-mode). The two
-/// `DescriptorHandle` fields lower to a `uint32` shader index each.
+/// Matches `PostprocessPC` in `shaders/postprocess.slang` (heap-mode). Each
+/// `DescriptorHandle<T>` lowers to a SPIR-V `uint2` (8 bytes) when targeting Vulkan
+/// with `spvDescriptorHeapEXT`; only the `.x` lane is used as the heap slot index
+/// (the driver multiplies it by the device's per-type descriptor size via
+/// `OpConstantSizeOfEXT`). The `.y` lane is reserved/unused — kept zero here.
 #[allow(dead_code)] // read by the gpu
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 pub struct PostprocessPushConstant {
     pub input_idx: u32,
+    pub _input_pad: u32,
     pub output_idx: u32,
+    pub _output_pad: u32,
     pub exposure: f32,
 }
 
@@ -97,37 +102,21 @@ impl<T: ComputeTypeDef> ComputePipeline<T> {
             .module(shader_module)
             .stage(vk::ShaderStageFlags::COMPUTE);
 
-        let size = std::mem::size_of::<T::PushConstant>() as u32;
-        let push_constant_ranges = if size > 0 {
-            vec![
-                vk::PushConstantRange::default()
-                    .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                    .offset(0)
-                    .size(size),
-            ]
-        } else {
-            Vec::new()
-        };
-
-        // No descriptor set layouts — bindings come from the heap.
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .push_constant_ranges(&push_constant_ranges);
-
-        let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
-
+        // VK_EXT_descriptor_heap requires `layout = VK_NULL_HANDLE` when
+        // `DESCRIPTOR_HEAP_BIT_EXT` is set; the push-constant interface lives in the
+        // shader's SPIR-V interface block instead, and is fed via `vkCmdPushDataEXT`.
         let mut flags2 = vk::PipelineCreateFlags2CreateInfo::default()
             .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 
         let pipeline_info = vk::ComputePipelineCreateInfo::default()
             .stage(shader_stage_create_info)
-            .layout(pipeline_layout)
+            .layout(vk::PipelineLayout::null())
             .push(&mut flags2);
 
         let pipelines = unsafe {
             device
                 .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
                 .map_err(|(_, err)| {
-                    device.destroy_pipeline_layout(pipeline_layout, None);
                     device.destroy_shader_module(shader_module, None);
                     err
                 })?
@@ -139,7 +128,7 @@ impl<T: ComputeTypeDef> ComputePipeline<T> {
         Ok(Self {
             core,
             pipeline,
-            pipeline_layout,
+            pipeline_layout: vk::PipelineLayout::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             _marker: PhantomData,
         })
@@ -237,7 +226,11 @@ impl<T: ComputeTypeDef> Drop for ComputePipeline<T> {
         let device = self.core.device().inner();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
+            // Heap-mode pipelines are constructed with a null layout; only legacy
+            // descriptor-set pipelines own one.
+            if self.pipeline_layout != vk::PipelineLayout::null() {
+                device.destroy_pipeline_layout(self.pipeline_layout, None);
+            }
         }
     }
 }

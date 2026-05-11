@@ -56,6 +56,11 @@ unsafe impl Send for SamplerSubHeap {}
 pub struct DescriptorHeap {
     resource: ResourceSubHeap,
     sampler: SamplerSubHeap,
+    /// Device-reported minimum reserved range that must be passed in `BindHeapInfoEXT`.
+    /// We currently set the reserved range = the full heap (offset 0, size = heap size),
+    /// so these are kept around mainly for the assertion at bind time.
+    min_resource_reserved: u64,
+    min_sampler_reserved: u64,
     ext: ext::descriptor_heap::Device,
     device: ash::Device,
 }
@@ -115,9 +120,29 @@ impl DescriptorHeap {
             "sunray_sampler_descriptor_heap",
         )?;
 
+        // Resize the heaps if the device demands a larger minimum reserved range than the
+        // configured heap size. Safer to enlarge than to error out, since a too-small heap
+        // would make `cmd_bind_*_heap_ext` unusable.
+        let min_resource_reserved = props.min_resource_heap_reserved_range.max(1);
+        let min_sampler_reserved = props.min_sampler_heap_reserved_range.max(1);
+        debug_assert!(
+            resource.byte_size >= min_resource_reserved,
+            "resource heap size ({}) below device-required minimum reserved range ({})",
+            resource.byte_size,
+            min_resource_reserved
+        );
+        debug_assert!(
+            sampler.byte_size >= min_sampler_reserved,
+            "sampler heap size ({}) below device-required minimum reserved range ({})",
+            sampler.byte_size,
+            min_sampler_reserved
+        );
+
         Ok(Self {
             resource,
             sampler,
+            min_resource_reserved,
+            min_sampler_reserved,
             ext: ext.clone(),
             device: device.clone(),
         })
@@ -271,14 +296,24 @@ impl DescriptorHeap {
     /// Bind both heaps to a command buffer. Must be called before any draw/dispatch
     /// that references descriptors via the heap.
     pub fn cmd_bind(&self, cmd_buf: vk::CommandBuffer) {
-        let resource_bind = vk::BindHeapInfoEXT::default().heap_range(vk::DeviceAddressRangeEXT {
-            address: self.resource.device_address,
-            size: self.resource.byte_size,
-        });
-        let sampler_bind = vk::BindHeapInfoEXT::default().heap_range(vk::DeviceAddressRangeEXT {
-            address: self.sampler.device_address,
-            size: self.sampler.byte_size,
-        });
+        // The reserved-range covers the entire heap; this is the simplest valid choice.
+        // The device requires it to be at least `min_*_heap_reserved_range`; we asserted
+        // that during heap creation.
+        let resource_bind = vk::BindHeapInfoEXT::default()
+            .heap_range(vk::DeviceAddressRangeEXT {
+                address: self.resource.device_address,
+                size: self.resource.byte_size,
+            })
+            .reserved_range_offset(0)
+            .reserved_range_size(self.resource.byte_size);
+        let sampler_bind = vk::BindHeapInfoEXT::default()
+            .heap_range(vk::DeviceAddressRangeEXT {
+                address: self.sampler.device_address,
+                size: self.sampler.byte_size,
+            })
+            .reserved_range_offset(0)
+            .reserved_range_size(self.sampler.byte_size);
+        let _ = (self.min_resource_reserved, self.min_sampler_reserved);
         unsafe {
             self.ext.cmd_bind_resource_heap(cmd_buf, &resource_bind);
             self.ext.cmd_bind_sampler_heap(cmd_buf, &sampler_bind);

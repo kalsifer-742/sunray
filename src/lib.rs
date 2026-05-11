@@ -1462,10 +1462,13 @@ impl Renderer {
 
         // Heap-mode: shader reads input/output via DescriptorHandle indices threaded
         // through push constants. Allocating-and-writing the slots is lazy on the
-        // image; we just snapshot the current slot here.
+        // image; we just snapshot the current slot here. The `_pad` fields match
+        // Slang's `uint2` lowering of `DescriptorHandle<T>`.
         let push_constants = vulkan_abstraction::PostprocessPushConstant {
             input_idx: input_image.storage_slot(),
+            _input_pad: 0,
             output_idx: output_image.storage_slot(),
+            _output_pad: 0,
             exposure: EXPOSURE,
         };
 
@@ -1513,16 +1516,16 @@ impl Renderer {
             // Bind the descriptor heaps (resource + sampler) for this dispatch.
             self.core.descriptor_heap().cmd_bind(cmd_buf);
 
-            device.cmd_push_constants(
-                cmd_buf,
-                self.postprocess_pipeline.layout(),
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &std::mem::transmute::<
-                    vulkan_abstraction::PostprocessPushConstant,
-                    [u8; std::mem::size_of::<vulkan_abstraction::PostprocessPushConstant>()],
-                >(push_constants),
-            );
+            // Heap-mode pipelines have no VkPipelineLayout, so push constants go through
+            // vkCmdPushDataEXT — the descriptor-heap replacement for vkCmdPushConstants.
+            let push_bytes = std::mem::transmute::<
+                vulkan_abstraction::PostprocessPushConstant,
+                [u8; std::mem::size_of::<vulkan_abstraction::PostprocessPushConstant>()],
+            >(push_constants);
+            let push_info = vk::PushDataInfoEXT::default()
+                .offset(0)
+                .data(vk::HostAddressRangeConstEXT::default().address(&push_bytes));
+            self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 
             let group_x = (width + 15) / 16;
             let group_y = (height + 15) / 16;
