@@ -25,6 +25,7 @@ slotmap = "1.1.1"
 rspirv-reflect = "0.9.0"
 derive_builder = "0.20.2"
 enum-as-inner = "0.7.0"
+num = "0.4.3"
 #na = "0.32.2"
 
 
