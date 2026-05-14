@@ -43,8 +43,15 @@ impl Device {
                 })
                 //check for blit support
                 .filter(|physical_device| {
-                    let format_properties =
-                        unsafe { instance.get_physical_device_format_properties(*physical_device, image_format) };
+                    let mut format_properties2 = vk::FormatProperties2::default();
+                    unsafe {
+                        instance.get_physical_device_format_properties2(
+                            *physical_device,
+                            image_format,
+                            &mut format_properties2,
+                        )
+                    };
+                    let format_properties = format_properties2.format_properties;
 
                     format_properties
                         .optimal_tiling_features
@@ -79,7 +86,9 @@ impl Device {
                 // try to get a discrete or at least integrated gpu
                 .max_by_key(
                     |(physical_device, _surface_support_details, _graphics_queue_family_index, _transfer_queue_family_index)| {
-                        let device_type = unsafe { instance.get_physical_device_properties(*physical_device) }.device_type;
+                        let mut props2 = vk::PhysicalDeviceProperties2::default();
+                        unsafe { instance.get_physical_device_properties2(*physical_device, &mut props2) };
+                        let device_type = props2.properties.device_type;
 
                         match device_type {
                             vk::PhysicalDeviceType::DISCRETE_GPU => 2,
@@ -111,7 +120,11 @@ impl Device {
                         .queue_priorities(&transfer_priorities),
                 );
             }
-
+            // Bisecting: maintenance9 was a recent addition that changes queue-ownership
+            // and image-access semantics. Temporarily disabled while debugging the denoise
+            // descriptor read returning zero.
+            let mut maintenance9_features = vk::PhysicalDeviceMaintenance9FeaturesKHR::default().maintenance9(false);
+            let mut vk14_features  = vk::PhysicalDeviceVulkan14Features::default().maintenance5(true);
             let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
             // enable some device features necessary for ray-tracing //TODO I may need some newer feature expecially for the semi-binding?
             let mut vk12_features = vk::PhysicalDeviceVulkan12Features::default()
@@ -132,10 +145,20 @@ impl Device {
             let mut physical_device_shader_untyped_pointers_features =
                 vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR::default().shader_untyped_pointers(true);
 
-            // enable anisotropic filtering
-            // TODO: does this make sense for raytracing
-            let mut physical_device_features =
-                vk::PhysicalDeviceFeatures2::default().features(vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true));
+            // shader_storage_image_*_without_format: Slang lowers `RWTexture2D<float4>` to
+            // `OpTypeImage ... Unknown` and the resulting SPIR-V advertises the matching
+            // StorageImage{Read,Write}WithoutFormat capabilities. Without these features
+            // enabled, the postprocess dispatch silently produces zeros.
+            let mut physical_device_features = vk::PhysicalDeviceFeatures2::default().features(
+                vk::PhysicalDeviceFeatures::default()
+                    .sampler_anisotropy(true)
+                    .shader_storage_image_read_without_format(true)
+                    .shader_storage_image_write_without_format(true)
+                    // r11f_g11f_b10f / rg16f are storage formats from the extended set;
+                    // without this feature the SPIR-V capability `StorageImageExtendedFormats`
+                    // is unmet and operations like `imageSize` return zero.
+                    .shader_storage_image_extended_formats(true),
+            );
 
             let device_create_info = vk::DeviceCreateInfo::default()
                 .enabled_extension_names(&device_extensions)
@@ -146,12 +169,18 @@ impl Device {
                 .push(&mut physical_device_descriptor_heap_features)
                 .push(&mut physical_device_shader_untyped_pointers_features)
                 .push(&mut physical_device_features)
+                .push(&mut maintenance9_features)
+                .push(&mut vk14_features)
                 .queue_create_infos(&queue_create_infos);
 
             unsafe { instance.create_device(physical_device, &device_create_info, None) }?
         };
         //necessary for memory allocations
-        let physical_device_memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let physical_device_memory_properties = {
+            let mut mem_props2 = vk::PhysicalDeviceMemoryProperties2::default();
+            unsafe { instance.get_physical_device_memory_properties2(physical_device, &mut mem_props2) };
+            mem_props2.memory_properties
+        };
 
         let (
             physical_device_properties,
@@ -194,8 +223,15 @@ impl Device {
         })
     }
 
+    fn queue_family_properties2(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Vec<vk::QueueFamilyProperties> {
+        let count = unsafe { instance.get_physical_device_queue_family_properties2_len(physical_device) };
+        let mut props2 = vec![vk::QueueFamilyProperties2::default(); count];
+        unsafe { instance.get_physical_device_queue_family_properties2(physical_device, &mut props2) };
+        props2.into_iter().map(|p| p.queue_family_properties).collect()
+    }
+
     fn select_graphics_queue_family(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Option<u32> {
-        unsafe { instance.get_physical_device_queue_family_properties(physical_device) }
+        Self::queue_family_properties2(instance, physical_device)
             .into_iter()
             .enumerate()
             .filter(|(_queue_family_index, queue_family_props)| queue_family_props.queue_flags.contains(vk::QueueFlags::GRAPHICS))
@@ -204,7 +240,7 @@ impl Device {
     }
 
     fn select_dedicated_transfer_queue(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Option<u32> {
-        unsafe { instance.get_physical_device_queue_family_properties(physical_device) }
+        Self::queue_family_properties2(instance, physical_device)
             .into_iter()
             .enumerate()
             .filter(|(_queue_family_index, queue_family_props)| {

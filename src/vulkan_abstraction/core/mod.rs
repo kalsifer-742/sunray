@@ -249,17 +249,19 @@ impl Core {
         let transfer_fence = unsafe { device.create_fence(&fence_info, None) }?;
 
         // 3. Prepara la sottomissione
-        let command_buffers = [transfer_cmd_buffer];
-        let signal_semaphores = [transfer_complete_semaphore];
+        let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(transfer_cmd_buffer)];
+        let signal_semaphore_infos = [vk::SemaphoreSubmitInfo::default()
+            .semaphore(transfer_complete_semaphore)
+            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
 
-        let submit_info = vk::SubmitInfo::default()
-            .command_buffers(&command_buffers)
-            .signal_semaphores(&signal_semaphores);
+        let submit_info = vk::SubmitInfo2::default()
+            .command_buffer_infos(&cmd_buf_infos)
+            .signal_semaphore_infos(&signal_semaphore_infos);
 
         // 4. Invia alla Transfer Queue
         unsafe {
             let queue = self.transfer_queue.lock();
-            device.queue_submit(queue.inner(), &[submit_info], transfer_fence)?;
+            device.queue_submit2(queue.inner(), &[submit_info], transfer_fence)?;
         }
 
         Ok((transfer_complete_semaphore, transfer_fence))

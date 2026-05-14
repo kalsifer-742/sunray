@@ -21,7 +21,14 @@
       "WebFetch(domain:docs.shader-slang.org)",
       "PowerShell(Test-Path *)",
       "Bash(sed -n '40,75p' /tmp/slang-rs-probe/src/lib.rs)",
-      "Bash(sed -n '120,140p' /tmp/slang-rs-probe/src/lib.rs)"
+      "Bash(sed -n '120,140p' /tmp/slang-rs-probe/src/lib.rs)",
+      "Bash(slangc *)",
+      "Bash(spirv-dis /tmp/postprocess.spv)",
+      "Bash(spirv-dis target/debug/build/sunray-ff4b141f938ed6c4/out/temporal_accumulation.spirv)",
+      "Bash(spirv-dis target/debug/build/sunray-ff4b141f938ed6c4/out/denoise.spirv)",
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(findstr /i \"deprecat\")"
     ]
   }
 }

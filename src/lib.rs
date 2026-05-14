@@ -141,7 +141,7 @@ impl Renderer {
         create_surface: Option<&CreateSurfaceFn>,
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
         let with_validation_layer = env_var_as_bool(ENABLE_VALIDATION_LAYER_ENV_VAR).unwrap_or(IS_DEBUG_BUILD);
-        let with_gpuav = env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
+        let with_gpuav = env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(true);
         let (core, surface) = vulkan_abstraction::Core::new_with_surface(
             with_validation_layer,
             with_gpuav,
@@ -327,6 +327,10 @@ impl Renderer {
         if new_extent == self.image_extent {
             return Ok(());
         }
+        // Drop the in-flight references to images before we destroy them — without
+        // this, a resize that arrives while the previous frame's fence hasn't signaled
+        // tears down images/descriptor-heap slots the GPU is still reading.
+        unsafe { self.core.device().inner().device_wait_idle() }?;
         self.clear_image_dependent_data();
 
         let num_pixels = (new_extent.width * new_extent.height) as usize;
@@ -388,7 +392,11 @@ impl Renderer {
             device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
 
             let create_barrier = |image: vk::Image| {
-                vk::ImageMemoryBarrier::default()
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_access_mask(vk::AccessFlags2::empty())
+                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
                     .old_layout(vk::ImageLayout::UNDEFINED)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -401,8 +409,6 @@ impl Renderer {
                         base_array_layer: 0,
                         layer_count: 1,
                     })
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ)
             };
 
             let barriers = [
@@ -412,15 +418,8 @@ impl Renderer {
                 create_barrier(self.denoising_images[1].inner()),
             ];
 
-            device.cmd_pipeline_barrier(
-                setup_cmd_buf.inner(),
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+            device.cmd_pipeline_barrier2(setup_cmd_buf.inner(), &dep_info);
 
             device.end_command_buffer(setup_cmd_buf.inner())?;
 
@@ -522,7 +521,15 @@ impl Renderer {
                     device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
 
                     let create_barrier = |image: vk::Image| {
-                        vk::ImageMemoryBarrier::default()
+                        vk::ImageMemoryBarrier2::default()
+                            .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                            .dst_stage_mask(
+                                vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR
+                                    | vk::PipelineStageFlags2::COMPUTE_SHADER
+                                    | vk::PipelineStageFlags2::TRANSFER,
+                            )
+                            .src_access_mask(vk::AccessFlags2::empty())
+                            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
                             .old_layout(vk::ImageLayout::UNDEFINED)
                             .new_layout(vk::ImageLayout::GENERAL)
                             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -535,8 +542,6 @@ impl Renderer {
                                 base_array_layer: 0,
                                 layer_count: 1,
                             })
-                            .src_access_mask(vk::AccessFlags::empty())
-                            .dst_access_mask(vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ)
                     };
 
                     // Add all the newly created G-Buffer and output images
@@ -550,17 +555,8 @@ impl Renderer {
                         create_barrier(postprocess_result_image.inner()),
                     ];
 
-                    device.cmd_pipeline_barrier(
-                        setup_cmd_buf.inner(),
-                        vk::PipelineStageFlags::TOP_OF_PIPE,
-                        vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
-                            | vk::PipelineStageFlags::COMPUTE_SHADER
-                            | vk::PipelineStageFlags::TRANSFER, // Added TRANSFER for the blit cmd buf later
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[],
-                        &barriers,
-                    );
+                    let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+                    device.cmd_pipeline_barrier2(setup_cmd_buf.inner(), &dep_info);
 
                     device.end_command_buffer(setup_cmd_buf.inner())?;
 
@@ -813,53 +809,47 @@ impl Renderer {
                 result_extent,
             )?;
 
-            let memory_barrier = vk::MemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE) // Wait for RT to finish writing
-                .dst_access_mask(vk::AccessFlags::SHADER_READ); // Make sure Denoise can see the data
+            let memory_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE) // Wait for RT to finish writing
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ); // Make sure Denoise can see the data
 
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR, // Source Stage
-                vk::PipelineStageFlags::COMPUTE_SHADER,         // Destination Stage (Denoising is usually compute)
-                vk::DependencyFlags::empty(),
-                &[memory_barrier], // Use a global memory barrier for simplicity
-                &[],
-                &[],
-            );
+            let dep_info = vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&memory_barrier));
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             let read_only_barriers = [
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                     .old_layout(vk::ImageLayout::GENERAL)
                     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image(img_dependent_data.depth_image.inner())
                     .subresource_range(*img_dependent_data.depth_image.image_subresource_range()),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                     .old_layout(vk::ImageLayout::GENERAL)
                     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image(img_dependent_data.normal_image.inner())
                     .subresource_range(*img_dependent_data.normal_image.image_subresource_range()),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                     .old_layout(vk::ImageLayout::GENERAL)
                     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image(img_dependent_data.diffuse_image.inner())
                     .subresource_range(*img_dependent_data.diffuse_image.image_subresource_range()),
             ];
 
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[], // Remove the global memory_barrier you had here
-                &[],
-                &read_only_barriers, // Add these image barriers
-            );
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&read_only_barriers);
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             (*this_ptr).cmd_temporal_accumulation(
                 cmd_buf,
@@ -871,7 +861,19 @@ impl Renderer {
                 &self.accumulation_images,
             )?;
 
-            //let temporal_barrier_1 = vk::MemoryBarrier::
+            // Make the temporal pass's writes to accumulation_images visible to the
+            // denoise pass's reads. The denoise descriptor set always reads
+            // accumulation_images[0]; cmd_denoise_image's own pre-dispatch barrier
+            // only touches accumulation_images[history_idx] (the *other* slot most
+            // frames), so without this global compute-to-compute barrier denoise picks
+            // up stale (zero) data.
+            let temporal_to_denoise = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ);
+            let dep_info = vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&temporal_to_denoise));
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             // 5. Denoise Ping-Pong Loop
             (*this_ptr).cmd_denoise_image(
@@ -897,45 +899,46 @@ impl Renderer {
             )?;
 
             let return_to_general_barriers = [
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                    .src_access_mask(vk::AccessFlags2::SHADER_READ)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
                     .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .image(img_dependent_data.depth_image.inner())
                     .subresource_range(*img_dependent_data.depth_image.image_subresource_range()),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                    .src_access_mask(vk::AccessFlags2::SHADER_READ)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
                     .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .image(img_dependent_data.normal_image.inner())
                     .subresource_range(*img_dependent_data.normal_image.image_subresource_range()),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                    .src_access_mask(vk::AccessFlags2::SHADER_READ)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
                     .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .image(img_dependent_data.diffuse_image.inner())
                     .subresource_range(*img_dependent_data.diffuse_image.image_subresource_range()),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                    .src_access_mask(vk::AccessFlags2::SHADER_READ)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
                     .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .image(img_dependent_data.raytrace_result_image.inner())
                     .subresource_range(*img_dependent_data.raytrace_result_image.image_subresource_range()),
             ];
 
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::COMPUTE_SHADER, // Wait for Denoise to finish reading
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR, // Block next frame's RT from writing early
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &return_to_general_barriers,
-            );
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&return_to_general_barriers);
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             device.end_command_buffer(cmd_buf)?;
 
@@ -1040,8 +1043,17 @@ impl Renderer {
                 .base_array_layer(0)
                 .layer_count(vk::REMAINING_ARRAY_LAYERS);
 
+            let src_stage = if self.relative_frame_count == 1 {
+                vk::PipelineStageFlags2::TOP_OF_PIPE
+            } else {
+                vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR
+            };
+            let dst_stage = vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
+
             let make_barrier = |img: vk::Image, old: vk::ImageLayout, new: vk::ImageLayout, src_a, dst_a| {
-                vk::ImageMemoryBarrier::default()
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(src_stage)
+                    .dst_stage_mask(dst_stage)
                     .src_access_mask(src_a)
                     .dst_access_mask(dst_a)
                     .old_layout(old)
@@ -1056,14 +1068,14 @@ impl Renderer {
                 image,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::GENERAL,
-                vk::AccessFlags::empty(),
-                vk::AccessFlags::SHADER_WRITE,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::SHADER_WRITE,
             );
 
             let (hist_old, hist_src) = if self.relative_frame_count == 1 {
-                (vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty())
+                (vk::ImageLayout::UNDEFINED, vk::AccessFlags2::empty())
             } else {
-                (vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE)
+                (vk::ImageLayout::GENERAL, vk::AccessFlags2::SHADER_WRITE)
             };
 
             let b_hist = make_barrier(
@@ -1071,13 +1083,13 @@ impl Renderer {
                 hist_old,
                 vk::ImageLayout::GENERAL,
                 hist_src,
-                vk::AccessFlags::SHADER_READ,
+                vk::AccessFlags2::SHADER_READ,
             );
 
             let (accum_old, accum_src) = if self.relative_frame_count == 1 {
-                (vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty())
+                (vk::ImageLayout::UNDEFINED, vk::AccessFlags2::empty())
             } else {
-                (vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_READ)
+                (vk::ImageLayout::GENERAL, vk::AccessFlags2::SHADER_READ)
             };
 
             let b_accum = make_barrier(
@@ -1085,23 +1097,12 @@ impl Renderer {
                 accum_old,
                 vk::ImageLayout::GENERAL,
                 accum_src,
-                vk::AccessFlags::SHADER_WRITE,
+                vk::AccessFlags2::SHADER_WRITE,
             );
 
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                // Frame 1: Wait for nothing. Frame 2+: Wait for previous Ray Tracing.
-                if self.relative_frame_count == 1 {
-                    vk::PipelineStageFlags::TOP_OF_PIPE
-                } else {
-                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
-                },
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[b_swap, b_hist, b_accum],
-            );
+            let pre_rt_barriers = [b_swap, b_hist, b_accum];
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&pre_rt_barriers);
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             // --- PASS 1: RIS Audition ---
             device.cmd_bind_pipeline(
@@ -1110,25 +1111,26 @@ impl Renderer {
                 self.ray_tracing_pipeline_ris.inner(),
             );
 
-            device.cmd_bind_descriptor_sets(
-                cmd_buf,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                self.ray_tracing_pipeline_ris.layout(),
-                0,
-                descriptor_sets.inner(),
-                &[],
-            );
-
-            device.cmd_push_constants(
-                cmd_buf,
-                self.ray_tracing_pipeline_ris.layout(),
-                vk::ShaderStageFlags::RAYGEN_KHR
+            let bind_info = vk::BindDescriptorSetsInfo::default()
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR
                     | vk::ShaderStageFlags::CLOSEST_HIT_KHR
                     | vk::ShaderStageFlags::MISS_KHR
-                    | vk::ShaderStageFlags::ANY_HIT_KHR,
-                0,
-                &push_constant_bytes,
-            );
+                    | vk::ShaderStageFlags::ANY_HIT_KHR)
+                .layout(self.ray_tracing_pipeline_ris.layout())
+                .first_set(0)
+                .descriptor_sets(descriptor_sets.inner())
+                .dynamic_offsets(&[]);
+            device.cmd_bind_descriptor_sets2(cmd_buf, &bind_info);
+
+            let push_info = vk::PushConstantsInfo::default()
+                .layout(self.ray_tracing_pipeline_ris.layout())
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR
+                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                    | vk::ShaderStageFlags::MISS_KHR
+                    | vk::ShaderStageFlags::ANY_HIT_KHR)
+                .offset(0)
+                .values(&push_constant_bytes);
+            device.cmd_push_constants2(cmd_buf, &push_info);
 
             self.core.rt_pipeline_device().cmd_trace_rays(
                 cmd_buf,
@@ -1141,19 +1143,14 @@ impl Renderer {
                 extent.depth,
             );
 
-            let reservoir_barrier = vk::MemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            let reservoir_barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ);
 
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[reservoir_barrier],
-                &[],
-                &[],
-            );
+            let dep_info = vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&reservoir_barrier));
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             device.cmd_bind_pipeline(
                 cmd_buf,
@@ -1161,25 +1158,26 @@ impl Renderer {
                 self.ray_tracing_pipeline_final.inner(),
             );
 
-            device.cmd_bind_descriptor_sets(
-                cmd_buf,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                self.ray_tracing_pipeline_final.layout(),
-                0,
-                descriptor_sets.inner(),
-                &[],
-            );
-
-            device.cmd_push_constants(
-                cmd_buf,
-                self.ray_tracing_pipeline_final.layout(),
-                vk::ShaderStageFlags::RAYGEN_KHR
+            let bind_info = vk::BindDescriptorSetsInfo::default()
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR
                     | vk::ShaderStageFlags::CLOSEST_HIT_KHR
                     | vk::ShaderStageFlags::MISS_KHR
-                    | vk::ShaderStageFlags::ANY_HIT_KHR,
-                0,
-                &push_constant_bytes,
-            );
+                    | vk::ShaderStageFlags::ANY_HIT_KHR)
+                .layout(self.ray_tracing_pipeline_final.layout())
+                .first_set(0)
+                .descriptor_sets(descriptor_sets.inner())
+                .dynamic_offsets(&[]);
+            device.cmd_bind_descriptor_sets2(cmd_buf, &bind_info);
+
+            let push_info = vk::PushConstantsInfo::default()
+                .layout(self.ray_tracing_pipeline_final.layout())
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR
+                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                    | vk::ShaderStageFlags::MISS_KHR
+                    | vk::ShaderStageFlags::ANY_HIT_KHR)
+                .offset(0)
+                .values(&push_constant_bytes);
+            device.cmd_push_constants2(cmd_buf, &push_info);
 
             self.core.rt_pipeline_device().cmd_trace_rays(
                 cmd_buf,
@@ -1212,9 +1210,11 @@ impl Renderer {
         let accum_idx = ((self.relative_frame_count + 1) % 2) as usize;
 
         // 1. Prepare inputs (RT Image and Motion Vectors)
-        let rt_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        let rt_barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image(raw_rt_image)
@@ -1226,9 +1226,11 @@ impl Renderer {
                 layer_count: 1,
             });
 
-        let mv_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE) // Assuming written in G-Buffer pass
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        let mv_barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE) // Assuming written in G-Buffer pass
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(motion_vector_image)
@@ -1242,9 +1244,11 @@ impl Renderer {
 
         // 2. Prepare Ping-Pong Images
         // The one we write to:
-        let write_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::empty()) // Don't care what it was doing before
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+        let write_barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(vk::AccessFlags2::empty()) // Don't care what it was doing before
+            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
             .old_layout(vk::ImageLayout::UNDEFINED) // Discard old contents
             .new_layout(vk::ImageLayout::GENERAL)
             .image(accumulation_images[accum_idx].inner())
@@ -1263,15 +1267,17 @@ impl Renderer {
         };
 
         let history_src_access = if self.relative_frame_count == 0 {
-            vk::AccessFlags::empty()
+            vk::AccessFlags2::empty()
         } else {
-            vk::AccessFlags::SHADER_WRITE
+            vk::AccessFlags2::SHADER_WRITE
         };
 
         // The one we read from (History):
-        let read_barrier = vk::ImageMemoryBarrier::default()
+        let read_barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_access_mask(history_src_access) // Written to last frame
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
             .old_layout(history_old_layout)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(accumulation_images[history_idx].inner())
@@ -1284,15 +1290,9 @@ impl Renderer {
             });
 
         unsafe {
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR, // Wait for RT
-                vk::PipelineStageFlags::COMPUTE_SHADER,         // Block Temporal
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[rt_barrier, mv_barrier, write_barrier, read_barrier],
-            );
+            let pre_temporal_barriers = [rt_barrier, mv_barrier, write_barrier, read_barrier];
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&pre_temporal_barriers);
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             device.cmd_bind_pipeline(
                 cmd_buf,
@@ -1300,22 +1300,21 @@ impl Renderer {
                 self.temporal_accumulation_pipeline.inner(),
             );
 
-            device.cmd_bind_descriptor_sets(
-                cmd_buf,
-                vk::PipelineBindPoint::COMPUTE,
-                self.temporal_accumulation_pipeline.layout(),
-                0,
-                descriptor_sets.inner(), // Has all bindings combined
-                &[],
-            );
+            let bind_info = vk::BindDescriptorSetsInfo::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .layout(self.temporal_accumulation_pipeline.layout())
+                .first_set(0)
+                .descriptor_sets(descriptor_sets.inner()) // Has all bindings combined
+                .dynamic_offsets(&[]);
+            device.cmd_bind_descriptor_sets2(cmd_buf, &bind_info);
 
-            device.cmd_push_constants(
-                cmd_buf,
-                self.temporal_accumulation_pipeline.layout(),
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &self.relative_frame_count.to_ne_bytes(),
-            );
+            let frame_count_bytes = self.relative_frame_count.to_ne_bytes();
+            let push_info = vk::PushConstantsInfo::default()
+                .layout(self.temporal_accumulation_pipeline.layout())
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .offset(0)
+                .values(&frame_count_bytes);
+            device.cmd_push_constants2(cmd_buf, &push_info);
 
             let group_x = (width + 15) / 16;
             let group_y = (height + 15) / 16;
@@ -1375,9 +1374,11 @@ impl Renderer {
 
             // --- BARRIERS ---
             // Synchronize the image we are about to read (ensure previous write is done)
-            let read_barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            let read_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .image(read_img)
@@ -1389,9 +1390,11 @@ impl Renderer {
                 });
 
             // Synchronize the image we are about to write to
-            let write_barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::empty()) // Or SHADER_READ if it was a source in a previous pass
-                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+            let write_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::empty()) // Or SHADER_READ if it was a source in a previous pass
+                .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .image(write_img)
@@ -1409,37 +1412,31 @@ impl Renderer {
 
             unsafe {
                 // Compute-to-Compute barrier ensures execution order and cache visibility
-                device.cmd_pipeline_barrier(
-                    cmd_buf,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[read_barrier, write_barrier],
-                );
+                let denoise_barriers = [read_barrier, write_barrier];
+                let dep_info = vk::DependencyInfo::default().image_memory_barriers(&denoise_barriers);
+                device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
                 device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::COMPUTE, self.denoise_pipeline.inner());
 
-                device.cmd_bind_descriptor_sets(
-                    cmd_buf,
-                    vk::PipelineBindPoint::COMPUTE,
-                    self.denoise_pipeline.layout(),
-                    0,
-                    &[descriptor_sets.inner()[descriptor_idx]],
-                    &[],
-                );
+                let descriptor_set = [descriptor_sets.inner()[descriptor_idx]];
+                let bind_info = vk::BindDescriptorSetsInfo::default()
+                    .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                    .layout(self.denoise_pipeline.layout())
+                    .first_set(0)
+                    .descriptor_sets(&descriptor_set)
+                    .dynamic_offsets(&[]);
+                device.cmd_bind_descriptor_sets2(cmd_buf, &bind_info);
 
-                device.cmd_push_constants(
-                    cmd_buf,
-                    self.denoise_pipeline.layout(),
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    &std::mem::transmute::<
-                        vulkan_abstraction::DenoisePushConstant,
-                        [u8; std::mem::size_of::<vulkan_abstraction::DenoisePushConstant>()],
-                    >(push_constants),
-                );
+                let push_bytes = std::mem::transmute::<
+                    vulkan_abstraction::DenoisePushConstant,
+                    [u8; std::mem::size_of::<vulkan_abstraction::DenoisePushConstant>()],
+                >(push_constants);
+                let push_info = vk::PushConstantsInfo::default()
+                    .layout(self.denoise_pipeline.layout())
+                    .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                    .offset(0)
+                    .values(&push_bytes);
+                device.cmd_push_constants2(cmd_buf, &push_info);
 
                 let group_x = (width + 15) / 16;
                 let group_y = (height + 15) / 16;
@@ -1472,9 +1469,11 @@ impl Renderer {
             exposure: EXPOSURE,
         };
 
-        let input_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        let input_barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(input_image.inner())
@@ -1486,9 +1485,11 @@ impl Renderer {
                 layer_count: 1,
             });
 
-        let output_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+        let output_barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(vk::AccessFlags2::empty())
+            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(output_image.inner())
@@ -1501,15 +1502,9 @@ impl Renderer {
             });
 
         unsafe {
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[input_barrier, output_barrier],
-            );
+            let postprocess_pre_barriers = [input_barrier, output_barrier];
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&postprocess_pre_barriers);
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::COMPUTE, self.postprocess_pipeline.inner());
 
@@ -1532,9 +1527,11 @@ impl Renderer {
             device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
 
             // Final barrier: Ensure post-process is done before the Blit/Transfer starts
-            let final_barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            let final_barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .image(output_image.inner())
@@ -1546,15 +1543,8 @@ impl Renderer {
                     layer_count: 1,
                 });
 
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[final_barrier],
-            );
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&final_barrier));
+            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
         }
 
         Ok(())
@@ -1597,10 +1587,10 @@ impl Renderer {
                 core,
                 cmd_buf,
                 src_image,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::AccessFlags::SHADER_WRITE,
-                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::SHADER_WRITE,
+                vk::AccessFlags2::TRANSFER_READ,
                 vk::ImageLayout::GENERAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             );
@@ -1610,10 +1600,10 @@ impl Renderer {
                 core,
                 cmd_buf,
                 dst_image,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::AccessFlags::empty(),
-                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::TRANSFER_WRITE,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             );
@@ -1633,10 +1623,10 @@ impl Renderer {
                 core,
                 cmd_buf,
                 dst_image,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::ALL_GRAPHICS, // the image should already be transitioned when the user makes use of it
-                vk::AccessFlags::TRANSFER_WRITE,
-                vk::AccessFlags::MEMORY_READ,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::PipelineStageFlags2::ALL_GRAPHICS, // the image should already be transitioned when the user makes use of it
+                vk::AccessFlags2::TRANSFER_WRITE,
+                vk::AccessFlags2::MEMORY_READ,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::GENERAL,
             );
@@ -1646,10 +1636,10 @@ impl Renderer {
                 core,
                 cmd_buf,
                 src_image,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::AccessFlags::TRANSFER_READ,
-                vk::AccessFlags::empty(),
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+                vk::AccessFlags2::TRANSFER_READ,
+                vk::AccessFlags2::empty(),
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::ImageLayout::GENERAL,
             );

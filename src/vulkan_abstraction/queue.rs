@@ -34,36 +34,51 @@ impl Queue {
         signal_semaphores: &[vk::Semaphore],
         signal_fence: vk::Fence,
     ) -> SrResult<()> {
-        // NOTE: consider using VkQueueSubmit2 from the extension VK_KHR_synchronization2 which adds more dst stages (VkPipelineStageFlags2) like BLIT
         if cfg!(debug_assertions) && wait_semaphores.len() != wait_dst_stages.len() {
             return Err(SrError::new_custom(
                 "Incorrect parameters to Queue::submit_async: wait_semaphores.len() != wait_dst_stages.len()".to_string(),
             ));
         }
 
-        let command_buffers = [command_buffer];
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(wait_semaphores)
-            .wait_dst_stage_mask(&wait_dst_stages)
-            .command_buffers(&command_buffers)
-            .signal_semaphores(signal_semaphores);
+        let wait_semaphore_infos: Vec<vk::SemaphoreSubmitInfo> = wait_semaphores
+            .iter()
+            .zip(wait_dst_stages.iter())
+            .map(|(sem, stage)| {
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(*sem)
+                    // PipelineStageFlags bit values are compatible with the matching subset of PipelineStageFlags2.
+                    .stage_mask(vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64))
+            })
+            .collect();
 
-        unsafe { self.device.inner().queue_submit(self.queue, &[submit_info], signal_fence) }?;
+        let signal_semaphore_infos: Vec<vk::SemaphoreSubmitInfo> = signal_semaphores
+            .iter()
+            .map(|sem| {
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(*sem)
+                    .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            })
+            .collect();
+
+        let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer)];
+
+        let submit_info = vk::SubmitInfo2::default()
+            .wait_semaphore_infos(&wait_semaphore_infos)
+            .command_buffer_infos(&cmd_buf_infos)
+            .signal_semaphore_infos(&signal_semaphore_infos);
+
+        unsafe { self.device.inner().queue_submit2(self.queue, &[submit_info], signal_fence) }?;
 
         Ok(())
     }
 
     pub fn submit_sync(&self, command_buffer: vk::CommandBuffer) -> SrResult<()> {
-        let command_buffers = [command_buffer];
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(&[])
-            .wait_dst_stage_mask(&[])
-            .command_buffers(&command_buffers)
-            .signal_semaphores(&[]);
+        let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer)];
+        let submit_info = vk::SubmitInfo2::default().command_buffer_infos(&cmd_buf_infos);
 
         let mut fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(&self.device))?;
 
-        unsafe { self.device.inner().queue_submit(self.queue, &[submit_info], fence.submit()?) }?;
+        unsafe { self.device.inner().queue_submit2(self.queue, &[submit_info], fence.submit()?) }?;
         fence.wait()?;
 
         Ok(())
