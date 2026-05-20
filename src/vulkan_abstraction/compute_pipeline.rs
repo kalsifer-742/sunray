@@ -70,8 +70,12 @@ pub struct TemporalAccumulationPushConstant {
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 pub struct PostprocessPushConstant {
-    pub input_idx : u32,
-    pub output_idx : u32,
+    // Slang's `DescriptorHandle<T>` lowers to `uint2` (8 bytes); the `_pad` fields
+    // keep `output_idx` at offset 8 and `exposure` at offset 16 to match the shader.
+    pub input_idx: u32,
+    pub _input_pad: u32,
+    pub output_idx: u32,
+    pub _output_pad: u32,
     pub exposure: f32,
 }
 

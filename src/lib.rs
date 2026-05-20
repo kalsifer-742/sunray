@@ -29,7 +29,7 @@ const MAX_TLAS_INSTANCES: usize = 10_000;
 ///
 /// Apparently 2 is the most common choice. Empirically it seems like the performance doesn't really
 /// get any better with a higher number, but it does get measurably worse with only 1.
-pub const MAX_FRAMES_IN_FLIGHT: usize = 4;
+pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 //TODO add a list of callbacks to call at the end of frames for cleanup or at start for setup
 //TODO deferred deallocation for buffers and acceleration structures
@@ -888,13 +888,13 @@ impl Renderer {
             // 6. Post-process
             // Use result of the last denoise pass. Heap-mode: pass Image refs directly so
             // we can read their lazy heap slots inside the dispatch helper.
-            let _final_denoise_idx = (DENOISE_PASSES % 2) as usize;
+            let final_denoise_idx = ((DENOISE_PASSES - 1) % 2) as usize; //TODO suggested by ai 
 
             (*this_ptr).cmd_postprocess_image(
                 cmd_buf,
                 result_extent.width,
                 result_extent.height,
-                &self.denoising_images[0],
+                &self.denoising_images[final_denoise_idx],
                 &img_dependent_data.postprocess_result_image,
             )?;
 
@@ -1457,16 +1457,15 @@ impl Renderer {
     ) -> SrResult<()> {
         let device = self.core.device().inner();
 
-        // Heap-mode: shader reads input/output via DescriptorHandle indices threaded
-        // through push constants. Allocating-and-writing the slots is lazy on the
-        // image; we just snapshot the current slot here. The `_pad` fields match
-        // Slang's `uint2` lowering of `DescriptorHandle<T>`.
+      
 
         info!("PostProcessing Images indexes: input =  {:?}, output = {:?}",input_image.storage_slot() ,output_image.storage_slot() );
 
         let push_constants = vulkan_abstraction::PostprocessPushConstant {
             input_idx: input_image.storage_slot(),
+            _input_pad: 0,
             output_idx: output_image.storage_slot(),
+            _output_pad: 0,
             exposure: EXPOSURE,
         };
 
@@ -1515,7 +1514,6 @@ impl Renderer {
 
             // Heap-mode pipelines have no VkPipelineLayout, so push constants go through
             // vkCmdPushDataEXT — the descriptor-heap replacement for vkCmdPushConstants.
-
             let push_info = vk::PushDataInfoEXT::default()
                 .offset(0)
                 .data(vk::HostAddressRangeConstEXT {
