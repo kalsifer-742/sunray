@@ -10,7 +10,8 @@ const SHADER_ENTRY_POINT: &CStr = c"main";
 
 pub trait ComputeTypeDef {
     type PushConstant;
-    type DescriptorSetLayout;
+    ///This serves two purposes, descriptor sets layout or descriptor heap layout depending on impl
+    type DescriptorsLayout;
     fn spirv_bytes() -> &'static [u8];
 }
 
@@ -20,7 +21,7 @@ pub struct PostprocessPass;
 
 impl ComputeTypeDef for DenoisePass {
     type PushConstant = DenoisePushConstant;
-    type DescriptorSetLayout = DenoiseDescriptorSetLayout;
+    type DescriptorsLayout = DenoiseDescriptorSetLayout;
     fn spirv_bytes() -> &'static [u8] {
         include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/denoise.spirv"))
     }
@@ -28,7 +29,7 @@ impl ComputeTypeDef for DenoisePass {
 
 impl ComputeTypeDef for TemporalPass {
     type PushConstant = TemporalAccumulationPushConstant;
-    type DescriptorSetLayout = TemporalAccumulationDescriptorSetLayout;
+    type DescriptorsLayout = TemporalAccumulationDescriptorSetLayout;
     fn spirv_bytes() -> &'static [u8] {
         include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/temporal_accumulation.spirv"))
     }
@@ -36,12 +37,16 @@ impl ComputeTypeDef for TemporalPass {
 
 impl ComputeTypeDef for PostprocessPass {
     type PushConstant = PostprocessPushConstant;
-    type DescriptorSetLayout = PostProcessDescriptorSetLayout;
+    type DescriptorsLayout = PostProcessDescriptorSetLayout;
 
     fn spirv_bytes() -> &'static [u8] {
         include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/postprocess.spirv"))
     }
 }
+
+
+
+
 
 ///Push Constant for the denoiser pass.
 /// Frame count is self explicative.
@@ -61,19 +66,12 @@ pub struct TemporalAccumulationPushConstant {
     pub frame_count: u32,
 }
 
-/// Matches `PostprocessPC` in `shaders/postprocess.slang` (heap-mode). Each
-/// `DescriptorHandle<T>` lowers to a SPIR-V `uint2` (8 bytes) when targeting Vulkan
-/// with `spvDescriptorHeapEXT`; only the `.x` lane is used as the heap slot index
-/// (the driver multiplies it by the device's per-type descriptor size via
-/// `OpConstantSizeOfEXT`). The `.y` lane is reserved/unused — kept zero here.
 #[allow(dead_code)] // read by the gpu
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 pub struct PostprocessPushConstant {
-    pub input_idx: u32,
-    pub _input_pad: u32,
-    pub output_idx: u32,
-    pub _output_pad: u32,
+    pub input_idx : u32,
+    pub output_idx : u32,
     pub exposure: f32,
 }
 

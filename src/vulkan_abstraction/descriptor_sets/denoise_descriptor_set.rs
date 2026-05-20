@@ -223,12 +223,12 @@ impl DenoiseDescriptorSets {
 }
 
 // Helper function to keep the code clean
-fn create_write<'a>(
+fn create_write(
     set: vk::DescriptorSet,
     binding: u32,
-    info: &'a vk::DescriptorImageInfo,
+    info: &'_ vk::DescriptorImageInfo,
     d_type: vk::DescriptorType,
-) -> vk::WriteDescriptorSet<'a> {
+) -> vk::WriteDescriptorSet<'_> {
     vk::WriteDescriptorSet::default()
         .dst_set(set)
         .dst_binding(binding)

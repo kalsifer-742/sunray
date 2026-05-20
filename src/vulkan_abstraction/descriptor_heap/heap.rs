@@ -4,6 +4,7 @@ use std::ptr::NonNull;
 use ash::vk::TaggedStructure;
 use ash::{ext, vk};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
+use log::info;
 use num::integer::lcm;
 use crate::error::SrResult;
 use crate::vulkan_abstraction::descriptor_heap::slot::{
@@ -21,7 +22,7 @@ pub const DEFAULT_SAMPLER_CAPACITY: u32 = 2_048;
 /// multiple of `lcm(image_descriptor_size, buffer_descriptor_size, max_alignment)` so
 /// every type that lives in a page packs an integer number of slots.
 const TARGET_PAGE_SIZE_BYTES: u64 = 4_096;
-
+#[derive(Debug)]
 struct ResourceSubHeap {
     buffer: vk::Buffer,
     allocation: Allocation,
@@ -37,7 +38,7 @@ struct ResourceSubHeap {
 
     alloc: PagedSlotAllocator,
 }
-
+#[derive(Debug)]
 struct SamplerSubHeap {
     buffer: vk::Buffer,
     allocation: Allocation,
@@ -65,7 +66,7 @@ pub struct DescriptorHeap {
     device: ash::Device,
 }
 
-impl DescriptorHeap {
+impl DescriptorHeap { //TODO find out if there is a reserved space for the driver at the start
     pub fn new(
         device: &ash::Device,
         ext: &ext::descriptor_heap::Device,
@@ -137,7 +138,7 @@ impl DescriptorHeap {
             sampler.byte_size,
             min_sampler_reserved
         );
-
+        info!("sampler heap : {sampler:?}, resource heap :  {resource:?}" );
         Ok(Self {
             resource,
             sampler,

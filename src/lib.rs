@@ -13,11 +13,11 @@ pub use scene::*;
 use std::{collections::HashMap, rc::Rc};
 
 use ash::vk;
-
+use log::info;
 use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
-use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, PostProcessDescriptorSets, PostprocessPass, Reservoir, ReservoirGI, TemporalPass};
+use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, DescriptorHeap, PostProcessDescriptorSets, PostprocessPass, PostprocessPushConstant, Reservoir, ReservoirGI, TemporalPass};
 
 pub const DENOISE_PASSES: u32 = 8;
 
@@ -1461,13 +1461,15 @@ impl Renderer {
         // through push constants. Allocating-and-writing the slots is lazy on the
         // image; we just snapshot the current slot here. The `_pad` fields match
         // Slang's `uint2` lowering of `DescriptorHandle<T>`.
+
+        info!("PostProcessing Images indexes: input =  {:?}, output = {:?}",input_image.storage_slot() ,output_image.storage_slot() );
+
         let push_constants = vulkan_abstraction::PostprocessPushConstant {
             input_idx: input_image.storage_slot(),
-            _input_pad: 0,
             output_idx: output_image.storage_slot(),
-            _output_pad: 0,
             exposure: EXPOSURE,
         };
+
 
         let input_barrier = vk::ImageMemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
@@ -1513,13 +1515,17 @@ impl Renderer {
 
             // Heap-mode pipelines have no VkPipelineLayout, so push constants go through
             // vkCmdPushDataEXT — the descriptor-heap replacement for vkCmdPushConstants.
-            let push_bytes = std::mem::transmute::<
-                vulkan_abstraction::PostprocessPushConstant,
-                [u8; std::mem::size_of::<vulkan_abstraction::PostprocessPushConstant>()],
-            >(push_constants);
+
             let push_info = vk::PushDataInfoEXT::default()
                 .offset(0)
-                .data(vk::HostAddressRangeConstEXT::default().address(&push_bytes));
+                .data(vk::HostAddressRangeConstEXT {
+                    address: &push_constants as *const _ as *const std::ffi::c_void,
+                    size: size_of::<PostprocessPushConstant>() ,
+                    _marker: Default::default(),
+                });
+
+            info!("Push info for post processing {push_info:?}");
+
             self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 
             let group_x = (width + 15) / 16;

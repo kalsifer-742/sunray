@@ -66,6 +66,7 @@ impl DescriptorSlot {
 }
 
 /// Uniform-stride bump + free-list allocator. Used for the sampler heap (single type).
+#[derive(Debug)]
 pub(crate) struct SlotAllocator {
     capacity: u32,
     high_water: u32,
@@ -108,6 +109,7 @@ impl SlotAllocator {
 /// before claiming a fresh page from the free pool. On free we mark the slot available;
 /// pages are not currently returned to the free pool even when fully empty (keeps page
 /// classes stable; trivial to add later if fragmentation becomes an issue).
+#[derive(Debug)]
 pub(crate) struct PagedSlotAllocator {
     pages: Vec<Option<Page>>,
     free_pages: Vec<u32>,
@@ -115,6 +117,7 @@ pub(crate) struct PagedSlotAllocator {
     buffer_per_page: u32,
 }
 
+#[derive(Debug)]
 struct Page {
     class: PageClass,
     /// Returned slot indices, intra-page.
