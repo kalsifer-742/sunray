@@ -28,7 +28,11 @@ struct ResourceSubHeap {
     allocation: Allocation,
     device_address: vk::DeviceAddress,
     mapped: NonNull<u8>,
+    /// Total heap byte size (app area + driver-reserved tail).
     byte_size: u64,
+    /// Bytes the application owns; descriptors live in `[0, app_byte_size)`. The driver
+    /// reserved range sits in `[app_byte_size, byte_size)` and must not be touched.
+    app_byte_size: u64,
 
     image_descriptor_size: u64,
     buffer_descriptor_size: u64,
@@ -45,7 +49,10 @@ struct SamplerSubHeap {
     device_address: vk::DeviceAddress,
     ///non nullable pointer to a memory region in bytes for better pointer arithmetics returned by mapping cpu mem to gpu
     mapped: NonNull<u8>,
+    /// Total heap byte size (app area + driver-reserved tail).
     byte_size: u64,
+    /// Bytes the application owns; samplers live in `[0, app_byte_size)`.
+    app_byte_size: u64,
     descriptor_size: u64,
     stride: u64,
     alloc: SlotAllocator,
@@ -95,14 +102,27 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
         let buffer_per_page = (page_size_bytes / buffer_size) as u32;
 
 
-        let resource_byte_size = (resource_pages as u64) * page_size_bytes;
+        // VK_EXT_descriptor_heap: `BindHeapInfoEXT::reservedRange*` marks a sub-range
+        // the *implementation* uses for its own internal descriptors (embedded samplers,
+        // fixed ops, etc.); the application must NOT write descriptors there. We park
+        // that reserved range at the tail of each heap so the app area stays at
+        // `[0, app_byte_size)` and shader byte-offset addressing (`index * descriptor_size`)
+        // lines up with our `alloc_resource_slot` indices unchanged. The tail still has
+        // to be backed by real memory, so we size the buffer = app area + reserved range.
+        let min_resource_reserved = props.min_resource_heap_reserved_range.max(1);
+        let min_sampler_reserved = props.min_sampler_heap_reserved_range.max(1);
+
+        let app_resource_byte_size = (resource_pages as u64) * page_size_bytes;
+        let resource_byte_size = app_resource_byte_size + min_resource_reserved;
         let sampler_stride = align_up(sampler_size, props.sampler_descriptor_alignment.max(1));
-        let sampler_byte_size = (sampler_capacity as u64) * sampler_stride;
+        let app_sampler_byte_size = (sampler_capacity as u64) * sampler_stride;
+        let sampler_byte_size = app_sampler_byte_size + min_sampler_reserved;
 
         let resource = ResourceSubHeap::new(
             device,
             allocator,
             resource_byte_size,
+            app_resource_byte_size,
             image_size,
             buffer_size,
             page_size_bytes,
@@ -115,29 +135,12 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
             device,
             allocator,
             sampler_byte_size,
+            app_sampler_byte_size,
             sampler_size,
             sampler_stride,
             sampler_capacity,
             "sunray_sampler_descriptor_heap",
         )?;
-
-        // Resize the heaps if the device demands a larger minimum reserved range than the
-        // configured heap size. Safer to enlarge than to error out, since a too-small heap
-        // would make `cmd_bind_*_heap_ext` unusable.
-        let min_resource_reserved = props.min_resource_heap_reserved_range.max(1);
-        let min_sampler_reserved = props.min_sampler_heap_reserved_range.max(1);
-        debug_assert!(
-            resource.byte_size >= min_resource_reserved,
-            "resource heap size ({}) below device-required minimum reserved range ({})",
-            resource.byte_size,
-            min_resource_reserved
-        );
-        debug_assert!(
-            sampler.byte_size >= min_sampler_reserved,
-            "sampler heap size ({}) below device-required minimum reserved range ({})",
-            sampler.byte_size,
-            min_sampler_reserved
-        );
         info!("sampler heap : {sampler:?}, resource heap :  {resource:?}" );
         Ok(Self {
             resource,
@@ -297,24 +300,23 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
     /// Bind both heaps to a command buffer. Must be called before any draw/dispatch
     /// that references descriptors via the heap.
     pub fn cmd_bind(&self, cmd_buf: vk::CommandBuffer) {
-        // The reserved-range covers the entire heap; this is the simplest valid choice.
-        // The device requires it to be at least `min_*_heap_reserved_range`; we asserted
-        // that during heap creation.
+        // The driver-reserved range sits at the tail of each heap (see `new` for why).
+        // App descriptors live in `[0, app_byte_size)`; the driver owns
+        // `[app_byte_size, byte_size)`.
         let resource_bind = vk::BindHeapInfoEXT::default()
             .heap_range(vk::DeviceAddressRangeEXT {
                 address: self.resource.device_address,
                 size: self.resource.byte_size,
             })
-            .reserved_range_offset(0)
-            .reserved_range_size(self.resource.byte_size);
+            .reserved_range_offset(self.resource.app_byte_size)
+            .reserved_range_size(self.min_resource_reserved);
         let sampler_bind = vk::BindHeapInfoEXT::default()
             .heap_range(vk::DeviceAddressRangeEXT {
                 address: self.sampler.device_address,
                 size: self.sampler.byte_size,
             })
-            .reserved_range_offset(0)
-            .reserved_range_size(self.sampler.byte_size);
-        let _ = (self.min_resource_reserved, self.min_sampler_reserved);
+            .reserved_range_offset(self.sampler.app_byte_size)
+            .reserved_range_size(self.min_sampler_reserved);
         unsafe {
             self.ext.cmd_bind_resource_heap(cmd_buf, &resource_bind);
             self.ext.cmd_bind_sampler_heap(cmd_buf, &sampler_bind);
@@ -339,13 +341,19 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
 
     fn resource_dst(&self, shader_index: u32, descriptor_size: u64) -> NonNull<u8> {
         let offset = (shader_index as u64) * descriptor_size;
-        debug_assert!(offset + descriptor_size <= self.resource.byte_size);
+        debug_assert!(
+            offset + descriptor_size <= self.resource.app_byte_size,
+            "descriptor write past the app range; would land in driver-reserved memory"
+        );
         unsafe { NonNull::new_unchecked(self.resource.mapped.as_ptr().add(offset as usize)) }
     }
 
     fn sampler_dst(&self, index: u32) -> NonNull<u8> {
         let offset = (index as u64) * self.sampler.stride;
-        debug_assert!(offset + self.sampler.stride <= self.sampler.byte_size);
+        debug_assert!(
+            offset + self.sampler.stride <= self.sampler.app_byte_size,
+            "sampler write past the app range; would land in driver-reserved memory"
+        );
         unsafe { NonNull::new_unchecked(self.sampler.mapped.as_ptr().add(offset as usize)) }
     }
 }
@@ -370,6 +378,7 @@ impl ResourceSubHeap {
         device: &ash::Device,
         allocator: &mut Allocator,
         byte_size: u64,
+        app_byte_size: u64,
         image_descriptor_size: u64,
         buffer_descriptor_size: u64,
         page_size_bytes: u64,
@@ -385,6 +394,7 @@ impl ResourceSubHeap {
             device_address,
             mapped,
             byte_size,
+            app_byte_size,
             image_descriptor_size,
             buffer_descriptor_size,
             page_size_bytes,
@@ -400,6 +410,7 @@ impl SamplerSubHeap {
         device: &ash::Device,
         allocator: &mut Allocator,
         byte_size: u64,
+        app_byte_size: u64,
         descriptor_size: u64,
         stride: u64,
         capacity: u32,
@@ -412,6 +423,7 @@ impl SamplerSubHeap {
             device_address,
             mapped,
             byte_size,
+            app_byte_size,
             descriptor_size,
             stride,
             alloc: SlotAllocator::new(capacity),
