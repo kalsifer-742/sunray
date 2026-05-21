@@ -28,7 +28,27 @@
       "Bash(spirv-dis target/debug/build/sunray-ff4b141f938ed6c4/out/denoise.spirv)",
       "Bash(cargo --version)",
       "Bash(rustc --version)",
-      "Bash(findstr /i \"deprecat\")"
+      "Bash(findstr /i \"deprecat\")",
+      "Bash(git stash *)",
+      "Bash(:)",
+      "Bash(timeout 8 ./target/release/examples/window.exe)",
+      "PowerShell(Clear-Content *)",
+      "PowerShell(Get-Content out.txt -Tail 40; \"---ERR---\"; Get-Content err.txt -Tail 80)",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(Get-Item examples/log.log | Format-List Length, LastWriteTime; \"STDOUT:\"; Get-Content out.txt; \"STDERR:\"; Get-Content err.txt)",
+      "PowerShell(\\(Get-Location\\).Path; \\(Test-Path examples/log4rs.yaml\\))",
+      "Bash(git log *)",
+      "WebFetch(domain:registry.khronos.org)",
+      "WebFetch(domain:docs.vulkan.org)",
+      "PowerShell(Get-Content err.txt -Tail 30; \"---\"; Get-Content out.txt -Tail 30)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(\"ERR=$\\(\\(Get-Item err.txt\\).Length\\) OUT=$\\(\\(Get-Item out.txt\\).Length\\)\"; \"ERR:\"; Get-Content err.txt -Tail 30; \"OUT:\"; Get-Content out.txt -Tail 30)",
+      "Bash(xargs grep -l \"PushDataInfoEXT\")",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(spirv-dis *)",
+      "PowerShell(\"line count: $\\(\\(Get-Content errlog.txt\\).Count\\)\"; Get-Content errlog.txt -Tail 80)",
+      "PowerShell(Get-Content errlog.txt | Where-Object { $_ -notmatch \"QFOT\" -and $_ -notmatch \"GalaxyOverlay\" -and $_ -notmatch \"ReShade\" -and $_ -notmatch \"API version 1.3\" -and $_ -notmatch \"Forcing|Adding|Ray Hit Object|Mesh Shading\" } | Select-Object -First 30)",
+      "PowerShell(cargo build *)"
     ]
   }
 }
