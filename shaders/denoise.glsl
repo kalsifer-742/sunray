@@ -5,6 +5,8 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(push_constant) uniform PushConstants {
     uint frame_count;
     int step_width;
+    uint width;
+    uint height;
 } pc;
 
 layout(set = 0, binding = 0, r11f_g11f_b10f) uniform readonly image2D temporal_result; // Input
@@ -21,7 +23,9 @@ float get_luminance(vec3 color) {
 const float kernel[5] = { 1.0/16.0, 4.0/16.0, 6.0/16.0, 4.0/16.0, 1.0/16.0 };
 
 void main() {
-    ivec2 size = imageSize(spatial_output);
+    // `imageSize(spatial_output)` returns bogus dimensions on this driver, see
+    // matching workaround in temporal_accumulation.glsl. Use push-constant size.
+    ivec2 size = ivec2(pc.width, pc.height);
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     if (pixel_coords.x >= size.x || pixel_coords.y >= size.y) return;
 

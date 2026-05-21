@@ -1308,12 +1308,20 @@ impl Renderer {
                 .dynamic_offsets(&[]);
             device.cmd_bind_descriptor_sets2(cmd_buf, &bind_info);
 
-            let frame_count_bytes = self.relative_frame_count.to_ne_bytes();
+            let push_constants = vulkan_abstraction::TemporalAccumulationPushConstant {
+                frame_count: self.relative_frame_count,
+                width,
+                height,
+            };
+            let push_bytes = std::mem::transmute::<
+                vulkan_abstraction::TemporalAccumulationPushConstant,
+                [u8; std::mem::size_of::<vulkan_abstraction::TemporalAccumulationPushConstant>()],
+            >(push_constants);
             let push_info = vk::PushConstantsInfo::default()
                 .layout(self.temporal_accumulation_pipeline.layout())
                 .stage_flags(vk::ShaderStageFlags::COMPUTE)
                 .offset(0)
-                .values(&frame_count_bytes);
+                .values(&push_bytes);
             device.cmd_push_constants2(cmd_buf, &push_info);
 
             let group_x = (width + 15) / 16;
@@ -1340,8 +1348,14 @@ impl Renderer {
         let device = self.core.device().inner();
         let total_passes = DENOISE_PASSES;
 
-        // Determine which accumulation image is the "latest" history to read from
-        let history_idx = (self.relative_frame_count % 2) as usize;
+        // Temporal accumulation writes to `accumulation_images[(frame_count + 1) % 2]`
+        // (its `accum_idx`), so that's the slot denoise must read on pass 0. Rebind
+        // set 0's input each frame so the descriptor tracks the live slot — the
+        // hardcoded `temp_0` binding from descriptor-set creation only matches half
+        // the frames and yields stale-or-zero data the other half.
+        let temporal_accum_idx = ((self.relative_frame_count + 1) % 2) as usize;
+        descriptor_sets.update_initial_input(&input_images[temporal_accum_idx]);
+        let history_idx = temporal_accum_idx;
 
         for pass_index in 0..total_passes {
             // Step width follows a-trous wavelet pattern: 1, 2, 4, 8...
@@ -1408,6 +1422,8 @@ impl Renderer {
             let push_constants = vulkan_abstraction::DenoisePushConstant {
                 frame_count: self.relative_frame_count,
                 step_width,
+                width,
+                height,
             };
 
             unsafe {

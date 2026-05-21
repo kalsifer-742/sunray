@@ -220,6 +220,27 @@ impl DenoiseDescriptorSets {
     pub fn inner(&self) -> &[vk::DescriptorSet] {
         &self.descriptor_sets
     }
+
+    /// Rewrite set 0's `INPUT_BINDING` to point at `input`. Temporal accumulation
+    /// ping-pongs its output between `accumulation_images[0]` and `[1]`, so the
+    /// slot denoise must read changes every frame. Safe to call between frames
+    /// once the previous frame's fence is waited on (see `Renderer::render_to_image`).
+    pub fn update_initial_input(&self, input: &vulkan_abstraction::Image) {
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(input.image_view());
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.descriptor_sets[0])
+            .dst_binding(DenoiseDescriptorSetLayout::INPUT_BINDING)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .image_info(std::slice::from_ref(&image_info));
+        unsafe {
+            self.core
+                .device()
+                .inner()
+                .update_descriptor_sets(std::slice::from_ref(&write), &[]);
+        }
+    }
 }
 
 // Helper function to keep the code clean

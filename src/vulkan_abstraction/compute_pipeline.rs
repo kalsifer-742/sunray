@@ -57,6 +57,8 @@ impl ComputeTypeDef for PostprocessPass {
 pub struct DenoisePushConstant {
     pub frame_count: u32,
     pub step_width: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[allow(dead_code)] // read by the gpu
@@ -64,6 +66,8 @@ pub struct DenoisePushConstant {
 #[derive(Debug)]
 pub struct TemporalAccumulationPushConstant {
     pub frame_count: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[allow(dead_code)] // read by the gpu

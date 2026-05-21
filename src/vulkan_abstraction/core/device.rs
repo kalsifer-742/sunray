@@ -149,6 +149,13 @@ impl Device {
             // `OpTypeImage ... Unknown` and the resulting SPIR-V advertises the matching
             // StorageImage{Read,Write}WithoutFormat capabilities. Without these features
             // enabled, the postprocess dispatch silently produces zeros.
+            //
+            // shader_*_array_dynamic_indexing: temporal_accumulation.glsl indexes
+            // `accumulation_images[accum_idx]` (storage image array) and
+            // `history_samplers[history_idx]` (sampler array) with push-constant indices.
+            // Without these features dynamic indexing of those arrays is undefined
+            // behavior — observed symptom was the temporal pass producing near-zero
+            // output, which then made denoise/postprocess look black.
             let mut physical_device_features = vk::PhysicalDeviceFeatures2::default().features(
                 vk::PhysicalDeviceFeatures::default()
                     .sampler_anisotropy(true)
@@ -157,7 +164,11 @@ impl Device {
                     // r11f_g11f_b10f / rg16f are storage formats from the extended set;
                     // without this feature the SPIR-V capability `StorageImageExtendedFormats`
                     // is unmet and operations like `imageSize` return zero.
-                    .shader_storage_image_extended_formats(true),
+                    .shader_storage_image_extended_formats(true)
+                    .shader_uniform_buffer_array_dynamic_indexing(true)
+                    .shader_sampled_image_array_dynamic_indexing(true)
+                    .shader_storage_buffer_array_dynamic_indexing(true)
+                    .shader_storage_image_array_dynamic_indexing(true),
             );
 
             let device_create_info = vk::DeviceCreateInfo::default()

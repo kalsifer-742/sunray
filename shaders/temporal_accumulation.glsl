@@ -8,6 +8,8 @@ layout(local_size_x = TILE_SIZE, local_size_y = TILE_SIZE, local_size_z = 1) in;
 
 layout(push_constant) uniform PushConstants {
     uint frame_count;
+    uint width;
+    uint height;
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D raw_rt_color;
@@ -26,7 +28,10 @@ float get_luminance(vec3 color) {
 }
 
 void main() {
-    ivec2 size = imageSize(accumulation_images[0]);
+    // `imageSize(accumulation_images[0])` returns bogus dimensions on this driver
+    // (single-pixel writes observed), so pass the dispatch's pixel extent via push
+    // constant to keep the early-exit guard correct.
+    ivec2 size = ivec2(pc.width, pc.height);
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     ivec2 local_coords = ivec2(gl_LocalInvocationID.xy);
     ivec2 tile_base = ivec2(gl_WorkGroupID.xy) * TILE_SIZE - TILE_BORDER;
