@@ -7,7 +7,7 @@ use ash::vk;
 use log::info;
 use rand::{RngExt};
 
-const ARENA_CAPACITY: vk::DeviceSize = 4096;
+const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
 pub(crate) struct ResourceManager { //TODO ring buffer for cameras and instances_buffer
     // TODo ring buffering this would be needed for cpu stuff too if they were ever uses outside of gpu data build
@@ -40,6 +40,14 @@ pub(crate) struct ResourceManager { //TODO ring buffer for cameras and instances
 
     // Textures
     textures: Vec<(vk::Sampler, vk::ImageView)>,
+
+    // Heap-mode texture indirection buffer. 1024 entries of `[u32; 4]` =
+    // `(image_heap_slot, 0, sampler_heap_slot, 0)`. The two padding words
+    // make each entry match Slang's `TextureEntry { DescriptorHandle image;
+    // DescriptorHandle sampler; }` layout where each `DescriptorHandle`
+    // lowers to a `uint2`. The Slang RT shaders dereference this via
+    // `pc.textures_lookup[texture_index]`.
+    textures_lookup_buffer: vulkan_abstraction::GpuOnlyBuffer,
 
     // Samplers loaded from scene
     samplers: Vec<vulkan_abstraction::Sampler>,
@@ -158,6 +166,10 @@ impl ResourceManager {
 
             emissive_indirection_gpu: vulkan_abstraction::Buffer::new_null(Rc::clone(&core)),
             textures: Vec::new(),
+
+            // Empty until `set_textures` runs — the renderer doesn't push the
+            // RT PC before a scene is loaded so the dangling slot is fine.
+            textures_lookup_buffer: vulkan_abstraction::Buffer::new_null(Rc::clone(&core)),
 
             samplers: Vec::new(),
 
@@ -445,9 +457,16 @@ impl ResourceManager {
         images: &[vulkan_abstraction::Image],
         samplers: &[vulkan_abstraction::Sampler],
         textures: &[vulkan_abstraction::gltf::Texture],
-    ) {
+    ) -> SrResult<()> {
         self.textures.clear();
         self.textures.reserve_exact(Self::NUMBER_OF_SAMPLERS);
+
+        // Parallel buffer of `(image_heap_slot, 0, sampler_heap_slot, 0)`
+        // used by the Slang RT shaders. Both lookups also populate the
+        // legacy `(vk::Sampler, vk::ImageView)` vector so descriptor-set
+        // passes (denoise / postprocess / temporal) keep working during the
+        // transition.
+        let mut lookup_entries: Vec<[u32; 4]> = Vec::with_capacity(Self::NUMBER_OF_SAMPLERS);
 
         for tex in textures {
             let sampler = match tex.sampler {
@@ -456,6 +475,7 @@ impl ResourceManager {
             };
             let image = &images[tex.source];
             self.textures.push((sampler.inner(), image.image_view()));
+            lookup_entries.push([image.sampled_slot(), 0, sampler.slot(), 0]);
         }
 
         while self.textures.len() < Self::NUMBER_OF_SAMPLERS {
@@ -463,9 +483,42 @@ impl ResourceManager {
                 self.fallback_texture_sampler.inner(),
                 self.fallback_texture_image.image_view(),
             ));
+            lookup_entries.push([
+                self.fallback_texture_image.sampled_slot(),
+                0,
+                self.fallback_texture_sampler.slot(),
+                0,
+            ]);
         }
 
         assert_eq!(self.textures.len(), Self::NUMBER_OF_SAMPLERS);
+        assert_eq!(lookup_entries.len(), Self::NUMBER_OF_SAMPLERS);
+
+        self.textures_lookup_buffer = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
+            Rc::clone(&self.core),
+            &lookup_entries,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            "RT texture-handle lookup",
+        )?;
+        Ok(())
+    }
+
+    /// Heap shader-index of the texture lookup `StructuredBuffer<TextureEntry>`
+    /// referenced by the Slang RT shaders. Lazily allocates the slot on the
+    /// first call.
+    pub fn textures_lookup_slot(&self) -> u32 {
+        use vulkan_abstraction::Buffer;
+        self.textures_lookup_buffer.raw().storage_slot()
+    }
+
+    /// Heap shader-index of the matrices `StructuredBuffer<Matrices>` referenced
+    /// by the Slang RT shaders. The buffer is uniform-typed on the CPU side
+    /// but flagged with both `UNIFORM_BUFFER` and `STORAGE_BUFFER` usage so we
+    /// can expose it as a storage descriptor here without changing the legacy
+    /// descriptor-set path.
+    pub fn matrices_storage_slot(&self) -> u32 {
+        use vulkan_abstraction::Buffer;
+        self.matrices_uniform_buffer.raw().storage_slot()
     }
 
     // ─── Scene loading ───────────────────────────────────────────────────────
@@ -493,7 +546,7 @@ impl ResourceManager {
             })
             .collect();
 
-        self.set_textures(&images, &samplers, &textures);
+        self.set_textures(&images, &samplers, &textures)?;
         self.add_blas_emissive_triangles(&emissive_triangles)?;
 
         // Create entities; this assigns arena slots that become gl_InstanceCustomIndexEXT.
@@ -575,6 +628,29 @@ impl ResourceManager {
 
     pub fn get_textures(&self) -> &[(vk::Sampler, vk::ImageView)] {
         &self.textures
+    }
+
+    // ─── Heap shader-index accessors ─────────────────────────────────────────
+    // Used by the Slang RT path to fill the heap-mode push constant. Each
+    // call lazily allocates a `StorageBuffer` descriptor slot on first use.
+    pub fn meshes_info_storage_slot(&self) -> u32 {
+        use vulkan_abstraction::Buffer;
+        self.entities.raw().storage_slot()
+    }
+
+    pub fn emissive_triangles_storage_slot(&self) -> u32 {
+        use vulkan_abstraction::Buffer;
+        self.blas_emissive_triangles.raw().storage_slot()
+    }
+
+    pub fn emissive_indirection_storage_slot(&self) -> u32 {
+        use vulkan_abstraction::Buffer;
+        self.emissive_indirection_gpu.raw().storage_slot()
+    }
+
+    pub fn entity_transforms_storage_slot(&self) -> u32 {
+        use vulkan_abstraction::Buffer;
+        self.transforms.raw().storage_slot()
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────

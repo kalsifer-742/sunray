@@ -31,7 +31,17 @@ Egui invece di bevy_ui
 Step 4 (postprocess slice) — done.
 
 
-3. Pre-existing logic bug (not from this refactor, but flagged)
+● All 5 raytracing stages now compile from Slang to SPIR-V at build time. Stopping here for this turn to keep the change reviewable.
 
-src/lib.rs:895 cmd_postprocess_image(..., &self.denoising_images[0], ...). With DENOISE_PASSES = 8 the final a-trous pass writes to denoising_images[1] (pass_index % 2 == 1), so postprocess reads pass-6's result, not pass-7's. Existed in main too (was self.denoising_images[0].inner()), so not the black-screen cause — but worth fixing alongside (use
-denoising_images[(DENOISE_PASSES - 1) % 2 ^ 1] or whatever the correct index is).
+Status:
+- ✅  rt_types.slang + rt_utils.slang — shared structs, helpers, ReSTIR types, BRDF, pack/unpack helpers, heap-indirected texture sampling
+- ✅  ray_miss.slang, any_hit.slang, closest_hit.slang, ray_gen_ris.slang, ray_gen_final.slang — all five RT entry points
+- ✅  build.rs compiles them all with matrix_layout_row(false) to match nalgebra's column-major matrices
+
+Things that needed working around (worth knowing):
+- Slang's vk::BufferPointer<T,A> has no + overload, no .get(), no member forwarding — switched all BLAS BDA pointers to bare T* (Slang's Ptr<T> with __subscript)
+- Slang's unpackUnorm4x8, unpackHalf2x16, unpackSnorm2x16 (and a few others) are "undefined identifier" on this SDK — inlined manual versions in rt_utils.slang
+- DescriptorHandle<ConstantBuffer<T>> doesn't forward .field access — matrices now go through DescriptorHandle<StructuredBuffer<Matrices>> and are read as pc.matrices[0].view_inverse (CPU side will need Buffer::storage_slot() plus STORAGE_BUFFER usage when we get to CPU integration)
+- ResourceDescriptorHeap / SamplerDescriptorHeap (HLSL SM6.6) aren't recognised either — texture indirection now stores typed DescriptorHandle<Texture2D> / DescriptorHandle<SamplerState> pairs in the lookup buffer (same 16-byte stride: two uint2s)
+
+Next up (separate turn): heap-mode RayTracingPipeline constructor + texture-lookup buffer on resource_manager + switching cmd_raytracing_render to push the new push constant. Tasks #5/#6/#7 are still pending.

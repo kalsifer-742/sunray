@@ -162,20 +162,29 @@ impl Renderer {
         let denoise_descriptor_set_layout = vulkan_abstraction::DenoiseDescriptorSetLayout::new(Rc::clone(&core))?;
         let postprocess_descriptor_set_layout = PostprocessDescriptorSetLayout::new(Rc::clone(&core))?;
 
-        let ray_tracing_pipeline_ris = vulkan_abstraction::RayTracingPipeline::new(
+        // Heap-mode RT pipelines built from the Slang-compiled SPIR-V. Both
+        // pipelines share the same miss / closest-hit / any-hit stages — only
+        // the ray-gen stage differs (RIS audition vs. final shading pass).
+        let ray_miss_spirv    = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss_slang.spirv"));
+        let closest_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/closest_hit_slang.spirv"));
+        let any_hit_spirv     = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit_slang.spirv"));
+
+        let ray_tracing_pipeline_ris = vulkan_abstraction::RayTracingPipeline::new_heap(
             Rc::clone(&core),
-            &ray_tracing_descriptor_set_layout,
-            env_var_as_bool(ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR).unwrap_or(IS_DEBUG_BUILD),
-            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_ris.spirv")),
+            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_ris_slang.spirv")),
+            ray_miss_spirv,
+            closest_hit_spirv,
+            any_hit_spirv,
         )?;
 
         let shader_binding_table_ris = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline_ris)?;
 
-        let ray_tracing_pipeline_final = vulkan_abstraction::RayTracingPipeline::new(
+        let ray_tracing_pipeline_final = vulkan_abstraction::RayTracingPipeline::new_heap(
             Rc::clone(&core),
-            &ray_tracing_descriptor_set_layout,
-            env_var_as_bool(ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR).unwrap_or(IS_DEBUG_BUILD),
-            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final.spirv")),
+            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final_slang.spirv")),
+            ray_miss_spirv,
+            closest_hit_spirv,
+            any_hit_spirv,
         )?;
 
         let shader_binding_table_final = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline_final)?;
@@ -773,8 +782,11 @@ impl Renderer {
         let postprocessed_image = img_dependent_data.postprocess_result_image.inner();
         let result_extent = img_dependent_data.raytrace_result_image.extent();
 
-        let raytracing_descriptor_sets_ptr =
-            &img_dependent_data.raytracing_descriptor_sets as *const vulkan_abstraction::RaytracingDescriptorSets;
+        // Raw-pointer alias keeps the borrow-checker happy: the unsafe block
+        // below borrows `*this_ptr` mutably for `cmd_raytracing_render` while
+        // we still hold the per-image data reference. The function only reads
+        // through the pointer, so this is sound.
+        let img_dependent_data_ptr = img_dependent_data as *const ImageDependentData;
         let temporal_accumulation_descriptor_sets_ptr = &img_dependent_data.temporal_accumulation_descriptor_sets
             as *const vulkan_abstraction::TemporalAccumulationDescriptorSets;
         let denoise_descriptor_sets_ptr =
@@ -804,7 +816,7 @@ impl Renderer {
 
             (*this_ptr).cmd_raytracing_render(
                 cmd_buf,
-                &*raytracing_descriptor_sets_ptr, // Dereference back to reference
+                &*img_dependent_data_ptr,
                 result_image,
                 result_extent,
             )?;
@@ -999,7 +1011,7 @@ impl Renderer {
     fn cmd_raytracing_render(
         &mut self,
         cmd_buf: vk::CommandBuffer,
-        descriptor_sets: &vulkan_abstraction::RaytracingDescriptorSets,
+        img_dependent_data: &ImageDependentData,
         image: vk::Image,
         extent: vk::Extent3D,
     ) -> SrResult<()> {
@@ -1009,28 +1021,38 @@ impl Renderer {
         let history_idx = (self.relative_frame_count % 2) as usize;
         let accum_idx = ((self.relative_frame_count + 1) % 2) as usize;
 
-        //TODO finni removed this in his branch
-
-        //  // Use GENERAL for everything to rule out layout mismatches
-        // let (old_layout, src_stage, src_access) = if self.frame_count == 0 {
-        //     (vk::ImageLayout::UNDEFINED, vk::PipelineStageFlags::TOP_OF_PIPE, vk::AccessFlags::empty())
-        // } else {
-        //     (vk::ImageLayout::GENERAL, vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR, vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ)
-        // };
-
-        // Initializing push constant values
-        let push_constants = vulkan_abstraction::RaytracingPushConstant {
+        // Build the heap-mode push constant. Every field corresponds 1:1 to a
+        // `DescriptorHandle<…>` in `shaders/rt_types.slang::RaytracingPC`; the
+        // unused high word of each handle stays zero. Each `.storage_slot()` /
+        // `.sampled_slot()` / `.slot()` call lazily allocates (and writes)
+        // a heap descriptor on first use.
+        use vulkan_abstraction::Buffer;
+        let pack = |idx: u32| -> [u32; 2] { [idx, 0] };
+        let push_constants = vulkan_abstraction::RaytracingHeapPushConstant {
+            tlas:                 pack(self.resource_manager.tlas().slot()),
+            raw_color:            pack(img_dependent_data.raytrace_result_image.storage_slot()),
+            depth_img:            pack(img_dependent_data.depth_image.storage_slot()),
+            normal_img:           pack(img_dependent_data.normal_image.storage_slot()),
+            diffuse_img:          pack(img_dependent_data.diffuse_image.storage_slot()),
+            motion_vec_img:       pack(img_dependent_data.motion_vector_image.storage_slot()),
+            matrices:             pack(self.resource_manager.matrices_storage_slot()),
+            meshes_info:          pack(self.resource_manager.meshes_info_storage_slot()),
+            emissive_triangles:   pack(self.resource_manager.emissive_triangles_storage_slot()),
+            emissive_indirection: pack(self.resource_manager.emissive_indirection_storage_slot()),
+            entity_transforms:    pack(self.resource_manager.entity_transforms_storage_slot()),
+            blue_noise_tex:       pack(self.blue_noise_image.sampled_slot()),
+            blue_noise_sampler:   pack(self.blue_noise_sampler.slot()),
+            reservoirs: [
+                pack(self.reservoir_buffers[0].raw().storage_slot()),
+                pack(self.reservoir_buffers[1].raw().storage_slot()),
+            ],
+            reservoirs_gi: [
+                pack(self.reservoir_gi_buffers[0].raw().storage_slot()),
+                pack(self.reservoir_gi_buffers[1].raw().storage_slot()),
+            ],
+            textures_lookup: pack(self.resource_manager.textures_lookup_slot()),
             frame_count: self.relative_frame_count,
-            use_srgb: self.image_format == vk::Format::R8G8B8A8_SRGB,
-            _padding: [0; 3],
-        };
-
-        // Extract the bytes once to reuse for both pipelines
-        let push_constant_bytes = unsafe {
-            std::mem::transmute::<
-                vulkan_abstraction::RaytracingPushConstant,
-                [u8; std::mem::size_of::<vulkan_abstraction::RaytracingPushConstant>()],
-            >(push_constants)
+            use_srgb: if self.image_format == vk::Format::R8G8B8A8_SRGB { 1 } else { 0 },
         };
 
         self.relative_frame_count += 1;
@@ -1104,33 +1126,26 @@ impl Renderer {
             let dep_info = vk::DependencyInfo::default().image_memory_barriers(&pre_rt_barriers);
             device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
-            // --- PASS 1: RIS Audition ---
+            // Bind the descriptor heaps once for both RT dispatches. Heap
+            // bindings persist across pipeline binds so we don't repeat this
+            // between the two trace_rays calls.
+            self.core.descriptor_heap().cmd_bind(cmd_buf);
+
+            // --- PASS 1: RIS audition (heap mode, push-data) ---
             device.cmd_bind_pipeline(
                 cmd_buf,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 self.ray_tracing_pipeline_ris.inner(),
             );
 
-            let bind_info = vk::BindDescriptorSetsInfo::default()
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                    | vk::ShaderStageFlags::MISS_KHR
-                    | vk::ShaderStageFlags::ANY_HIT_KHR)
-                .layout(self.ray_tracing_pipeline_ris.layout())
-                .first_set(0)
-                .descriptor_sets(descriptor_sets.inner())
-                .dynamic_offsets(&[]);
-            device.cmd_bind_descriptor_sets2(cmd_buf, &bind_info);
-
-            let push_info = vk::PushConstantsInfo::default()
-                .layout(self.ray_tracing_pipeline_ris.layout())
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                    | vk::ShaderStageFlags::MISS_KHR
-                    | vk::ShaderStageFlags::ANY_HIT_KHR)
+            let push_info = vk::PushDataInfoEXT::default()
                 .offset(0)
-                .values(&push_constant_bytes);
-            device.cmd_push_constants2(cmd_buf, &push_info);
+                .data(vk::HostAddressRangeConstEXT {
+                    address: &push_constants as *const _ as *const std::ffi::c_void,
+                    size: std::mem::size_of::<vulkan_abstraction::RaytracingHeapPushConstant>(),
+                    _marker: Default::default(),
+                });
+            self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 
             self.core.rt_pipeline_device().cmd_trace_rays(
                 cmd_buf,
@@ -1143,41 +1158,25 @@ impl Renderer {
                 extent.depth,
             );
 
+            // Reservoir A->B handoff between the two RT dispatches.
             let reservoir_barrier = vk::MemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
                 .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
                 .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
                 .dst_access_mask(vk::AccessFlags2::SHADER_READ);
-
             let dep_info = vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&reservoir_barrier));
             device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
+            // --- PASS 2: final shading (heap mode, push-data) ---
             device.cmd_bind_pipeline(
                 cmd_buf,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 self.ray_tracing_pipeline_final.inner(),
             );
 
-            let bind_info = vk::BindDescriptorSetsInfo::default()
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                    | vk::ShaderStageFlags::MISS_KHR
-                    | vk::ShaderStageFlags::ANY_HIT_KHR)
-                .layout(self.ray_tracing_pipeline_final.layout())
-                .first_set(0)
-                .descriptor_sets(descriptor_sets.inner())
-                .dynamic_offsets(&[]);
-            device.cmd_bind_descriptor_sets2(cmd_buf, &bind_info);
-
-            let push_info = vk::PushConstantsInfo::default()
-                .layout(self.ray_tracing_pipeline_final.layout())
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                    | vk::ShaderStageFlags::MISS_KHR
-                    | vk::ShaderStageFlags::ANY_HIT_KHR)
-                .offset(0)
-                .values(&push_constant_bytes);
-            device.cmd_push_constants2(cmd_buf, &push_info);
+            // Same push constant bytes — `cmd_push_data` is per-pipeline so we
+            // re-issue it after the rebind.
+            self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 
             self.core.rt_pipeline_device().cmd_trace_rays(
                 cmd_buf,

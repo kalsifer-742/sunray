@@ -16,17 +16,29 @@ public struct RayPayload {
 }
 
 // --- Vertex / mesh ----------------------------------------------------------
+// Explicit padding fields mirror the `#[repr(C, packed)]` Rust `Vertex` in
+// `src/vulkan_abstraction/gltf/vertex.rs`. Slang's `T*` (used for BDA mesh
+// access) lays the struct out in scalar layout — without the explicit pad
+// fields, `normal` would land at offset 12 instead of 16, breaking every
+// closest-hit / any-hit read. 96 bytes total.
 public struct VertexAttributes {
     public float3 position;
+    public float _pad0;
     public float3 normal;
+    public float _pad1;
     public float4 tangent;
     public float2 base_color_tex_coord;
     public float2 metallic_roughness_tex_coord;
     public float2 normal_tex_coord;
     public float2 occlusion_tex_coord;
     public float2 emissive_tex_coord;
+    public float2 _pad3;
 }
 
+// Mirrors `#[repr(C, packed)]` `Material` in `src/vulkan_abstraction/resources/material.rs`.
+// The two-float `_pad_mid` block sits where Rust placed `_padding: [f32; 2]` to align
+// `emissive_factor` to offset 48 even in scalar layout; the three trailing pads close
+// the struct out at 96 bytes.
 public struct Material {
     public float4 base_color_value;
     public uint base_color_texture_index;
@@ -37,6 +49,9 @@ public struct Material {
 
     public uint normal_texture_index;
     public uint occlusion_texture_index;
+
+    public float _pad_mid_0;
+    public float _pad_mid_1;
 
     public float4 emissive_factor;
     public uint emissive_texture_index;

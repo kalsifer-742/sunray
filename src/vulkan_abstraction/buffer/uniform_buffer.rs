@@ -20,7 +20,11 @@ impl<T> UniformBuffer<T> {
             byte_size,
             1,
             gpu_allocator::MemoryLocation::CpuToGpu,
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            // STORAGE_BUFFER too so the heap path can expose this buffer via
+            // `storage_slot()` — the Slang RT shaders read matrices through a
+            // `StructuredBuffer<Matrices>` because `DescriptorHandle<ConstantBuffer<T>>`
+            // doesn't forward field access on the Slang version we use.
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
             "uniform buffer",
         )?;
         Ok(Self {

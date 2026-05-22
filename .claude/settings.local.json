@@ -99,7 +99,17 @@
       "Bash(glslc --target-env=vulkan1.4 -fshader-stage=rgen -fentry-point=main -I . -o /tmp/x.spv \"shaders/ray_gen_ris.glsl\")",
       "Bash(glslc --target-env=vulkan1.4 -fshader-stage=rgen -I . -o /tmp/x.spv \"shaders/ray_gen_ris.glsl\")",
       "Bash(glslc --target-env=vulkan1.4 -fshader-stage=rgen -I . -o /tmp/x.spv shaders/ray_gen_ris.glsl)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(timeout 60 cargo run --example png)",
+      "Bash(RUST_BACKTRACE=1 timeout 30 cargo run --example png)",
+      "Bash(RUST_BACKTRACE=full timeout 30 cargo run --example png)",
+      "Bash(timeout 30 cargo run --example png)",
+      "Bash(RUST_BACKTRACE=0 timeout 90 cargo run --example png)",
+      "Bash(RUST_LOG=debug RUST_BACKTRACE=full timeout 60 cargo run --example png)",
+      "Bash(grep -i \"heap\\\\|ext\\\\b\\\\|EXT$\")",
+      "Bash(SUNRAY_VALIDATION_LAYER=false SUNRAY_GPUAV=false timeout 60 cargo run --example png)",
+      "Bash(ENABLE_VALIDATION_LAYER=0 ENABLE_GPUAV=0 timeout 60 cargo run --example png)",
+      "Bash(ENABLE_VALIDATION_LAYER=0 ENABLE_GPUAV=0 timeout 90 cargo run --example png)"
     ]
   }
 }
