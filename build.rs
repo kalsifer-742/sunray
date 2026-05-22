@@ -77,9 +77,12 @@ fn compile_slang_shader(module_name: &str, entry_point: &str, out_file_name: &st
         );
     }
 
+    // Column-major matrix storage matches nalgebra's column-major Matrix4 on the
+    // CPU (and GLSL's default), so reading `matrices.view_inverse * v` in the
+    // Slang RT shaders produces the same result as the original GLSL.
     let session_options = slang::CompilerOptions::default()
         .optimization(slang::OptimizationLevel::High)
-        .matrix_layout_row(true)
+        .matrix_layout_row(false)
         .capability(descriptor_heap_cap);
 
     let target_desc = slang::TargetDesc::default()
@@ -170,4 +173,12 @@ fn main() {
     // postprocess.slang as well — we keep the build-time artifact so callers
     // can choose to skip the runtime hop.
     compile_slang_shader("postprocess", "main", "postprocess_slang.spirv");
+
+    // Raytracing pipeline (heap mode). One Slang module per stage; the entry
+    // point matches the [shader("…")] attribute inside each file.
+    compile_slang_shader("ray_miss",    "ray_miss",    "ray_miss_slang.spirv");
+    compile_slang_shader("any_hit",     "any_hit",     "any_hit_slang.spirv");
+    compile_slang_shader("closest_hit", "closest_hit", "closest_hit_slang.spirv");
+    compile_slang_shader("ray_gen_ris",   "ray_gen_ris",   "ray_gen_ris_slang.spirv");
+    compile_slang_shader("ray_gen_final", "ray_gen_final", "ray_gen_final_slang.spirv");
 }
