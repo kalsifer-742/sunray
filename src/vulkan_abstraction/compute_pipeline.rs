@@ -40,7 +40,7 @@ impl ComputeTypeDef for PostprocessPass {
     type DescriptorsLayout = PostProcessDescriptorSetLayout;
 
     fn spirv_bytes() -> &'static [u8] {
-        include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/postprocess.spirv"))
+         include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/postprocess.spirv"))
     }
 }
 

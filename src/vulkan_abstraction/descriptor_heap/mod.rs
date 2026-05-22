@@ -8,6 +8,7 @@
 
 pub mod heap;
 pub mod slot;
+pub mod error;
 
 pub use heap::*;
 pub use slot::*;

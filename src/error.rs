@@ -1,6 +1,7 @@
 use ash::vk;
 use std::{backtrace::BacktraceStatus, fmt::Display};
 use crate::render_graph;
+use crate::vulkan_abstraction::{descriptor_heap, heap};
 
 pub type SrResult<T> = std::result::Result<T, SrError>;
 
@@ -10,7 +11,8 @@ pub enum ErrorSource {
     Vulkan(vk::Result),
     Gltf(gltf::Error),
     GpuAllocator(gpu_allocator::AllocationError),
-    RenderGraph(render_graph::graph_error::GraphError),
+    RenderGraph(render_graph::error::GraphError),
+    DescriptorHeap(descriptor_heap::error::HeapError),
     Custom(String),
 }
 
@@ -87,6 +89,7 @@ impl std::error::Error for SrError {
             ErrorSource::Gltf(error) => Some(error),
             ErrorSource::GpuAllocator(error) => Some(error),
             ErrorSource::RenderGraph(error) => Some(error),
+            ErrorSource::DescriptorHeap(error) => Some(error),
             ErrorSource::Custom(_string) => None,
         }
     }

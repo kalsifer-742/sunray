@@ -1473,10 +1473,6 @@ impl Renderer {
     ) -> SrResult<()> {
         let device = self.core.device().inner();
 
-      
-
-        info!("PostProcessing Images indexes: input =  {:?}, output = {:?}",input_image.storage_slot() ,output_image.storage_slot() );
-
         let push_constants = vulkan_abstraction::PostprocessPushConstant {
             input_idx: input_image.storage_slot(),
             _input_pad: 0,
@@ -1538,7 +1534,6 @@ impl Renderer {
                     _marker: Default::default(),
                 });
 
-            info!("Push info for post processing {push_info:?}");
 
             self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 

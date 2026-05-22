@@ -5,23 +5,23 @@ use ash::vk::TaggedStructure;
 use ash::{ext, vk};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
 use log::info;
-use num::integer::lcm;
-use crate::error::SrResult;
+use crate::error::{SrError, SrResult};
 use crate::vulkan_abstraction::descriptor_heap::slot::{
-    DescriptorSlot, HeapKind, PageClass, PagedSlotAllocator, ResourceDescriptorKind, SlotAllocator,
+    DescriptorSlot, HeapKind, ResourceDescriptorKind, ResourceSection, SlotAllocator,
 };
+use crate::vulkan_abstraction::error::HeapError;
 
-/// Default capacities. These are *page* counts for the resource heap, and a slot count
-/// for the sampler heap. With the page allocator the per-type slot count is
-/// `RESOURCE_PAGES * descriptors_per_page_for_that_type`, so 64 pages × ~64 descriptors
-/// per page = ~4k slots per type, comfortably inside u32.
-pub const DEFAULT_RESOURCE_PAGES: u32 = 64;
+//TODO this should handle growing and shrinking by doubling the section that filled up.
+
+/// Default descriptor counts per resource section. Splitting the resource heap
+/// into three fixed-stride sections (image / texel / buffer) means each section
+/// is now sized independently. These defaults aim to match the ~4k-per-type
+/// budget of the previous paged layout.
+pub const DEFAULT_IMAGE_CAPACITY: u32 = 4_096;
+pub const DEFAULT_TEXEL_BUFFER_CAPACITY: u32 = 1_024;
+pub const DEFAULT_BUFFER_CAPACITY: u32 = 4_096;
 pub const DEFAULT_SAMPLER_CAPACITY: u32 = 2_048;
 
-/// Target byte size of a resource heap page. The actual page size is rounded up to a
-/// multiple of `lcm(image_descriptor_size, buffer_descriptor_size, max_alignment)` so
-/// every type that lives in a page packs an integer number of slots.
-const TARGET_PAGE_SIZE_BYTES: u64 = 4_096;
 #[derive(Debug)]
 struct ResourceSubHeap {
     buffer: vk::Buffer,
@@ -36,12 +36,20 @@ struct ResourceSubHeap {
 
     image_descriptor_size: u64,
     buffer_descriptor_size: u64,
-    page_size_bytes: u64,
-    image_per_page: u32,
-    buffer_per_page: u32,
 
-    alloc: PagedSlotAllocator,
+    /// Pre-computed shader-index base for each section:
+    /// `index = section_byte_offset / type_descriptor_size + slot_in_section`.
+    /// The byte offsets themselves are derived at construction time and are
+    /// not needed at runtime — only this folded form is.
+    image_section_base_index: u32,
+    texel_section_base_index: u32,
+    buffer_section_base_index: u32,
+
+    image_alloc: SlotAllocator,
+    texel_alloc: SlotAllocator,
+    buffer_alloc: SlotAllocator,
 }
+
 #[derive(Debug)]
 struct SamplerSubHeap {
     buffer: vk::Buffer,
@@ -73,50 +81,84 @@ pub struct DescriptorHeap {
     device: ash::Device,
 }
 
-impl DescriptorHeap { //TODO find out if there is a reserved space for the driver at the start
+impl DescriptorHeap {
     pub fn new(
         device: &ash::Device,
         ext: &ext::descriptor_heap::Device,
         allocator: &mut Allocator,
         props: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT,
-        resource_pages: u32,
+        image_capacity: u32,
+        texel_capacity: u32,
+        buffer_capacity: u32,
         sampler_capacity: u32,
     ) -> SrResult<Self> {
         let image_size = props.image_descriptor_size.max(1);
         let buffer_size = props.buffer_descriptor_size.max(1);
         let sampler_size = props.sampler_descriptor_size.max(1);
 
-        let max_alignment = props
-            .image_descriptor_alignment
-            .max(props.buffer_descriptor_alignment)
-            .max(1);
 
-        // A page must hold an integer number of descriptors for *both* image and buffer
-        // types — otherwise per-type shader indexing (`byte_offset / type_size`) would
-        // land mid-descriptor across a page boundary. lcm of the two type sizes (also
-        // honoring max alignment) gives the smallest page granule that works.
-        let page_unit = lcm(lcm(image_size, buffer_size), max_alignment);
-        let page_size_bytes = align_up(TARGET_PAGE_SIZE_BYTES.max(page_unit), page_unit);
-
-        let image_per_page = (page_size_bytes / image_size) as u32;
-        let buffer_per_page = (page_size_bytes / buffer_size) as u32;
-
+        let image_alignment = props.image_descriptor_alignment.max(1);
+        let buffer_alignment = props.buffer_descriptor_alignment.max(1);
 
         // VK_EXT_descriptor_heap: `BindHeapInfoEXT::reservedRange*` marks a sub-range
         // the *implementation* uses for its own internal descriptors (embedded samplers,
         // fixed ops, etc.); the application must NOT write descriptors there. We park
         // that reserved range at the tail of each heap so the app area stays at
         // `[0, app_byte_size)` and shader byte-offset addressing (`index * descriptor_size`)
-        // lines up with our `alloc_resource_slot` indices unchanged. The tail still has
-        // to be backed by real memory, so we size the buffer = app area + reserved range.
+        // lines up with our slot indices unchanged. The tail still has to be backed by
+        // real memory, so we size the buffer = app area + reserved range.
         let min_resource_reserved = props.min_resource_heap_reserved_range.max(1);
         let min_sampler_reserved = props.min_sampler_heap_reserved_range.max(1);
 
-        let app_resource_byte_size = (resource_pages as u64) * page_size_bytes;
+        // Layout: [ images | texel buffers | buffers | reserved tail ].
+        //
+        // Each section's byte offset must satisfy:
+        //   1. It is a multiple of that section's descriptor size — so shader
+        //      indexing `byte_offset / descriptor_size` produces an integer.
+        //   2. It is a multiple of the driver-reported descriptor alignment.
+        //
+        // Images start at 0 trivially. Texel uses the image stride (texel
+        // descriptor size == image descriptor size on this extension), so its
+        // base is image-aligned and follows the image section directly. The
+        // buffer section is then bumped up to buffer-size alignment.
+        let image_section_byte_offset: u64 = 0;
+        let image_section_bytes = (image_capacity as u64) * image_size;
+
+        let texel_align = lcm(image_size, image_alignment);
+        let texel_section_byte_offset =
+            align_up(image_section_byte_offset + image_section_bytes, texel_align);
+        let texel_section_bytes = (texel_capacity as u64) * image_size;
+
+        let buffer_align = lcm(buffer_size, buffer_alignment);
+        let buffer_section_byte_offset =
+            align_up(texel_section_byte_offset + texel_section_bytes, buffer_align);
+        let buffer_section_bytes = (buffer_capacity as u64) * buffer_size;
+
+        let app_resource_byte_size = buffer_section_byte_offset + buffer_section_bytes;
+
+        // Shader index = byte_offset / descriptor_size + slot_in_section. The
+        // base is constant per section so we cache it once.
+        debug_assert!(image_section_byte_offset % image_size == 0);
+        debug_assert!(texel_section_byte_offset % image_size == 0);
+        debug_assert!(buffer_section_byte_offset % buffer_size == 0);
+
+
+        let image_section_base_index = (image_section_byte_offset / image_size) as u32;
+        let texel_section_base_index = (texel_section_byte_offset / image_size) as u32;
+        let buffer_section_base_index = (buffer_section_byte_offset / buffer_size) as u32;
+
         let resource_byte_size = app_resource_byte_size + min_resource_reserved;
         let sampler_stride = align_up(sampler_size, props.sampler_descriptor_alignment.max(1));
         let app_sampler_byte_size = (sampler_capacity as u64) * sampler_stride;
         let sampler_byte_size = app_sampler_byte_size + min_sampler_reserved;
+
+        if  app_resource_byte_size + min_resource_reserved > props.max_resource_heap_size  {
+            return Err(SrError::new(HeapError::OutOfMemory.into(), format!("Cannot allocate resource buffer of size: {} with reserved : {} ,It surpassed allowed size {} ", app_resource_byte_size , min_resource_reserved , props.max_resource_heap_size  ) ));
+        }
+
+        if  sampler_byte_size + min_sampler_reserved > props.max_sampler_heap_size  {
+            return Err(SrError::new(HeapError::OutOfMemory.into(), format!("Cannot allocate sampler buffer of size: {} with reserved : {} ,It surpassed allowed size {} ", sampler_byte_size , min_sampler_reserved , props.max_sampler_heap_size  ) ));
+        }
 
         let resource = ResourceSubHeap::new(
             device,
@@ -125,12 +167,16 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
             app_resource_byte_size,
             image_size,
             buffer_size,
-            page_size_bytes,
-            image_per_page,
-            buffer_per_page,
-            resource_pages,
+            image_section_base_index,
+            texel_section_base_index,
+            buffer_section_base_index,
+            image_capacity,
+            texel_capacity,
+            buffer_capacity,
             "sunray_resource_descriptor_heap",
         )?;
+
+
         let sampler = SamplerSubHeap::new(
             device,
             allocator,
@@ -141,7 +187,7 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
             sampler_capacity,
             "sunray_sampler_descriptor_heap",
         )?;
-        info!("sampler heap : {sampler:?}, resource heap :  {resource:?}" );
+        info!("sampler heap : {sampler:?}, resource heap :  {resource:?}");
         Ok(Self {
             resource,
             sampler,
@@ -173,19 +219,17 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
     }
 
     pub fn alloc_resource_slot(&mut self, kind: ResourceDescriptorKind) -> DescriptorSlot {
-        let class = kind.page_class();
-        let (page_idx, slot_in_page) = self
+        let section = kind.section();
+        let local = self
             .resource
-            .alloc
-            .alloc(class)
-            .expect("descriptor resource heap exhausted");
-        let per_page = self.resource.alloc.per_page(class);
-        // shader_index = byte_offset / type_size = page_idx * per_page + slot_in_page
-        let index = (page_idx) * (per_page) + (slot_in_page);
+            .alloc_mut(section)
+            .alloc()
+            .expect("descriptor resource heap section exhausted");
+        let index = self.resource.base_index(section) + local;
         DescriptorSlot {
             kind: HeapKind::Resource,
             index,
-            class,
+            section,
         }
     }
 
@@ -198,17 +242,15 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
         DescriptorSlot {
             kind: HeapKind::Sampler,
             index,
-            class: PageClass::Buffer, // unused for samplers
+            section: ResourceSection::Buffer, // unused for samplers
         }
     }
 
     pub fn free(&mut self, slot: DescriptorSlot) {
         match slot.kind {
             HeapKind::Resource => {
-                let per_page = self.resource.alloc.per_page(slot.class);
-                let page_idx = slot.index / per_page;
-                let slot_in_page = slot.index % per_page;
-                self.resource.alloc.free(page_idx, slot_in_page);
+                let local = slot.index - self.resource.base_index(slot.section);
+                self.resource.alloc_mut(slot.section).free(local);
             }
             HeapKind::Sampler => self.sampler.alloc.free(slot.index),
         }
@@ -230,6 +272,13 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
         self.sampler.byte_size
     }
 
+    /// Shader-index base of a resource section. Useful for shaders that want to
+    /// emit `section_base + local_index` at draw time (e.g. via a push constant)
+    /// rather than receiving fully-resolved indices.
+    pub fn resource_section_base_index(&self, section: ResourceSection) -> u32 {
+        self.resource.base_index(section)
+    }
+
     /// Write an image descriptor into the resource heap at `slot`. The view-create-info
     /// is used by the driver to construct the on-heap descriptor; it does not need to
     /// outlive this call.
@@ -241,13 +290,35 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
         kind: ResourceDescriptorKind,
     ) -> SrResult<()> {
         debug_assert_eq!(slot.kind, HeapKind::Resource);
-        debug_assert_eq!(slot.class, PageClass::Image);
+        debug_assert_eq!(slot.section, ResourceSection::Image);
         let image_info = vk::ImageDescriptorInfoEXT::default()
             .view(view_info)
             .layout(layout);
         let resource_info = vk::ResourceDescriptorInfoEXT::default()
             .ty(kind.descriptor_type())
             .data(vk::ResourceDescriptorDataEXT { p_image: &image_info });
+        self.write_resource(slot, resource_info, self.resource.image_descriptor_size)
+    }
+
+    /// Write a texel buffer descriptor. Texel buffers live in the texel section
+    /// and use the same descriptor stride as images, so the destination byte
+    /// is computed with `image_descriptor_size`.
+    pub fn write_texel_buffer(
+        &mut self,
+        slot: DescriptorSlot,
+        address: vk::DeviceAddress,
+        size: vk::DeviceSize,
+        format: vk::Format,
+        kind: ResourceDescriptorKind,
+    ) -> SrResult<()> {
+        debug_assert_eq!(slot.kind, HeapKind::Resource);
+        debug_assert_eq!(slot.section, ResourceSection::TexelBuffer);
+        let texel_info = vk::TexelBufferDescriptorInfoEXT::default()
+            .format(format)
+            .address_range(vk::DeviceAddressRangeEXT { address, size });
+        let resource_info = vk::ResourceDescriptorInfoEXT::default()
+            .ty(kind.descriptor_type())
+            .data(vk::ResourceDescriptorDataEXT { p_texel_buffer: &texel_info });
         self.write_resource(slot, resource_info, self.resource.image_descriptor_size)
     }
 
@@ -259,7 +330,7 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
         kind: ResourceDescriptorKind,
     ) -> SrResult<()> {
         debug_assert_eq!(slot.kind, HeapKind::Resource);
-        debug_assert_eq!(slot.class, PageClass::Buffer);
+        debug_assert_eq!(slot.section, ResourceSection::Buffer);
         let range = vk::DeviceAddressRangeEXT { address, size };
         let resource_info = vk::ResourceDescriptorInfoEXT::default()
             .ty(kind.descriptor_type())
@@ -273,7 +344,7 @@ impl DescriptorHeap { //TODO find out if there is a reserved space for the drive
         address: vk::DeviceAddress,
     ) -> SrResult<()> {
         debug_assert_eq!(slot.kind, HeapKind::Resource);
-        debug_assert_eq!(slot.class, PageClass::Buffer);
+        debug_assert_eq!(slot.section, ResourceSection::Buffer);
         let range = vk::DeviceAddressRangeEXT {
             address,
             size: 0, // ignored for AS descriptors
@@ -381,13 +452,16 @@ impl ResourceSubHeap {
         app_byte_size: u64,
         image_descriptor_size: u64,
         buffer_descriptor_size: u64,
-        page_size_bytes: u64,
-        image_per_page: u32,
-        buffer_per_page: u32,
-        num_pages: u32,
+        image_section_base_index: u32,
+        texel_section_base_index: u32,
+        buffer_section_base_index: u32,
+        image_capacity: u32,
+        texel_capacity: u32,
+        buffer_capacity: u32,
         name: &'static str,
     ) -> SrResult<Self> {
-        let (buffer, allocation, device_address, mapped) = create_heap_buffer(device, allocator, byte_size, name)?;
+        let (buffer, allocation, device_address, mapped) =
+            create_heap_buffer(device, allocator, byte_size, name)?;
         Ok(Self {
             buffer,
             allocation,
@@ -397,11 +471,29 @@ impl ResourceSubHeap {
             app_byte_size,
             image_descriptor_size,
             buffer_descriptor_size,
-            page_size_bytes,
-            image_per_page,
-            buffer_per_page,
-            alloc: PagedSlotAllocator::new(num_pages, image_per_page, buffer_per_page),
+            image_section_base_index,
+            texel_section_base_index,
+            buffer_section_base_index,
+            image_alloc: SlotAllocator::new(image_capacity),
+            texel_alloc: SlotAllocator::new(texel_capacity),
+            buffer_alloc: SlotAllocator::new(buffer_capacity),
         })
+    }
+
+    fn alloc_mut(&mut self, section: ResourceSection) -> &mut SlotAllocator {
+        match section {
+            ResourceSection::Image => &mut self.image_alloc,
+            ResourceSection::TexelBuffer => &mut self.texel_alloc,
+            ResourceSection::Buffer => &mut self.buffer_alloc,
+        }
+    }
+
+    fn base_index(&self, section: ResourceSection) -> u32 {
+        match section {
+            ResourceSection::Image => self.image_section_base_index,
+            ResourceSection::TexelBuffer => self.texel_section_base_index,
+            ResourceSection::Buffer => self.buffer_section_base_index,
+        }
     }
 }
 
@@ -431,7 +523,7 @@ impl SamplerSubHeap {
     }
 }
 
-fn create_heap_buffer(
+fn create_heap_buffer( //TODO i'll assume gpu allocator is taking care of the allignment of the buffer
     device: &ash::Device,
     allocator: &mut Allocator,
     byte_size: u64,
@@ -469,10 +561,25 @@ fn create_heap_buffer(
 
     Ok((buffer, allocation, device_address, mapped))
 }
+
 ///aligns v up to the nearest multiple of a without floating point for faster calc with the use of integer rounding
 fn align_up(v: u64, a: u64) -> u64 {
     (v + a - 1) / a * a
 }
 
+fn lcm(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        0
+    } else {
+        a / gcd(a, b) * b
+    }
+}
 
-
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}

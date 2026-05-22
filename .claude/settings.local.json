@@ -48,7 +48,9 @@
       "PowerShell(spirv-dis *)",
       "PowerShell(\"line count: $\\(\\(Get-Content errlog.txt\\).Count\\)\"; Get-Content errlog.txt -Tail 80)",
       "PowerShell(Get-Content errlog.txt | Where-Object { $_ -notmatch \"QFOT\" -and $_ -notmatch \"GalaxyOverlay\" -and $_ -notmatch \"ReShade\" -and $_ -notmatch \"API version 1.3\" -and $_ -notmatch \"Forcing|Adding|Ray Hit Object|Mesh Shading\" } | Select-Object -First 30)",
-      "PowerShell(cargo build *)"
+      "PowerShell(cargo build *)",
+      "Bash(cargo doc *)",
+      "Bash(xargs grep -l 'ResourceDescriptorDataEXT')"
     ]
   }
 }

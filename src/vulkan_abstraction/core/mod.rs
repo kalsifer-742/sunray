@@ -115,7 +115,9 @@ impl Core {
             &descriptor_heap_device,
             &mut allocator,
             device.descriptor_heap_properties(),
-            vulkan_abstraction::DEFAULT_RESOURCE_PAGES,
+            vulkan_abstraction::DEFAULT_IMAGE_CAPACITY,
+            vulkan_abstraction::DEFAULT_TEXEL_BUFFER_CAPACITY,
+            vulkan_abstraction::DEFAULT_BUFFER_CAPACITY,
             vulkan_abstraction::DEFAULT_SAMPLER_CAPACITY,
         )?;
 

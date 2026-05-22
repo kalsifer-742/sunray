@@ -5,7 +5,7 @@ use ash::vk::CommandBuffer;
 use derive_builder::Builder;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::render_graph::graph_error::GraphError;
+use crate::render_graph::error::GraphError;
 
 pub enum BindingElement {
     //TODO maybe compile time check the value corresponds to the inserted one
