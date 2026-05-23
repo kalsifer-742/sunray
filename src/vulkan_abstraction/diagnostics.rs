@@ -155,6 +155,34 @@ impl DiagnosticsContext {
             unsafe { chk.cmd_set_checkpoint(cmd, label.as_ptr() as *const c_void) };
         }
     }
+
+    /// Query the driver for which checkpoints had completed on `queue` at the
+    /// time of the last fault, and log them. Call this after `VK_ERROR_DEVICE_LOST`
+    /// to narrow down which dispatch crashed. No-op when the active tool
+    /// doesn't support checkpoints.
+    pub fn log_queue_checkpoints(&self, queue: vk::Queue) {
+        let Some(chk) = &self.checkpoints else { return };
+        unsafe {
+            let len = chk.get_queue_checkpoint_data_len(queue);
+            if len == 0 {
+                log::error!("Diagnostics: queue reported 0 checkpoints completed.");
+                return;
+            }
+            let mut data = vec![vk::CheckpointDataNV::default(); len];
+            chk.get_queue_checkpoint_data(queue, &mut data);
+            log::error!("Diagnostics: {} checkpoints completed on faulting queue:", len);
+            for cp in &data {
+                let label = if cp.p_checkpoint_marker.is_null() {
+                    "<null>".to_string()
+                } else {
+                    CStr::from_ptr(cp.p_checkpoint_marker as *const i8)
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                log::error!("    stage={:?}  marker={:?}", cp.stage, label);
+            }
+        }
+    }
 }
 
 impl Drop for DiagnosticsContext {

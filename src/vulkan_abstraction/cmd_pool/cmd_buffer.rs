@@ -72,14 +72,23 @@ impl CmdBuffer {
     }
 }
 
+// Set once we've dumped diagnostic state for a DEVICE_LOST, so we don't spam
+// the log on every fence/cmd-buffer drop during shutdown.
+static DEVICE_LOST_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 impl Drop for CmdBuffer {
     fn drop(&mut self) {
         unsafe {
             match self.fence.wait() {
                 Ok(()) => {}
                 Err(e) => match e.get_source() {
-                    ErrorSource::Vulkan(e) => {
-                        log::warn!("VkWaitForFences returned {e:?} in CmdBuffer::drop")
+                    ErrorSource::Vulkan(vk_err) => {
+                        log::warn!("VkWaitForFences returned {vk_err:?} in CmdBuffer::drop");
+                        if *vk_err == ash::vk::Result::ERROR_DEVICE_LOST
+                            && !DEVICE_LOST_REPORTED.swap(true, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            self.core.log_graphics_queue_checkpoints();
+                        }
                     }
                     _ => log::error!("VkWaitForFences returned {e} in CmdBuffer::drop"),
                 },

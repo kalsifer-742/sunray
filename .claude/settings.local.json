@@ -116,7 +116,21 @@
       "Bash(cargo run *)",
       "Bash(ENABLE_NVIDIA_AFTERMATH=1 RUST_LOG=warn cargo run --example png)",
       "Bash(ENABLE_NVIDIA_AFTERMATH=1 cargo build --example png --features nvidia-aftermath)",
-      "Bash(ENABLE_NVIDIA_AFTERMATH=1 cargo run --example png --features nvidia-aftermath)"
+      "Bash(ENABLE_NVIDIA_AFTERMATH=1 cargo run --example png --features nvidia-aftermath)",
+      "PowerShell(Copy-Item *)",
+      "PowerShell(cargo run *)",
+      "Bash(spirv-dis target/debug/build/sunray-*/out/ray_gen_ris_slang.spirv)",
+      "Bash(where.exe spirv-dis.exe)",
+      "Bash(where.exe glslangValidator.exe)",
+      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" \"target/debug/build/sunray-1fd94b22c57bc0b3/out/ray_gen_ris_slang.spirv\")",
+      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" \"target/debug/build/sunray-1fd94b22c57bc0b3/out/closest_hit_slang.spirv\")",
+      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" target/debug/build/sunray-*/out/ray_gen_ris_slang.spirv)",
+      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-val.exe\" --target-env vulkan1.4 target/debug/build/sunray-1fd94b22c57bc0b3/out/ray_gen_ris_slang.spirv)",
+      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/vulkaninfo.exe\")",
+      "Bash(vulkaninfo --json)",
+      "Bash(vulkaninfo)",
+      "Bash(echo \"ret=$?\")",
+      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" target/debug/build/sunray-1fd94b22c57bc0b3/out/closest_hit_slang.spirv)"
     ]
   }
 }

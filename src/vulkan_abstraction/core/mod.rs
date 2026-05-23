@@ -260,6 +260,14 @@ impl Core {
         self.instance.diagnostics().cmd_set_checkpoint(cmd, label);
     }
 
+    /// Log every checkpoint that completed on the graphics queue before the
+    /// last fault — call from a DEVICE_LOST handler to find the faulting
+    /// dispatch. Cheap to call even when no diagnostic tool is active.
+    pub fn log_graphics_queue_checkpoints(&self) {
+        let queue = self.graphics_queue.lock().inner();
+        self.instance.diagnostics().log_queue_checkpoints(queue);
+    }
+
     pub fn diagnostic_tool(&self) -> vulkan_abstraction::DiagnosticTool {
         self.instance.diagnostics().tool()
     }
