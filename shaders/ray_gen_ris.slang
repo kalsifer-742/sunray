@@ -11,6 +11,11 @@ import rt_utils;
 [shader("raygeneration")]
 void ray_gen_ris() {
     RaytracingAccelerationStructure tlas = pc.tlas;
+    // Read matrices via the BDA pointer (see `RaytracingPC.matrices` comment).
+    Matrices m = *pc.matrices;
+    float4x4 mat_view_inverse   = float4x4(m.vi0, m.vi1, m.vi2, m.vi3);
+    float4x4 mat_proj_inverse   = float4x4(m.pi0, m.pi1, m.pi2, m.pi3);
+    float4x4 mat_prev_view_proj = float4x4(m.pp0, m.pp1, m.pp2, m.pp3);
     StructuredBuffer<EmissiveTriangle> emissive_triangles = pc.emissive_triangles;
     StructuredBuffer<EmissiveIndirectionEntry> emissive_indirection = pc.emissive_indirection;
     StructuredBuffer<EntityTransform> entity_transforms = pc.entity_transforms;
@@ -22,10 +27,10 @@ void ray_gen_ris() {
 
     uint cur_buf  = current_reservoir_idx(pc.frame_count);
     uint hist_buf = history_reservoir_idx(pc.frame_count);
-    RWStructuredBuffer<Reservoir>   reservoir_cur  = pc.reservoirs[cur_buf];
-    RWStructuredBuffer<Reservoir>   reservoir_hist = pc.reservoirs[hist_buf];
-    RWStructuredBuffer<ReservoirGI> reservoir_gi_cur  = pc.reservoirs_gi[cur_buf];
-    RWStructuredBuffer<ReservoirGI> reservoir_gi_hist = pc.reservoirs_gi[hist_buf];
+    Reservoir*   reservoir_cur     = pc.reservoirs[cur_buf];
+    Reservoir*   reservoir_hist    = pc.reservoirs[hist_buf];
+    ReservoirGI* reservoir_gi_cur  = pc.reservoirs_gi[cur_buf];
+    ReservoirGI* reservoir_gi_hist = pc.reservoirs_gi[hist_buf];
 
     uint2 launch_size = DispatchRaysDimensions().xy;
     uint2 launch_id   = DispatchRaysIndex().xy;
@@ -37,9 +42,9 @@ void ray_gen_ris() {
     float2 inUV = pixel_center / float2(launch_size);
     float2 d = inUV * 2.0 - 1.0;
 
-    float4 origin    = mul(pc.matrices[0].view_inverse, float4(0, 0, 0, 1));
-    float4 target    = mul(pc.matrices[0].proj_inverse, float4(d.x, d.y, 1, 1));
-    float4 direction = mul(pc.matrices[0].view_inverse, float4(normalize(target.xyz), 0));
+    float4 origin    = mul(mat_view_inverse, float4(0, 0, 0, 1));
+    float4 target    = mul(mat_proj_inverse, float4(d.x, d.y, 1, 1));
+    float4 direction = mul(mat_view_inverse, float4(normalize(target.xyz), 0));
 
     float3 rayOrigin = origin.xyz;
     float3 rayDir    = direction.xyz;
@@ -109,7 +114,7 @@ void ray_gen_ris() {
             rayDir = reflect(rayDir, hit_normal);
         } else {
             float3 virtual_world_pos = origin.xyz + direction.xyz * virtual_distance;
-            float4 prev_clip = mul(pc.matrices[0].prev_view_proj, float4(virtual_world_pos, 1.0));
+            float4 prev_clip = mul(mat_prev_view_proj, float4(virtual_world_pos, 1.0));
 
             const float MIN_PREV_W = 0.01;
             prev_valid = prev_clip.w > MIN_PREV_W;
@@ -135,7 +140,7 @@ void ray_gen_ris() {
     if (!found_diffuse_surface) {
         // Sky pixel: empty reservoirs, sentinel G-buffer values.
         float2 sky_motion = inUV + float2(2.0);
-        float4 sky_prev_clip = mul(pc.matrices[0].prev_view_proj, float4(rayDir, 0.0));
+        float4 sky_prev_clip = mul(mat_prev_view_proj, float4(rayDir, 0.0));
         const float MIN_SKY_W = 0.01;
         if (sky_prev_clip.w > MIN_SKY_W) {
             float2 sky_prev_ndc = sky_prev_clip.xy / sky_prev_clip.w;

@@ -109,7 +109,9 @@
       "Bash(grep -i \"heap\\\\|ext\\\\b\\\\|EXT$\")",
       "Bash(SUNRAY_VALIDATION_LAYER=false SUNRAY_GPUAV=false timeout 60 cargo run --example png)",
       "Bash(ENABLE_VALIDATION_LAYER=0 ENABLE_GPUAV=0 timeout 60 cargo run --example png)",
-      "Bash(ENABLE_VALIDATION_LAYER=0 ENABLE_GPUAV=0 timeout 90 cargo run --example png)"
+      "Bash(ENABLE_VALIDATION_LAYER=0 ENABLE_GPUAV=0 timeout 90 cargo run --example png)",
+      "Bash(ENABLE_GPUAV=1 timeout 60 cargo run --example png)",
+      "Bash(sort -k6,7)"
     ]
   }
 }

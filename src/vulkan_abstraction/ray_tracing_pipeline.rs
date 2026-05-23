@@ -33,15 +33,21 @@ pub struct RaytracingHeapPushConstant {
     pub normal_img: [u32; 2],
     pub diffuse_img: [u32; 2],
     pub motion_vec_img: [u32; 2],
-    pub matrices: [u32; 2],
+    /// Buffer-device-address of the matrices buffer (not a heap handle — see
+    /// `shaders/rt_types.slang::RaytracingPC.matrices`). Still 8 bytes, so the
+    /// rest of the struct layout is unchanged.
+    pub matrices: u64,
     pub meshes_info: [u32; 2],
     pub emissive_triangles: [u32; 2],
     pub emissive_indirection: [u32; 2],
     pub entity_transforms: [u32; 2],
     pub blue_noise_tex: [u32; 2],
     pub blue_noise_sampler: [u32; 2],
-    pub reservoirs: [[u32; 2]; 2],
-    pub reservoirs_gi: [[u32; 2]; 2],
+    /// Buffer-device-addresses for the ping-pong reservoir buffers (see
+    /// `shaders/rt_types.slang::RaytracingPC.reservoirs`). 16 bytes total,
+    /// matching the previous `[[u32; 2]; 2]` heap-handle layout.
+    pub reservoirs: [u64; 2],
+    pub reservoirs_gi: [u64; 2],
     pub textures_lookup: [u32; 2],
     pub frame_count: u32,
     pub use_srgb: u32,

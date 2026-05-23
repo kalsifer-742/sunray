@@ -72,17 +72,22 @@ impl ResourceManager {
     pub fn new_empty(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let matrices_uniform_buffer = vulkan_abstraction::UniformBuffer::new(Rc::clone(&core), 1 as vk::DeviceSize)?;
 
+        // SHADER_DEVICE_ADDRESS so the heap path can compute the buffer's BDA
+        // when allocating a storage-buffer descriptor (`Buffer::storage_slot`
+        // internally calls `vkGetBufferDeviceAddress`).
         let entities = vulkan_abstraction::ArenaKeyMappedBuffer::new(
             core.clone(),
             ARENA_CAPACITY,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_SRC
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "Entities GPU buffer",
         )?;
 
         let transforms = vulkan_abstraction::ArenaKeyMappedBuffer::new(
             core.clone(),
             ARENA_CAPACITY,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "Entity transforms GPU buffer",
         )?;
         
@@ -160,7 +165,9 @@ impl ResourceManager {
             blas_emissive_triangles: vulkan_abstraction::ArenaGpuBuffer::new(
                 core.clone(),
                 ARENA_CAPACITY,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 "blas emissive triangles",
             )?,
 
@@ -389,14 +396,14 @@ impl ResourceManager {
             self.emissive_indirection_gpu = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
                 Rc::clone(&self.core),
                 &dummy,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 "emissive indirection dummy",
             )?;
         } else {
             self.emissive_indirection_gpu = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
                 Rc::clone(&self.core),
                 &entries,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 "emissive indirection",
             )?;
         }
@@ -497,7 +504,7 @@ impl ResourceManager {
         self.textures_lookup_buffer = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
             Rc::clone(&self.core),
             &lookup_entries,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "RT texture-handle lookup",
         )?;
         Ok(())
@@ -511,14 +518,12 @@ impl ResourceManager {
         self.textures_lookup_buffer.raw().storage_slot()
     }
 
-    /// Heap shader-index of the matrices `StructuredBuffer<Matrices>` referenced
-    /// by the Slang RT shaders. The buffer is uniform-typed on the CPU side
-    /// but flagged with both `UNIFORM_BUFFER` and `STORAGE_BUFFER` usage so we
-    /// can expose it as a storage descriptor here without changing the legacy
-    /// descriptor-set path.
-    pub fn matrices_storage_slot(&self) -> u32 {
+    /// Buffer-device-address of the matrices uniform buffer. The Slang RT
+    /// shaders read matrices via a `Matrices*` BDA pointer rather than a
+    /// heap descriptor — see `shaders/rt_types.slang::RaytracingPC.matrices`.
+    pub fn matrices_buffer_address(&self) -> vk::DeviceAddress {
         use vulkan_abstraction::Buffer;
-        self.matrices_uniform_buffer.raw().storage_slot()
+        self.matrices_uniform_buffer.get_device_address()
     }
 
     // ─── Scene loading ───────────────────────────────────────────────────────

@@ -176,6 +176,7 @@ impl Renderer {
             closest_hit_spirv,
             any_hit_spirv,
         )?;
+       
 
         let shader_binding_table_ris = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline_ris)?;
 
@@ -231,14 +232,14 @@ impl Renderer {
         let reservoir_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<Reservoir>(
             Rc::clone(&core),
             num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR Reservoir Buffer A",
         )?;
 
         let reservoir_buffer_b = vulkan_abstraction::GpuOnlyBuffer::new::<Reservoir>(
             Rc::clone(&core),
             num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR Reservoir Buffer B",
         )?;
         let reservoir_buffers = [reservoir_buffer_a, reservoir_buffer_b];
@@ -246,14 +247,14 @@ impl Renderer {
         let reservoir_gi_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
             Rc::clone(&core),
             num_pixels  as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR GI Reservoir Buffer A",
         )?;
 
         let reservoir_gi_buffer_b = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
             Rc::clone(&core),
             num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR GI Reservoir Buffer B",
         )?;
         let reservoir_gi_buffers = [reservoir_gi_buffer_a, reservoir_gi_buffer_b];
@@ -346,14 +347,14 @@ impl Renderer {
         let reservoir_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<Reservoir>(
             self.core.clone(),
             num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR Reservoir Buffer A",
         )?;
 
         let reservoir_buffer_b = vulkan_abstraction::GpuOnlyBuffer::new::<Reservoir>(
             self.core.clone(),
             num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR Reservoir Buffer B",
         )?;
 
@@ -362,14 +363,14 @@ impl Renderer {
         let reservoir_gi_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
             self.core.clone(),
             num_pixels  as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR GI Reservoir Buffer A",
         )?;
 
         let reservoir_gi_buffer_b = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
             self.core.clone(),
             num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR GI Reservoir Buffer B",
         )?;
 
@@ -1035,7 +1036,7 @@ impl Renderer {
             normal_img:           pack(img_dependent_data.normal_image.storage_slot()),
             diffuse_img:          pack(img_dependent_data.diffuse_image.storage_slot()),
             motion_vec_img:       pack(img_dependent_data.motion_vector_image.storage_slot()),
-            matrices:             pack(self.resource_manager.matrices_storage_slot()),
+            matrices:             self.resource_manager.matrices_buffer_address(),
             meshes_info:          pack(self.resource_manager.meshes_info_storage_slot()),
             emissive_triangles:   pack(self.resource_manager.emissive_triangles_storage_slot()),
             emissive_indirection: pack(self.resource_manager.emissive_indirection_storage_slot()),
@@ -1043,12 +1044,12 @@ impl Renderer {
             blue_noise_tex:       pack(self.blue_noise_image.sampled_slot()),
             blue_noise_sampler:   pack(self.blue_noise_sampler.slot()),
             reservoirs: [
-                pack(self.reservoir_buffers[0].raw().storage_slot()),
-                pack(self.reservoir_buffers[1].raw().storage_slot()),
+                self.reservoir_buffers[0].get_device_address(),
+                self.reservoir_buffers[1].get_device_address(),
             ],
             reservoirs_gi: [
-                pack(self.reservoir_gi_buffers[0].raw().storage_slot()),
-                pack(self.reservoir_gi_buffers[1].raw().storage_slot()),
+                self.reservoir_gi_buffers[0].get_device_address(),
+                self.reservoir_gi_buffers[1].get_device_address(),
             ],
             textures_lookup: pack(self.resource_manager.textures_lookup_slot()),
             frame_count: self.relative_frame_count,

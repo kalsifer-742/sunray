@@ -20,11 +20,16 @@ impl<T> UniformBuffer<T> {
             byte_size,
             1,
             gpu_allocator::MemoryLocation::CpuToGpu,
-            // STORAGE_BUFFER too so the heap path can expose this buffer via
-            // `storage_slot()` — the Slang RT shaders read matrices through a
-            // `StructuredBuffer<Matrices>` because `DescriptorHandle<ConstantBuffer<T>>`
-            // doesn't forward field access on the Slang version we use.
-            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+            // SHADER_DEVICE_ADDRESS so the Slang RT shaders can read matrices via
+            // a `Matrices*` buffer-device-address pointer — needed because Slang's
+            // heap-descriptor lowering emits invalid OpAccessChain storage classes
+            // when reading struct members of a `StructuredBuffer<T>` element on
+            // this Slang version (see `Matrices` doc in `shaders/rt_types.slang`).
+            // STORAGE_BUFFER is kept for backwards-compatibility with any legacy
+            // descriptor-set path.
+            vk::BufferUsageFlags::UNIFORM_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "uniform buffer",
         )?;
         Ok(Self {

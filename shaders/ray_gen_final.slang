@@ -10,6 +10,9 @@ import rt_utils;
 [shader("raygeneration")]
 void ray_gen_final() {
     RaytracingAccelerationStructure tlas = pc.tlas;
+    Matrices m = *pc.matrices;
+    float4x4 mat_view_inverse = float4x4(m.vi0, m.vi1, m.vi2, m.vi3);
+    float4x4 mat_proj_inverse = float4x4(m.pi0, m.pi1, m.pi2, m.pi3);
     StructuredBuffer<EmissiveTriangle> emissive_triangles = pc.emissive_triangles;
     StructuredBuffer<EmissiveIndirectionEntry> emissive_indirection = pc.emissive_indirection;
     StructuredBuffer<EntityTransform> entity_transforms = pc.entity_transforms;
@@ -19,8 +22,8 @@ void ray_gen_final() {
     RWTexture2D<float2> motion_vec_img = pc.motion_vec_img;
 
     uint cur_buf = current_reservoir_idx(pc.frame_count);
-    RWStructuredBuffer<Reservoir>   reservoir_cur    = pc.reservoirs[cur_buf];
-    RWStructuredBuffer<ReservoirGI> reservoir_gi_cur = pc.reservoirs_gi[cur_buf];
+    Reservoir*   reservoir_cur    = pc.reservoirs[cur_buf];
+    ReservoirGI* reservoir_gi_cur = pc.reservoirs_gi[cur_buf];
 
     Texture2D<float4> blue_noise_tex = pc.blue_noise_tex;
     SamplerState blue_noise_sampler  = pc.blue_noise_sampler;
@@ -54,9 +57,9 @@ void ray_gen_final() {
         float2 inUV = pixel_center / float2(launch_size);
         float2 d = inUV * 2.0 - 1.0;
 
-        float4 origin    = mul(pc.matrices[0].view_inverse, float4(0, 0, 0, 1));
-        float4 target    = mul(pc.matrices[0].proj_inverse, float4(d.x, d.y, 1, 1));
-        float4 direction = mul(pc.matrices[0].view_inverse, float4(normalize(target.xyz), 0));
+        float4 origin    = mul(mat_view_inverse, float4(0, 0, 0, 1));
+        float4 target    = mul(mat_proj_inverse, float4(d.x, d.y, 1, 1));
+        float4 direction = mul(mat_view_inverse, float4(normalize(target.xyz), 0));
 
         float3 rayOrigin = origin.xyz;
         float3 rayDir    = direction.xyz;
@@ -243,8 +246,8 @@ void ray_gen_final() {
                         float2 npc = float2(nc) + float2(0.5);
                         float2 nUV = npc / float2(launch_size);
                         float2 nd  = nUV * 2.0 - 1.0;
-                        float4 nt  = mul(pc.matrices[0].proj_inverse, float4(nd.x, nd.y, 1, 1));
-                        float4 ndir = mul(pc.matrices[0].view_inverse, float4(normalize(nt.xyz), 0));
+                        float4 nt  = mul(mat_proj_inverse, float4(nd.x, nd.y, 1, 1));
+                        float4 ndir = mul(mat_view_inverse, float4(normalize(nt.xyz), 0));
                         float3 neighbor_x1 = origin.xyz + ndir.xyz * neighbor_depth;
 
                         float3 w_new = neighbor_r.sample_pos - hitPos;

@@ -132,7 +132,8 @@ impl Device {
                 .timeline_semaphore(true)
                 .vulkan_memory_model(true)
                 .vulkan_memory_model_device_scope(true)
-                .storage_buffer8_bit_access(true);
+                .storage_buffer8_bit_access(true)
+                .shader_float16(true);
             let mut physical_device_rt_pipeline_features =
                 vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
             let mut physical_device_acceleration_structure_features =
@@ -168,7 +169,8 @@ impl Device {
                     .shader_uniform_buffer_array_dynamic_indexing(true)
                     .shader_sampled_image_array_dynamic_indexing(true)
                     .shader_storage_buffer_array_dynamic_indexing(true)
-                    .shader_storage_image_array_dynamic_indexing(true),
+                    .shader_storage_image_array_dynamic_indexing(true)
+                    .shader_int16(true),
             );
 
             let device_create_info = vk::DeviceCreateInfo::default()

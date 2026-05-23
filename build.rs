@@ -87,7 +87,7 @@ fn compile_slang_shader(module_name: &str, entry_point: &str, out_file_name: &st
 
     let target_desc = slang::TargetDesc::default()
         .format(slang::CompileTarget::Spirv)
-        .profile(global_session.find_profile("spirv_1_5"));
+        .profile(global_session.find_profile("spirv_1_6"));
 
     let targets = [target_desc];
 

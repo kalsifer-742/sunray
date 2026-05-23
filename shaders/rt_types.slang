@@ -97,11 +97,20 @@ public struct EntityTransform {
 }
 
 // --- Camera matrices --------------------------------------------------------
+// Stored as 16 flat `float4` columns instead of 4 `float4x4` (or even 4
+// `float4[4]`) members because Slang's lowering of struct-member access
+// through `OpUntypedPointerKHR` (descriptor-heap path) emits an OpAccessChain
+// with a mismatched storage class (Function result over StorageBuffer base)
+// for any composite-typed member — matrices, arrays, sub-structs — producing
+// invalid SPIR-V → DEVICE_LOST. Scalar-typed members (including `float4`) go
+// through the typed-pointer path and are fine. The on-disk byte layout is
+// identical (column-major, 16 floats per matrix = 64 bytes) so the Rust upload
+// of `MatricesBufferContents` (4 × nalgebra::Matrix4 column-major) is unchanged.
 public struct Matrices {
-    public float4x4 view_inverse;
-    public float4x4 proj_inverse;
-    public float4x4 view_proj;
-    public float4x4 prev_view_proj;
+    public float4 vi0; public float4 vi1; public float4 vi2; public float4 vi3;
+    public float4 pi0; public float4 pi1; public float4 pi2; public float4 pi3;
+    public float4 vp0; public float4 vp1; public float4 vp2; public float4 vp3;
+    public float4 pp0; public float4 pp1; public float4 pp2; public float4 pp3;
 }
 
 // --- ReSTIR reservoirs ------------------------------------------------------
@@ -134,7 +143,8 @@ public struct ReservoirGI {
 // `textures_lookup` replaces the old 1024-element combined-sampler array:
 // each entry is `(image_heap_index, sampler_heap_index)` so material indices
 // (`base_color_texture_index`, …) keep their original meaning.
-public struct RaytracingPC {
+public struct
+RaytracingPC {
     public DescriptorHandle<RaytracingAccelerationStructure> tlas;
     public DescriptorHandle<RWTexture2D<float4>> raw_color;
     public DescriptorHandle<RWTexture2D<float>>  depth_img;
@@ -142,10 +152,13 @@ public struct RaytracingPC {
     public DescriptorHandle<RWTexture2D<float4>> diffuse_img;
     public DescriptorHandle<RWTexture2D<float2>> motion_vec_img;
 
-    // Slang doesn't forward `.field` access through `DescriptorHandle<ConstantBuffer<T>>`,
-    // so the matrices live in a single-element `StructuredBuffer<Matrices>` instead. The
-    // descriptor is a storage buffer on the CPU side (we use `Buffer::storage_slot()`).
-    public DescriptorHandle<StructuredBuffer<Matrices>> matrices;
+    // BDA pointer instead of a `DescriptorHandle<StructuredBuffer<Matrices>>` —
+    // Slang's heap-descriptor lowering miscomputes the storage class when
+    // accessing struct members of a `StructuredBuffer<T>` element, producing
+    // invalid SPIR-V. The `T*` (PhysicalStorageBuffer) path doesn't have that
+    // bug. The CPU push-constant field stays 8 bytes (a `uint64_t` device
+    // address instead of a `uint2` heap handle).
+    public Matrices* matrices;
     public DescriptorHandle<StructuredBuffer<MeshInfo>> meshes_info;
     public DescriptorHandle<StructuredBuffer<EmissiveTriangle>> emissive_triangles;
     public DescriptorHandle<StructuredBuffer<EmissiveIndirectionEntry>> emissive_indirection;
@@ -154,8 +167,14 @@ public struct RaytracingPC {
     public DescriptorHandle<Texture2D<float4>> blue_noise_tex;
     public DescriptorHandle<SamplerState> blue_noise_sampler;
 
-    public DescriptorHandle<RWStructuredBuffer<Reservoir>> reservoirs[2];
-    public DescriptorHandle<RWStructuredBuffer<ReservoirGI>> reservoirs_gi[2];
+    // BDA pointers instead of `DescriptorHandle<RWStructuredBuffer<T>>` — Slang
+    // decomposes whole-struct writes into per-field stores with mismatched
+    // storage classes when the buffer is reached through the heap descriptor
+    // path, producing invalid SPIR-V. `Reservoir*` (PhysicalStorageBuffer)
+    // doesn't have that bug. Each pointer is 8 bytes, matching the previous
+    // `DescriptorHandle` lowering, so the rest of the PC layout is unchanged.
+    public Reservoir* reservoirs[2];
+    public ReservoirGI* reservoirs_gi[2];
 
     public DescriptorHandle<StructuredBuffer<TextureEntry>> textures_lookup;
 

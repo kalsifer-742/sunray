@@ -45,3 +45,33 @@ Things that needed working around (worth knowing):
 - ResourceDescriptorHeap / SamplerDescriptorHeap (HLSL SM6.6) aren't recognised either — texture indirection now stores typed DescriptorHandle<Texture2D> / DescriptorHandle<SamplerState> pairs in the lookup buffer (same 16-byte stride: two uint2s)
 
 Next up (separate turn): heap-mode RayTracingPipeline constructor + texture-lookup buffer on resource_manager + switching cmd_raytracing_render to push the new push constant. Tasks #5/#6/#7 are still pending.
+
+
+
+● The currently-active SPIR-V (19:39) is clean. The 19:26 file is a stale artifact from before the BDA-reservoir fix and isn't used by cargo. Final summary of this session's progress:
+
+Session results
+
+Major root-cause discovery: Slang's heap-descriptor lowering on this SDK has a bug where writes to RWStructuredBuffer<T> via a DescriptorHandle decompose into per-field OpAccessChains with mismatched storage classes (Function result over StorageBuffer base)
+— produces invalid SPIR-V → GPU device lost. Same bug also hits reads of struct-typed members.
+
+Workarounds applied:
+- matrices switched to BDA Matrices* (uint64 device address)
+- reservoirs[2] / reservoirs_gi[2] switched to BDA Reservoir* / ReservoirGI*
+- Matrices struct flattened from 4 × float4x4 to 16 × float4 (scalar fields work even through heap)
+- All read-only storage buffers (meshes_info, emissive_*, entity_transforms, textures_lookup) stay on heap — reads of element-value loads work fine
+- All affected buffers now get SHADER_DEVICE_ADDRESS usage (UniformBuffer, ResourceManager arena buffers, lookup buffer, reservoirs)
+
+Pipeline state:
+- ✅  All 6 Slang shaders compile
+- ✅  All SPIR-V passes spirv-val against Vulkan 1.4
+- ✅  Pipeline + SBT create
+- ✅  vkCmdTraceRaysKHR issues without validation errors
+- ❌  GPU faults during shader execution → DEVICE_LOST, no validation messages
+
+- ❌ GPU faults during oshader execution → DEVICE_LOST, no validation messages
+
+The remaining device-lost is now a runtime GPU fault with no validation diagnostic — needs a tool like NVIDIA Aftermath / AMD Radeon GPU Profiler / RenderDoc to localize. Likely candidates: (a) reservoir BDA pointer alignment vs the std430 reservoir stride
+the shader assumes (48 — non-multiple-of-16), (b) some uninit field in a writeback path, (c) BLAS vertex BDA + Slang scalar layout disagreement on alignment despite matching offsets.
+
+Tasks 1-6 are complete; task 7 (smoke test) reached "shader runs but GPU faults" — not yet rendering an image.
