@@ -27,7 +27,13 @@ pub struct RaytracingPushConstant {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct RaytracingHeapPushConstant {
-    pub tlas: [u32; 2],
+    /// AS device address (uint64) instead of a heap-handle pair — workaround for
+    /// Slang issue #10671: `DescriptorHandle<RaytracingAccelerationStructure>` +
+    /// `spvDescriptorHeapEXT` omits `OpConvertUToAccelerationStructureKHR`, so
+    /// `TraceRayKHR` faults at runtime. The shader does the convert via inline
+    /// SPIR-V (`shaders/rt_utils.slang::tlas_from_address`). Switch back to a
+    /// `[u32; 2]` heap handle once the upstream Slang fix lands.
+    pub tlas: u64,
     pub raw_color: [u32; 2],
     pub depth_img: [u32; 2],
     pub normal_img: [u32; 2],

@@ -145,7 +145,11 @@ public struct ReservoirGI {
 // (`base_color_texture_index`, …) keep their original meaning.
 public struct
 RaytracingPC {
-    public DescriptorHandle<RaytracingAccelerationStructure> tlas;
+    // BDA-like uint64 instead of a DescriptorHandle<AS> — see
+    // `rt_utils.slang::tlas_from_address` for the workaround rationale
+    // (Slang issue #10671). Same 8-byte footprint, so the rest of the PC
+    // layout is unchanged.
+    public uint64_t tlas;
     public DescriptorHandle<RWTexture2D<float4>> raw_color;
     public DescriptorHandle<RWTexture2D<float>>  depth_img;
     public DescriptorHandle<RWTexture2D<float4>> normal_img;

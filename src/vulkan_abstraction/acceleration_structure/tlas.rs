@@ -284,6 +284,22 @@ impl TLAS {
         self.tlas.inner()
     }
 
+    /// `vkGetAccelerationStructureDeviceAddressKHR` of the underlying TLAS.
+    /// Used by the heap-mode RT pipelines because Slang's
+    /// `DescriptorHandle<RaytracingAccelerationStructure>` codegen is broken
+    /// on `spvDescriptorHeapEXT` (Slang issue #10671) — the shader does the
+    /// uint64→AS convert via inline SPIR-V instead.
+    pub fn device_address(&self) -> vk::DeviceAddress {
+        let core = self.tlas.core();
+        unsafe {
+            core.acceleration_structure_device()
+                .get_acceleration_structure_device_address(
+                    &vk::AccelerationStructureDeviceAddressInfoKHR::default()
+                        .acceleration_structure(self.tlas.inner()),
+                )
+        }
+    }
+
     /// Heap slot for `ACCELERATION_STRUCTURE_KHR`. Lazily allocates on first call.
     pub fn slot(&self) -> u32 {
         if let Some(s) = self.slot.get() {

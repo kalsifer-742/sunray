@@ -1044,7 +1044,7 @@ impl Renderer {
         use vulkan_abstraction::Buffer;
         let pack = |idx: u32| -> [u32; 2] { [idx, 0] };
         let push_constants = vulkan_abstraction::RaytracingHeapPushConstant {
-            tlas:                 pack(self.resource_manager.tlas().slot()),
+            tlas:                 self.resource_manager.tlas().device_address(),
             raw_color:            pack(img_dependent_data.raytrace_result_image.storage_slot()),
             depth_img:            pack(img_dependent_data.depth_image.storage_slot()),
             normal_img:           pack(img_dependent_data.normal_image.storage_slot()),

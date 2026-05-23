@@ -10,7 +10,7 @@ import rt_utils;
 
 [shader("raygeneration")]
 void ray_gen_ris() {
-    RaytracingAccelerationStructure tlas = pc.tlas;
+    RaytracingAccelerationStructure tlas = tlas_from_address(pc.tlas);
     // Read matrices via the BDA pointer (see `RaytracingPC.matrices` comment).
     Matrices m = *pc.matrices;
     float4x4 mat_view_inverse   = float4x4(m.vi0, m.vi1, m.vi2, m.vi3);

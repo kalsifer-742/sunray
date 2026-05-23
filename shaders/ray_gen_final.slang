@@ -9,7 +9,7 @@ import rt_utils;
 
 [shader("raygeneration")]
 void ray_gen_final() {
-    RaytracingAccelerationStructure tlas = pc.tlas;
+    RaytracingAccelerationStructure tlas = tlas_from_address(pc.tlas);
     Matrices m = *pc.matrices;
     float4x4 mat_view_inverse = float4x4(m.vi0, m.vi1, m.vi2, m.vi3);
     float4x4 mat_proj_inverse = float4x4(m.pi0, m.pi1, m.pi2, m.pi3);
