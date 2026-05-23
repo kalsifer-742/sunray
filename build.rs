@@ -65,6 +65,16 @@ fn compile_shader(file_name: &str, shader_type: shaderc::ShaderKind, generate_de
 /// Compile a Slang module to SPIR-V at build time. `module_name` is the file stem under
 /// `shaders/` (no `.slang`). Mirrors the runtime compiler in `src/shader_compiler/compiler.rs`,
 /// so the bytes the two paths produce are interchangeable.
+fn shader_debug_enabled() -> bool {
+    // Force-enable Slang/shaderc debug info (and disable optimization for Slang)
+    // so a GPU debugger (Aftermath, RenderDoc, RGP, Nsight) can resolve shader
+    // source locations. Tied to a build-time env var because shader compilation
+    // is a build-time step — runtime DiagnosticTool selection alone can't
+    // change what's already baked into the SPIR-V.
+    println!("cargo::rerun-if-env-changed=SUNRAY_SHADER_DEBUG");
+    matches!(std::env::var("SUNRAY_SHADER_DEBUG").as_deref(), Ok("1") | Ok("true") | Ok("TRUE"))
+}
+
 fn compile_slang_shader(module_name: &str, entry_point: &str, out_file_name: &str) {
     let global_session = slang::GlobalSession::new()
         .expect("Failed to create Slang GlobalSession (is the Slang runtime DLL on PATH?)");
@@ -77,13 +87,26 @@ fn compile_slang_shader(module_name: &str, entry_point: &str, out_file_name: &st
         );
     }
 
+    let debug = shader_debug_enabled();
+
     // Column-major matrix storage matches nalgebra's column-major Matrix4 on the
     // CPU (and GLSL's default), so reading `matrices.view_inverse * v` in the
     // Slang RT shaders produces the same result as the original GLSL.
-    let session_options = slang::CompilerOptions::default()
-        .optimization(slang::OptimizationLevel::High)
-        .matrix_layout_row(false)
-        .capability(descriptor_heap_cap);
+    //
+    // When SUNRAY_SHADER_DEBUG=1, drop optimization to None and ask Slang to
+    // emit maximal SPIR-V debug info so Aftermath/RenderDoc resolve source.
+    let session_options = if debug {
+        slang::CompilerOptions::default()
+            .optimization(slang::OptimizationLevel::None)
+            .debug_information(slang::DebugInfoLevel::Maximal)
+            .matrix_layout_row(false)
+            .capability(descriptor_heap_cap)
+    } else {
+        slang::CompilerOptions::default()
+            .optimization(slang::OptimizationLevel::High)
+            .matrix_layout_row(false)
+            .capability(descriptor_heap_cap)
+    };
 
     let target_desc = slang::TargetDesc::default()
         .format(slang::CompileTarget::Spirv)

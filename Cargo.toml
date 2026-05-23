@@ -26,9 +26,20 @@ rspirv-reflect = "0.9.0"
 derive_builder = "0.20.2"
 enum-as-inner = "0.7.0"
 num = "0.4.3"
-shader-slang = "0.1.0" 
+shader-slang = "0.1.0"
 shader-slang-sys = "0.1.0"
+# Optional: enables the NVIDIA Aftermath user-space crash-dump handler.
+# Off by default — pulls in the Aftermath SDK runtime (the build script downloads
+# it via sysreq) which isn't needed for normal use. Even without the feature
+# enabled, DiagnosticTool::NvidiaAftermath still wires up the Vulkan-side
+# device-diagnostics-config + checkpoint extensions, which alone already help
+# localize a faulting dispatch.
+aftermath-rs = { git = "https://github.com/MatteoBallardin/aftermath-rs.git", optional = true }
 #na = "0.32.2"
+
+[features]
+default = []
+nvidia-aftermath = ["dep:aftermath-rs"]
 
 
 [build-dependencies]

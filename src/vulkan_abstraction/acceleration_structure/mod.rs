@@ -63,7 +63,7 @@ impl AccelerationStructure {
             core.acceleration_structure_device().get_acceleration_structure_build_sizes(
                 vk::AccelerationStructureBuildTypeKHR::DEVICE,
                 &incomplete_build_geometry_info,
-                &primitive_counts,
+                Some(primitive_counts.as_slice()),
                 &mut size_info,
             );
 
@@ -135,7 +135,7 @@ impl AccelerationStructure {
             core.acceleration_structure_device().cmd_build_acceleration_structures(
                 build_command_buffer,
                 &[build_geometry_info],
-                &[build_range_infos],
+                &[Some(&build_range_infos[..])],
             );
 
             core.device().inner().end_command_buffer(build_command_buffer)?
@@ -217,7 +217,7 @@ impl AccelerationStructure {
                 .get_acceleration_structure_build_sizes(
                     vk::AccelerationStructureBuildTypeKHR::DEVICE,
                     &incomplete_build_geometry_info,
-                    &primitive_counts,
+                    Some(primitive_counts.as_slice()),
                     &mut size_info,
                 );
 
@@ -257,7 +257,7 @@ impl AccelerationStructure {
             self.core.acceleration_structure_device().cmd_build_acceleration_structures(
                 build_command_buffer,
                 &[build_geometry_info],
-                &[build_range_infos],
+                &[Some(&build_range_infos[..])],
             );
 
             self.core.device().inner().end_command_buffer(build_command_buffer)?

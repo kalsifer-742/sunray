@@ -4,6 +4,7 @@ use std::{
     ffi::CStr,
 };
 
+use crate::vulkan_abstraction::diagnostics::{self, DiagnosticTool};
 use crate::{error::*, vulkan_abstraction};
 use ash::{
     khr,
@@ -24,10 +25,13 @@ pub struct Device {
     surface_support_details: Option<RefCell<SurfaceSupportDetails>>,
 }
 
+
+
 impl Device {
     pub fn new(
         instance: &vulkan_abstraction::Instance,
         device_extensions: &[*const i8],
+        diagnostics: DiagnosticTool,
         image_format: vk::Format,
         surface_to_support: &Option<(vk::SurfaceKHR, khr::surface::Instance)>,
     ) -> SrResult<Self> {
@@ -173,7 +177,11 @@ impl Device {
                     .shader_int16(true),
             );
 
-            let device_create_info = vk::DeviceCreateInfo::default()
+            // Optional diagnostics p_next (currently only NVIDIA Aftermath). The struct
+            // outlives the create call because it lives in this binding.
+            let mut diagnostics_config = diagnostics::device_diagnostics_p_next(diagnostics);
+
+            let mut device_create_info = vk::DeviceCreateInfo::default()
                 .enabled_extension_names(&device_extensions)
                 .push(&mut vk12_features)
                 .push(&mut vk13_features)
@@ -185,6 +193,10 @@ impl Device {
                 .push(&mut maintenance9_features)
                 .push(&mut vk14_features)
                 .queue_create_infos(&queue_create_infos);
+
+            if let Some(cfg) = diagnostics_config.as_mut() {
+                device_create_info = device_create_info.push(cfg);
+            }
 
             unsafe { instance.create_device(physical_device, &device_create_info, None) }?
         };

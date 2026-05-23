@@ -4,6 +4,7 @@ pub mod cmd_pool;
 pub mod compute_pipeline;
 pub mod core;
 pub mod descriptor_heap;
+pub mod diagnostics;
 #[deprecated(note = "This module is being phased out in favor of descriptor heaps ")]
 pub mod descriptor_sets;
 pub mod gltf;
@@ -22,6 +23,7 @@ pub use cmd_pool::*;
 pub(crate) use compute_pipeline::*;
 pub use core::*;
 pub use descriptor_heap::*;
+pub use diagnostics::*;
 pub use descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
 pub use descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSets;
 pub use image::*;

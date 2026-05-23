@@ -7,13 +7,14 @@ pub use instance::*;
 
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::Queue;
+use crate::vulkan_abstraction::diagnostics::DiagnosticTool;
 use crate::{CreateSurfaceFn, error::*};
 use ash::vk::Semaphore;
 use ash::{ext, khr, vk};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{Mutex, RawMutex};
 use std::cell::{Ref, RefCell, RefMut};
-use std::ffi::CStr;
+use std::ffi::{c_char, CStr};
 use std::rc::Rc;
 
 #[rustfmt::skip]
@@ -44,7 +45,7 @@ pub struct Core { //TODO core is completely single thread
 
 impl Core {
     pub fn new(with_validation_layer: bool, with_gpuav: bool, image_format: vk::Format) -> SrResult<Self> {
-        Ok(Self::new_with_surface(with_validation_layer, with_gpuav, image_format, &[], None)?.0)
+        Ok(Self::new_with_surface(with_validation_layer, with_gpuav, DiagnosticTool::None, image_format, &[], None)?.0)
     }
 
     // It is necessary to pass a function to create the surface, because surface depends on instance,
@@ -53,14 +54,15 @@ impl Core {
     pub fn new_with_surface(
         with_validation_layer: bool,
         with_gpuav: bool,
+        diagnostics: DiagnosticTool,
         image_format: vk::Format,
         required_instance_extensions: &[*const i8],
         create_surface: Option<&CreateSurfaceFn>,
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
         let entry = ash::Entry::linked();
 
-        let instance =
-            vulkan_abstraction::Instance::new(&entry, required_instance_extensions, with_validation_layer, with_gpuav)?;
+        let mut instance =
+            vulkan_abstraction::Instance::new(&entry, required_instance_extensions, with_validation_layer, with_gpuav, diagnostics)?;
 
         let surface_support = match create_surface.as_ref() {
             Some(f) => Some((
@@ -88,12 +90,26 @@ impl Core {
             device_extensions.push(khr::swapchain::NAME.as_ptr());
         }
 
+        // Diagnostic-tool device extensions (e.g. NV_device_diagnostics_config +
+        // NV_device_diagnostic_checkpoints when Aftermath is selected).
+        for ext_name in diagnostics.device_extensions() {
+            device_extensions.push(ext_name.as_ptr());
+        }
+
         let device = Rc::new(device::Device::new(
             &instance,
             &device_extensions,
+            diagnostics,
             image_format,
             &surface_support,
         )?);
+
+        // Load device-side checkpoint function pointers (no-op when diagnostics == None).
+        {
+            let inst_handle = instance.inner().clone();
+            let dev_handle = device.inner().clone();
+            instance.diagnostics_mut().load_device(&inst_handle, &dev_handle);
+        }
 
         let mut allocator = Allocator::new(&AllocatorCreateDesc {
             instance: instance.inner().clone(),
@@ -234,6 +250,18 @@ impl Core {
 
     pub fn transfer_cmd_pool(&self) -> &vulkan_abstraction::CmdPool {
         &self.transfer_cmd_pool
+    }
+
+    /// Insert a named checkpoint into the command stream — no-op unless a
+    /// crash-analysis tool (e.g. NVIDIA Aftermath) is active. After a
+    /// `VK_ERROR_DEVICE_LOST`, the driver reports which checkpoints had
+    /// completed, narrowing down which dispatch faulted.
+    pub fn cmd_set_checkpoint(&self, cmd: vk::CommandBuffer, label: &'static std::ffi::CStr) {
+        self.instance.diagnostics().cmd_set_checkpoint(cmd, label);
+    }
+
+    pub fn diagnostic_tool(&self) -> vulkan_abstraction::DiagnosticTool {
+        self.instance.diagnostics().tool()
     }
 
     /// Invia un command buffer alla coda di trasferimento.

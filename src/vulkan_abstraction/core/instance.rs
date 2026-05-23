@@ -5,12 +5,15 @@ use std::{
 
 use ash::{ext, vk};
 use ash::vk::TaggedStructure;
+
 use crate::error::SrResult;
+use crate::vulkan_abstraction::diagnostics::{DiagnosticTool, DiagnosticsContext};
 
 pub struct Instance {
     instance: ash::Instance,
     debug_utils_instance: Option<ext::debug_utils::Instance>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
+    diagnostics: DiagnosticsContext,
 }
 
 impl Instance {
@@ -125,7 +128,13 @@ impl Instance {
         vk::FALSE
     }
 
-    pub fn new(entry: &ash::Entry, instance_exts: &[*const i8], with_validation_layer: bool, with_gpuav: bool) -> SrResult<Self> {
+    pub fn new(
+        entry: &ash::Entry,
+        instance_exts: &[*const i8],
+        with_validation_layer: bool,
+        with_gpuav: bool,
+        diagnostics: DiagnosticTool,
+    ) -> SrResult<Self> {
         let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 4, 0));
 
         let (enable_validation_layer, layer_names) = {
@@ -210,6 +219,10 @@ impl Instance {
             None
         };
 
+        // Boot the diagnostic backend (e.g. Aftermath) *before* vkCreateInstance so any
+        // device loss during initialization still produces a crash dump.
+        let diagnostics_ctx = DiagnosticsContext::new(diagnostics);
+
         let instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&application_info)
             .enabled_layer_names(&layer_names)
@@ -244,10 +257,17 @@ impl Instance {
             instance,
             debug_utils_instance,
             debug_messenger,
+            diagnostics: diagnostics_ctx,
         })
     }
     pub fn inner(&self) -> &ash::Instance {
         &self.instance
+    }
+    pub fn diagnostics(&self) -> &DiagnosticsContext {
+        &self.diagnostics
+    }
+    pub fn diagnostics_mut(&mut self) -> &mut DiagnosticsContext {
+        &mut self.diagnostics
     }
 }
 

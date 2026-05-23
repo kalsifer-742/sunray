@@ -54,7 +54,7 @@ fn render_and_save() -> SrResult<()> {
         .set_fov_y(45.0);
     renderer.set_camera(camera)?;
 
-    let image_buf = renderer.render_to_host_memory().unwrap();
+    let image_buf = renderer.render_to_host_memory()?;
     render_to_file(&image_buf, image_extent, path, ImageFormat::Png);
 
     Ok(())

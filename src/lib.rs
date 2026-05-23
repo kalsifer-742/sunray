@@ -64,6 +64,8 @@ struct ImageDependentData {
 
 pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::SurfaceKHR>;
 
+pub use crate::vulkan_abstraction::DiagnosticTool;
+
 pub struct Renderer {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
@@ -142,13 +144,25 @@ impl Renderer {
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
         let with_validation_layer = env_var_as_bool(ENABLE_VALIDATION_LAYER_ENV_VAR).unwrap_or(IS_DEBUG_BUILD);
         let with_gpuav = env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(true);
+        // Map the ENABLE_NVIDIA_AFTERMATH env var (legacy) onto the new
+        // DiagnosticTool enum. When the user wants RenderDoc / RGP support,
+        // add the corresponding env vars here and switch the match arm.
+        let diagnostics = if env_var_as_bool(ENABLE_NVIDIA_AFTERMATH_VAR_NAME).unwrap_or(false) {
+            DiagnosticTool::NvidiaAftermath
+        } else {
+            DiagnosticTool::None
+        };
+
         let (core, surface) = vulkan_abstraction::Core::new_with_surface(
             with_validation_layer,
             with_gpuav,
+            diagnostics,
             image_format,
             instance_exts,
             create_surface,
         )?;
+
+
         let core = Rc::new(core);
 
         let image_extent = utils::tuple_to_extent3d(image_extent);
@@ -1148,6 +1162,7 @@ impl Renderer {
                 });
             self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 
+            self.core.cmd_set_checkpoint(cmd_buf, c"rt_pass_ris::before_trace_rays");
             self.core.rt_pipeline_device().cmd_trace_rays(
                 cmd_buf,
                 self.shader_binding_table_ris.raygen_region(),
@@ -1158,6 +1173,7 @@ impl Renderer {
                 extent.height,
                 extent.depth,
             );
+            self.core.cmd_set_checkpoint(cmd_buf, c"rt_pass_ris::after_trace_rays");
 
             // Reservoir A->B handoff between the two RT dispatches.
             let reservoir_barrier = vk::MemoryBarrier2::default()
@@ -1179,6 +1195,7 @@ impl Renderer {
             // re-issue it after the rebind.
             self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 
+            self.core.cmd_set_checkpoint(cmd_buf, c"rt_pass_final::before_trace_rays");
             self.core.rt_pipeline_device().cmd_trace_rays(
                 cmd_buf,
                 self.shader_binding_table_final.raygen_region(),
@@ -1189,6 +1206,7 @@ impl Renderer {
                 extent.height,
                 extent.depth,
             );
+            self.core.cmd_set_checkpoint(cmd_buf, c"rt_pass_final::after_trace_rays");
         }
 
         Ok(())
@@ -1691,6 +1709,8 @@ impl Renderer {
 // useful environment variables, set to 1 or 0
 const ENABLE_VALIDATION_LAYER_ENV_VAR: &'static str = "ENABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
 const ENABLE_GPUAV_ENV_VAR_NAME: &'static str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled, defaults to 0
+const ENABLE_NVIDIA_AFTERMATH_VAR_NAME: &'static str = "ENABLE_NVIDIA_AFTERMATH"; // does nothing unless validation layer is enabled, defaults to 0
+
 const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &'static str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
 const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 

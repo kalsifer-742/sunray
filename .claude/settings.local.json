@@ -111,7 +111,12 @@
       "Bash(ENABLE_VALIDATION_LAYER=0 ENABLE_GPUAV=0 timeout 60 cargo run --example png)",
       "Bash(ENABLE_VALIDATION_LAYER=0 ENABLE_GPUAV=0 timeout 90 cargo run --example png)",
       "Bash(ENABLE_GPUAV=1 timeout 60 cargo run --example png)",
-      "Bash(sort -k6,7)"
+      "Bash(sort -k6,7)",
+      "Bash(xargs grep -l \"DebugInfo\")",
+      "Bash(cargo run *)",
+      "Bash(ENABLE_NVIDIA_AFTERMATH=1 RUST_LOG=warn cargo run --example png)",
+      "Bash(ENABLE_NVIDIA_AFTERMATH=1 cargo build --example png --features nvidia-aftermath)",
+      "Bash(ENABLE_NVIDIA_AFTERMATH=1 cargo run --example png --features nvidia-aftermath)"
     ]
   }
 }
