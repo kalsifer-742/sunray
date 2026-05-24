@@ -91,6 +91,7 @@ impl DescriptorHeap {
         texel_capacity: u32,
         buffer_capacity: u32,
         sampler_capacity: u32,
+        gpuav_enabled: bool,
     ) -> SrResult<Self> {
         let image_size = props.image_descriptor_size.max(1);
         let buffer_size = props.buffer_descriptor_size.max(1);
@@ -107,8 +108,18 @@ impl DescriptorHeap {
         // `[0, app_byte_size)` and shader byte-offset addressing (`index * descriptor_size`)
         // lines up with our slot indices unchanged. The tail still has to be backed by
         // real memory, so we size the buffer = app area + reserved range.
-        let min_resource_reserved = props.min_resource_heap_reserved_range.max(1);
-        let min_sampler_reserved = props.min_sampler_heap_reserved_range.max(1);
+        //
+        // GPU-AV's shader instrumentation bumps `minResourceHeapReservedRange` at
+        // runtime (observed warning: "Setting minResourceHeapReservedRange to 96928
+        // (reserving 160 bytes)" on RTX 3060 Ti). The bump happens AFTER we've read
+        // properties and sized the buffer, so without padding the driver/validation
+        // spills 160 bytes past the buffer's end into the last few app descriptor
+        // slots and clobbers them. Only added when GPU-AV is on — production builds
+        // don't waste the allocation. 4 KiB comfortably covers the ~160-byte bump
+        // and any future validation/instrumentation growth.
+        let gpuav_slack: u64 = if gpuav_enabled { 4096 } else { 0 };
+        let min_resource_reserved = props.min_resource_heap_reserved_range.max(1) + gpuav_slack;
+        let min_sampler_reserved = props.min_sampler_heap_reserved_range.max(1) + gpuav_slack;
 
         // Layout: [ images | texel buffers | buffers | reserved tail ].
         //

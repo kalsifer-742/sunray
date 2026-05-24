@@ -130,7 +130,9 @@
       "Bash(vulkaninfo --json)",
       "Bash(vulkaninfo)",
       "Bash(echo \"ret=$?\")",
-      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" target/debug/build/sunray-1fd94b22c57bc0b3/out/closest_hit_slang.spirv)"
+      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" target/debug/build/sunray-1fd94b22c57bc0b3/out/closest_hit_slang.spirv)",
+      "PowerShell(Add-Type -AssemblyName System.Drawing; $bmp = [System.Drawing.Bitmap]::FromFile\\(\"$PWD\\\\examples\\\\png\\\\render.png\"\\); $p = $bmp.GetPixel\\(800, 600\\); Write-Host \"R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\"; $bmp.Dispose\\(\\))",
+      "PowerShell(Add-Type -AssemblyName System.Drawing; $bmp = [System.Drawing.Bitmap]::FromFile\\(\"$PWD\\\\examples\\\\png\\\\render.png\"\\); $p = $bmp.GetPixel\\(800, 600\\); Write-Host \"Center R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\"; $p = $bmp.GetPixel\\(100, 100\\); Write-Host \"TopLeft R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\"; $bmp.Dispose\\(\\))"
     ]
   }
 }

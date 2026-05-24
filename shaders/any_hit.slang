@@ -14,10 +14,11 @@ void any_hit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes att
 
     uint blas_instance_id = InstanceID();
     MeshInfo mesh_info = meshes[blas_instance_id];
-    Material material = mesh_info.material;
 
     // OPAQUE — closest-hit handles it.
-    if (material.alpha_mode == 0) {
+    // Material fields are inlined into MeshInfo to work around the Slang
+    // heap-mode nested-struct offset bug (see rt_types.slang::MeshInfo).
+    if (mesh_info.material_alpha_mode == 0) {
         return;
     }
 
@@ -35,9 +36,9 @@ void any_hit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes att
     float2 uv2 = mesh_info.vertices[i2].base_color_tex_coord;
     float2 uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
 
-    float4 base_color = sample_texture(textures_lookup, material.base_color_texture_index, uv, material.base_color_value);
+    float4 base_color = sample_texture(textures_lookup, mesh_info.material_base_color_texture_index, uv, mesh_info.material_base_color_value);
 
-    if (base_color.a < material.alpha_cutoff) {
+    if (base_color.a < mesh_info.material_alpha_cutoff) {
         IgnoreHit();
     }
 }

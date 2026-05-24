@@ -1017,8 +1017,15 @@ impl Renderer {
             "mapped sunray output image",
         )?;
 
-        let wait_fence = self.render_to_image(dst_image.inner(), vk::Semaphore::null())?;
-        vulkan_abstraction::wait_fence(self.core.device(), wait_fence)?;
+        // Warm-up frames: ReSTIR temporal reuse + the a-trous denoise need a few
+        // frames of accumulated history before the output is meaningful — a single
+        // frame produces near-black because the initial temporal history is empty
+        // and the first ReSTIR audition is just one RIS candidate per pixel.
+        const WARMUP_FRAMES: u32 = 16;
+        for _ in 0..WARMUP_FRAMES {
+            let wait_fence = self.render_to_image(dst_image.inner(), vk::Semaphore::null())?;
+            vulkan_abstraction::wait_fence(self.core.device(), wait_fence)?;
+        }
 
         Ok(dst_image.get_raw_image_data_with_no_padding()?)
     }

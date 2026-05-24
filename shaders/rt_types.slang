@@ -73,10 +73,36 @@ public struct Material {
 // `PhysicalStorageBuffer` pointer and supports subscript via the stdlib's
 // `Ptr<T>::__subscript`, which is the equivalent of GLSL's
 // `buffer_reference { T v[]; }` unbounded-array idiom.
+//
+// **Material fields are inlined** rather than nested as `Material material`:
+// Slang's heap-mode (`OpBufferPointerEXT`) access chain for a nested struct
+// member drops the parent member offset. With `Material material` at MeshInfo
+// member-2 (offset 16), `mesh_info.material.roughness_factor` would read at
+// byte 24 instead of byte 40 — every material field ends up 16 bytes off. The
+// CPU layout in `EntityGpuData` (`#[repr(C, packed)]`) is unchanged: it still
+// embeds the `Material` struct so the bytes line up; only the shader-side view
+// is flattened. Field order/sizes mirror `Material` exactly.
 public struct MeshInfo {
-    public VertexAttributes* vertices;
-    public uint* indices;
-    public Material material;
+    public VertexAttributes* vertices;                          // 0
+    public uint* indices;                                       // 8
+    public float4 material_base_color_value;                    // 16
+    public uint material_base_color_texture_index;              // 32
+    public float material_metallic_factor;                      // 36
+    public float material_roughness_factor;                     // 40
+    public uint material_metallic_roughness_texture_index;      // 44
+    public uint material_normal_texture_index;                  // 48
+    public uint material_occlusion_texture_index;               // 52
+    public float _material_pad_mid_0;                           // 56
+    public float _material_pad_mid_1;                           // 60
+    public float4 material_emissive_factor;                     // 64
+    public uint material_emissive_texture_index;                // 80
+    public uint material_alpha_mode;                            // 84
+    public float material_alpha_cutoff;                         // 88
+    public float material_transmission_factor;                  // 92
+    public float material_ior;                                  // 96
+    public uint _material_pad0;                                 // 100
+    public uint _material_pad1;                                 // 104
+    public uint _material_pad2;                                 // 108
 }
 
 // --- Emissive lighting ------------------------------------------------------

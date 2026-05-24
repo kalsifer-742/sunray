@@ -135,6 +135,7 @@ impl Core {
             vulkan_abstraction::DEFAULT_TEXEL_BUFFER_CAPACITY,
             vulkan_abstraction::DEFAULT_BUFFER_CAPACITY,
             vulkan_abstraction::DEFAULT_SAMPLER_CAPACITY,
+            with_gpuav,
         )?;
 
         let graphics_queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0, device.graphics_queue_family_index())?;
