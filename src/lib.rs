@@ -143,7 +143,7 @@ impl Renderer {
         create_surface: Option<&CreateSurfaceFn>,
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
         let with_validation_layer = env_var_as_bool(ENABLE_VALIDATION_LAYER_ENV_VAR).unwrap_or(IS_DEBUG_BUILD);
-        let with_gpuav = env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(true);
+        let with_gpuav = env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
         // Map the ENABLE_NVIDIA_AFTERMATH env var (legacy) onto the new
         // DiagnosticTool enum. When the user wants RenderDoc / RGP support,
         // add the corresponding env vars here and switch the match arm.

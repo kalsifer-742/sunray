@@ -132,7 +132,11 @@
       "Bash(echo \"ret=$?\")",
       "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" target/debug/build/sunray-1fd94b22c57bc0b3/out/closest_hit_slang.spirv)",
       "PowerShell(Add-Type -AssemblyName System.Drawing; $bmp = [System.Drawing.Bitmap]::FromFile\\(\"$PWD\\\\examples\\\\png\\\\render.png\"\\); $p = $bmp.GetPixel\\(800, 600\\); Write-Host \"R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\"; $bmp.Dispose\\(\\))",
-      "PowerShell(Add-Type -AssemblyName System.Drawing; $bmp = [System.Drawing.Bitmap]::FromFile\\(\"$PWD\\\\examples\\\\png\\\\render.png\"\\); $p = $bmp.GetPixel\\(800, 600\\); Write-Host \"Center R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\"; $p = $bmp.GetPixel\\(100, 100\\); Write-Host \"TopLeft R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\"; $bmp.Dispose\\(\\))"
+      "PowerShell(Add-Type -AssemblyName System.Drawing; $bmp = [System.Drawing.Bitmap]::FromFile\\(\"$PWD\\\\examples\\\\png\\\\render.png\"\\); $p = $bmp.GetPixel\\(800, 600\\); Write-Host \"Center R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\"; $p = $bmp.GetPixel\\(100, 100\\); Write-Host \"TopLeft R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\"; $bmp.Dispose\\(\\))",
+      "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" target/debug/build/sunray-1fd94b22c57bc0b3/out/ray_gen_final_slang.spirv)",
+      "Bash(awk '{print $2}')",
+      "Bash(xargs -r kill)",
+      "PowerShell(Add-Type -AssemblyName System.Drawing; $bmp = [System.Drawing.Bitmap]::FromFile\\(\"$PWD\\\\window_dim_debug.png\"\\); foreach \\($pt in @\\(@\\(5,35\\), @\\(10,35\\), @\\(20,35\\), @\\(20,50\\), @\\(20,55\\), @\\(5,55\\)\\)\\) { $p = $bmp.GetPixel\\($pt[0], $pt[1]\\); Write-Host \"\\($\\($pt[0]\\),$\\($pt[1]\\)\\): R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\" }; $bmp.Dispose\\(\\))"
     ]
   }
 }

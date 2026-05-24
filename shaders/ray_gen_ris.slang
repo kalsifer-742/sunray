@@ -12,6 +12,9 @@ import rt_utils;
 void ray_gen_ris() {
     RaytracingAccelerationStructure tlas = tlas_from_address(pc.tlas);
     // Read matrices via the BDA pointer (see `RaytracingPC.matrices` comment).
+    // The CPU side (`set_matrices` in resource_manager.rs) transposes each
+    // matrix before upload, so each float4 here IS a row of the intended
+    // matrix — `float4x4(rows...)` reconstructs it directly.
     Matrices m = *pc.matrices;
     float4x4 mat_view_inverse   = float4x4(m.vi0, m.vi1, m.vi2, m.vi3);
     float4x4 mat_proj_inverse   = float4x4(m.pi0, m.pi1, m.pi2, m.pi3);

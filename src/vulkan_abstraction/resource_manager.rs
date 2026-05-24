@@ -273,12 +273,18 @@ impl ResourceManager {
             prev_view_proj,
         }: CameraMatrices,
     ) -> SrResult<()> {
+        // nalgebra's Matrix4 is column-major in memory. HLSL/Slang's
+        // `float4x4(v0, v1, v2, v3)` constructor reads each float4 as a ROW.
+        // Transposing here means each on-disk float4 (which the shader reads as
+        // a member of `Matrices`) is a ROW of the intended matrix, so the
+        // shader's `float4x4(m.vi0, m.vi1, m.vi2, m.vi3)` reconstructs the
+        // matrix correctly without any per-shader `transpose()` call.
         let mem = self.matrices_uniform_buffer.map_mut()?;
         mem[0] = MatricesBufferContents {
-            view_inverse,
-            proj_inverse,
-            view_proj,
-            prev_view_proj,
+            view_inverse:   view_inverse.transpose(),
+            proj_inverse:   proj_inverse.transpose(),
+            view_proj:      view_proj.transpose(),
+            prev_view_proj: prev_view_proj.transpose(),
         };
         Ok(())
     }

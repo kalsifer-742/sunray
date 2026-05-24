@@ -10,6 +10,8 @@ import rt_utils;
 [shader("raygeneration")]
 void ray_gen_final() {
     RaytracingAccelerationStructure tlas = tlas_from_address(pc.tlas);
+    // CPU pre-transposes (see `set_matrices` in resource_manager.rs); each
+    // float4 here is already a row of the intended matrix.
     Matrices m = *pc.matrices;
     float4x4 mat_view_inverse = float4x4(m.vi0, m.vi1, m.vi2, m.vi3);
     float4x4 mat_proj_inverse = float4x4(m.pi0, m.pi1, m.pi2, m.pi3);
