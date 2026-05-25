@@ -2,8 +2,8 @@ use crate::error::SrResult;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::{Buffer, TLAS};
 use ash::vk;
-use std::rc::Rc;
 use ash::vk::TaggedStructure;
+use std::rc::Rc;
 
 pub struct RaytracingDescriptorSetLayout {
     descriptor_set_layout: vk::DescriptorSetLayout,

@@ -3,14 +3,14 @@ pub mod texture;
 pub use sampler::*;
 pub use texture::*;
 
-use std::cell::{Cell};
-use std::rc::Rc;
 use ash::vk;
+use std::cell::Cell;
+use std::rc::Rc;
 
+use crate::render_graph::graph::{AnyRenderResource, GraphResourceImportInfo, ImageDesc, Resource, RgImportable};
 use crate::vulkan_abstraction::Buffer;
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::{error::SrResult, utils, vulkan_abstraction};
-use crate::render_graph::graph::{AnyRenderResource, GraphResourceImportInfo, ImageDesc, Resource, RgImportable};
 
 pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
@@ -37,19 +37,16 @@ impl Resource for Image {
     }
 }
 
-impl RgImportable<ImageDesc> for Image{
+impl RgImportable<ImageDesc> for Image {
     fn import(&self) -> ImageDesc {
-        ImageDesc{
-
-        }
+        ImageDesc {}
     }
 }
-impl  Into<GraphResourceImportInfo> for Image{
+impl Into<GraphResourceImportInfo> for Image {
     fn into(self) -> GraphResourceImportInfo {
         todo!()
     }
 }
-
 
 impl Image {
     pub fn new_from_data(
@@ -147,7 +144,6 @@ impl Image {
 
             unsafe { core.device().inner().create_image_view(&image_view_create_info, None) }.unwrap()
         };
-
 
         Ok(Self {
             core,
@@ -283,7 +279,10 @@ impl Image {
         if let Some(s) = self.sampled_slot.get() {
             return s.shader_index();
         }
-        let slot = self.write_image_slot(ResourceDescriptorKind::SampledImage, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let slot = self.write_image_slot(
+            ResourceDescriptorKind::SampledImage,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        );
         self.sampled_slot.set(Some(slot));
         slot.shader_index()
     }

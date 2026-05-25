@@ -80,7 +80,6 @@ impl BLAS {
             fast_build,
         )?;
 
-
         Ok(Self {
             blas,
             vertex_buffer,

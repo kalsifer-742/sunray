@@ -1,15 +1,15 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-use ash::vk::TaggedStructure;
-use ash::{ext, vk};
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
-use log::info;
 use crate::error::{SrError, SrResult};
 use crate::vulkan_abstraction::descriptor_heap::slot::{
     DescriptorSlot, HeapKind, ResourceDescriptorKind, ResourceSection, SlotAllocator,
 };
 use crate::vulkan_abstraction::error::HeapError;
+use ash::vk::TaggedStructure;
+use ash::{ext, vk};
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
+use log::info;
 
 //TODO this should handle growing and shrinking by doubling the section that filled up.
 
@@ -97,7 +97,6 @@ impl DescriptorHeap {
         let buffer_size = props.buffer_descriptor_size.max(1);
         let sampler_size = props.sampler_descriptor_size.max(1);
 
-
         let image_alignment = props.image_descriptor_alignment.max(1);
         let buffer_alignment = props.buffer_descriptor_alignment.max(1);
 
@@ -136,13 +135,11 @@ impl DescriptorHeap {
         let image_section_bytes = (image_capacity as u64) * image_size;
 
         let texel_align = lcm(image_size, image_alignment);
-        let texel_section_byte_offset =
-            align_up(image_section_byte_offset + image_section_bytes, texel_align);
+        let texel_section_byte_offset = align_up(image_section_byte_offset + image_section_bytes, texel_align);
         let texel_section_bytes = (texel_capacity as u64) * image_size;
 
         let buffer_align = lcm(buffer_size, buffer_alignment);
-        let buffer_section_byte_offset =
-            align_up(texel_section_byte_offset + texel_section_bytes, buffer_align);
+        let buffer_section_byte_offset = align_up(texel_section_byte_offset + texel_section_bytes, buffer_align);
         let buffer_section_bytes = (buffer_capacity as u64) * buffer_size;
 
         let app_resource_byte_size = buffer_section_byte_offset + buffer_section_bytes;
@@ -153,7 +150,6 @@ impl DescriptorHeap {
         debug_assert!(texel_section_byte_offset % image_size == 0);
         debug_assert!(buffer_section_byte_offset % buffer_size == 0);
 
-
         let image_section_base_index = (image_section_byte_offset / image_size) as u32;
         let texel_section_base_index = (texel_section_byte_offset / image_size) as u32;
         let buffer_section_base_index = (buffer_section_byte_offset / buffer_size) as u32;
@@ -163,12 +159,24 @@ impl DescriptorHeap {
         let app_sampler_byte_size = (sampler_capacity as u64) * sampler_stride;
         let sampler_byte_size = app_sampler_byte_size + min_sampler_reserved;
 
-        if  app_resource_byte_size + min_resource_reserved > props.max_resource_heap_size  {
-            return Err(SrError::new(HeapError::OutOfMemory.into(), format!("Cannot allocate resource buffer of size: {} with reserved : {} ,It surpassed allowed size {} ", app_resource_byte_size , min_resource_reserved , props.max_resource_heap_size  ) ));
+        if app_resource_byte_size + min_resource_reserved > props.max_resource_heap_size {
+            return Err(SrError::new(
+                HeapError::OutOfMemory.into(),
+                format!(
+                    "Cannot allocate resource buffer of size: {} with reserved : {} ,It surpassed allowed size {} ",
+                    app_resource_byte_size, min_resource_reserved, props.max_resource_heap_size
+                ),
+            ));
         }
 
-        if  sampler_byte_size + min_sampler_reserved > props.max_sampler_heap_size  {
-            return Err(SrError::new(HeapError::OutOfMemory.into(), format!("Cannot allocate sampler buffer of size: {} with reserved : {} ,It surpassed allowed size {} ", sampler_byte_size , min_sampler_reserved , props.max_sampler_heap_size  ) ));
+        if sampler_byte_size + min_sampler_reserved > props.max_sampler_heap_size {
+            return Err(SrError::new(
+                HeapError::OutOfMemory.into(),
+                format!(
+                    "Cannot allocate sampler buffer of size: {} with reserved : {} ,It surpassed allowed size {} ",
+                    sampler_byte_size, min_sampler_reserved, props.max_sampler_heap_size
+                ),
+            ));
         }
 
         let resource = ResourceSubHeap::new(
@@ -186,7 +194,6 @@ impl DescriptorHeap {
             buffer_capacity,
             "sunray_resource_descriptor_heap",
         )?;
-
 
         let sampler = SamplerSubHeap::new(
             device,
@@ -245,11 +252,7 @@ impl DescriptorHeap {
     }
 
     pub fn alloc_sampler_slot(&mut self) -> DescriptorSlot {
-        let index = self
-            .sampler
-            .alloc
-            .alloc()
-            .expect("descriptor sampler heap exhausted");
+        let index = self.sampler.alloc.alloc().expect("descriptor sampler heap exhausted");
         DescriptorSlot {
             kind: HeapKind::Sampler,
             index,
@@ -302,9 +305,7 @@ impl DescriptorHeap {
     ) -> SrResult<()> {
         debug_assert_eq!(slot.kind, HeapKind::Resource);
         debug_assert_eq!(slot.section, ResourceSection::Image);
-        let image_info = vk::ImageDescriptorInfoEXT::default()
-            .view(view_info)
-            .layout(layout);
+        let image_info = vk::ImageDescriptorInfoEXT::default().view(view_info).layout(layout);
         let resource_info = vk::ResourceDescriptorInfoEXT::default()
             .ty(kind.descriptor_type())
             .data(vk::ResourceDescriptorDataEXT { p_image: &image_info });
@@ -327,9 +328,12 @@ impl DescriptorHeap {
         let texel_info = vk::TexelBufferDescriptorInfoEXT::default()
             .format(format)
             .address_range(vk::DeviceAddressRangeEXT { address, size });
-        let resource_info = vk::ResourceDescriptorInfoEXT::default()
-            .ty(kind.descriptor_type())
-            .data(vk::ResourceDescriptorDataEXT { p_texel_buffer: &texel_info });
+        let resource_info =
+            vk::ResourceDescriptorInfoEXT::default()
+                .ty(kind.descriptor_type())
+                .data(vk::ResourceDescriptorDataEXT {
+                    p_texel_buffer: &texel_info,
+                });
         self.write_resource(slot, resource_info, self.resource.image_descriptor_size)
     }
 
@@ -349,11 +353,7 @@ impl DescriptorHeap {
         self.write_resource(slot, resource_info, self.resource.buffer_descriptor_size)
     }
 
-    pub fn write_acceleration_structure(
-        &mut self,
-        slot: DescriptorSlot,
-        address: vk::DeviceAddress,
-    ) -> SrResult<()> {
+    pub fn write_acceleration_structure(&mut self, slot: DescriptorSlot, address: vk::DeviceAddress) -> SrResult<()> {
         debug_assert_eq!(slot.kind, HeapKind::Resource);
         debug_assert_eq!(slot.section, ResourceSection::Buffer);
         let range = vk::DeviceAddressRangeEXT {
@@ -471,8 +471,7 @@ impl ResourceSubHeap {
         buffer_capacity: u32,
         name: &'static str,
     ) -> SrResult<Self> {
-        let (buffer, allocation, device_address, mapped) =
-            create_heap_buffer(device, allocator, byte_size, name)?;
+        let (buffer, allocation, device_address, mapped) = create_heap_buffer(device, allocator, byte_size, name)?;
         Ok(Self {
             buffer,
             allocation,
@@ -534,7 +533,8 @@ impl SamplerSubHeap {
     }
 }
 
-fn create_heap_buffer( //TODO i'll assume gpu allocator is taking care of the allignment of the buffer
+fn create_heap_buffer(
+    //TODO i'll assume gpu allocator is taking care of the allignment of the buffer
     device: &ash::Device,
     allocator: &mut Allocator,
     byte_size: u64,
@@ -561,9 +561,7 @@ fn create_heap_buffer( //TODO i'll assume gpu allocator is taking care of the al
 
     unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())? };
 
-    let device_address = unsafe {
-        device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
-    };
+    let device_address = unsafe { device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) };
 
     let mapped_slice = allocation
         .mapped_slice_mut()
@@ -579,11 +577,7 @@ fn align_up(v: u64, a: u64) -> u64 {
 }
 
 fn lcm(a: u64, b: u64) -> u64 {
-    if a == 0 || b == 0 {
-        0
-    } else {
-        a / gcd(a, b) * b
-    }
+    if a == 0 || b == 0 { 0 } else { a / gcd(a, b) * b }
 }
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {

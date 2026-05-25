@@ -257,8 +257,7 @@ impl RayTracingPipeline {
         // Heap-mode requires `layout = VK_NULL_HANDLE` plus the
         // `DESCRIPTOR_HEAP_EXT` flag; the push-constant block lives in the
         // shader interface and is fed by `vkCmdPushDataEXT`.
-        let mut flags2 = vk::PipelineCreateFlags2CreateInfo::default()
-            .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
+        let mut flags2 = vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 
         let pipeline_info = vk::RayTracingPipelineCreateInfoKHR::default()
             .stages(&stages)

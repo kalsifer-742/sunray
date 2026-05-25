@@ -6,11 +6,11 @@ use std::{
 
 use crate::vulkan_abstraction::diagnostics::{self, DiagnosticTool};
 use crate::{error::*, vulkan_abstraction};
+use ash::vk::TaggedStructure;
 use ash::{
     khr,
     vk::{self, FormatFeatureFlags},
 };
-use ash::vk::TaggedStructure;
 
 pub struct Device {
     device: ash::Device,
@@ -24,8 +24,6 @@ pub struct Device {
     transfer_queue_family_index: Option<u32>,
     surface_support_details: Option<RefCell<SurfaceSupportDetails>>,
 }
-
-
 
 impl Device {
     pub fn new(
@@ -49,11 +47,7 @@ impl Device {
                 .filter(|physical_device| {
                     let mut format_properties2 = vk::FormatProperties2::default();
                     unsafe {
-                        instance.get_physical_device_format_properties2(
-                            *physical_device,
-                            image_format,
-                            &mut format_properties2,
-                        )
+                        instance.get_physical_device_format_properties2(*physical_device, image_format, &mut format_properties2)
                     };
                     let format_properties = format_properties2.format_properties;
 
@@ -128,7 +122,7 @@ impl Device {
             // and image-access semantics. Temporarily disabled while debugging the denoise
             // descriptor read returning zero.
             let mut maintenance9_features = vk::PhysicalDeviceMaintenance9FeaturesKHR::default().maintenance9(false);
-            let mut vk14_features  = vk::PhysicalDeviceVulkan14Features::default().maintenance5(true);
+            let mut vk14_features = vk::PhysicalDeviceVulkan14Features::default().maintenance5(true);
             let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
             // enable some device features necessary for ray-tracing //TODO I may need some newer feature expecially for the semi-binding?
             let mut vk12_features = vk::PhysicalDeviceVulkan12Features::default()
@@ -216,8 +210,7 @@ impl Device {
             let mut physical_device_rt_pipeline_properties = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
             let mut physical_device_acceleration_structure_properties =
                 vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
-            let mut physical_device_descriptor_heap_properties =
-                vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default();
+            let mut physical_device_descriptor_heap_properties = vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default();
 
             let mut physical_device_properties = vk::PhysicalDeviceProperties2::default()
                 .push(&mut physical_device_rt_pipeline_properties)

@@ -9,7 +9,7 @@
 //! so call sites stay stable. They currently behave the same as `None` — when
 //! we add RenderDoc API loader or AMD RGP markers, only this module changes.
 
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 
 use ash::{ext, nv, vk};
 
@@ -72,10 +72,7 @@ impl DiagnosticTool {
     /// Device-level Vulkan extensions this tool needs enabled.
     pub fn device_extensions(self) -> &'static [&'static CStr] {
         match self {
-            DiagnosticTool::NvidiaAftermath => &[
-                nv::device_diagnostics_config::NAME,
-                nv::device_diagnostic_checkpoints::NAME,
-            ],
+            DiagnosticTool::NvidiaAftermath => &[nv::device_diagnostics_config::NAME, nv::device_diagnostic_checkpoints::NAME],
             DiagnosticTool::None | DiagnosticTool::RenderDoc | DiagnosticTool::RadeonGpuProfiler => &[],
         }
     }
@@ -196,10 +193,7 @@ impl Drop for DiagnosticsContext {
             use aftermath_rs::Status;
             let status = Status::get();
             log::error!("NVIDIA Aftermath: dump status on shutdown = {:?}", status);
-            if matches!(
-                status,
-                Status::CollectingData | Status::InvokingCallback | Status::Unknown
-            ) {
+            if matches!(status, Status::CollectingData | Status::InvokingCallback | Status::Unknown) {
                 log::error!("NVIDIA Aftermath: waiting up to 5s for the dump to flush…");
                 let final_status = Status::wait_for_status(Some(std::time::Duration::from_secs(5)));
                 log::error!("NVIDIA Aftermath: final dump status = {:?}", final_status);
@@ -213,14 +207,12 @@ impl Drop for DiagnosticsContext {
 /// onto `VkDeviceCreateInfo`. Returns `None` when the tool doesn't need one.
 pub fn device_diagnostics_p_next(tool: DiagnosticTool) -> Option<vk::DeviceDiagnosticsConfigCreateInfoNV<'static>> {
     match tool {
-        DiagnosticTool::NvidiaAftermath => Some(
-            vk::DeviceDiagnosticsConfigCreateInfoNV::default().flags(
-                vk::DeviceDiagnosticsConfigFlagsNV::ENABLE_SHADER_DEBUG_INFO
-                    | vk::DeviceDiagnosticsConfigFlagsNV::ENABLE_RESOURCE_TRACKING
-                    | vk::DeviceDiagnosticsConfigFlagsNV::ENABLE_SHADER_ERROR_REPORTING
-                    | vk::DeviceDiagnosticsConfigFlagsNV::ENABLE_AUTOMATIC_CHECKPOINTS,
-            ),
-        ),
+        DiagnosticTool::NvidiaAftermath => Some(vk::DeviceDiagnosticsConfigCreateInfoNV::default().flags(
+            vk::DeviceDiagnosticsConfigFlagsNV::ENABLE_SHADER_DEBUG_INFO
+                | vk::DeviceDiagnosticsConfigFlagsNV::ENABLE_RESOURCE_TRACKING
+                | vk::DeviceDiagnosticsConfigFlagsNV::ENABLE_SHADER_ERROR_REPORTING
+                | vk::DeviceDiagnosticsConfigFlagsNV::ENABLE_AUTOMATIC_CHECKPOINTS,
+        )),
         _ => None,
     }
 }

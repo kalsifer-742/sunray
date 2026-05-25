@@ -25,7 +25,7 @@ macro_rules! impl_keyed_arena_common {
             // pub fn inner_gpu(&self) -> vk::Buffer {
             //     self.$ring_field.inner_gpu()
             // }
-            
+
             pub fn inner_staging(&self) -> vk::Buffer {
                 self.$ring_field.inner_staging()
             }
@@ -159,11 +159,10 @@ impl<T: Copy> ArenaGpuKeyMappedBuffer<T> {
             .size(size))
     }
 
-
     pub fn mapping_staging_buffer(&self) -> vk::Buffer {
         self.mapping_staging.inner()
     }
-    
+
     pub fn mapping_gpu_buffer(&self) -> vk::Buffer {
         self.mapping_gpu.inner()
     }

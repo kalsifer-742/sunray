@@ -4,9 +4,9 @@ use crate::vulkan_abstraction::{GpuOnlyBuffer, HostAccessibleBuffer, RawBuffer, 
 use crate::{impl_buffer_trait, vulkan_abstraction};
 use ash::vk;
 use ash::vk::DeviceSize;
+use log::info;
 use std::marker::PhantomData;
 use std::rc::Rc;
-use log::info;
 
 pub struct StagingBuffer<T> {
     raw: RawBuffer,
@@ -122,7 +122,8 @@ impl<T> StagingBuffer<T> {
         Ok(dst)
     }
 
-    pub fn clone_section_into_gpu_only_buffer( //TODO this does a queue transfer,does it make sense and when should it do it
+    pub fn clone_section_into_gpu_only_buffer(
+        //TODO this does a queue transfer,does it make sense and when should it do it
         &self,
         src_offset: DeviceSize,
         src_section_length: DeviceSize,
@@ -150,7 +151,6 @@ impl<T> StagingBuffer<T> {
             )));
         }
 
-
         let device = self.raw.core.device().inner();
         let transfer_family = self.raw.core.transfer_queue().queue_family_index();
         let graphics_family = self.raw.core.graphics_queue().queue_family_index();
@@ -160,10 +160,7 @@ impl<T> StagingBuffer<T> {
         let (dst_stage_mask, dst_access_mask) = infer_read_masks_from_usage(dst_usage);
 
         // --- Transfer queue: copy + release ownership (or full barrier if same family) ---
-        let transfer_cmd = vulkan_abstraction::cmd_buffer::new_command_buffer(
-            self.raw.core.transfer_cmd_pool(),
-            device,
-        )?;
+        let transfer_cmd = vulkan_abstraction::cmd_buffer::new_command_buffer(self.raw.core.transfer_cmd_pool(), device)?;
 
         let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe { device.begin_command_buffer(transfer_cmd, &begin_info) }?;
@@ -212,10 +209,7 @@ impl<T> StagingBuffer<T> {
         if dedicated_transfer {
             // Acquire ownership on the graphics queue, now with the real dst stage/access masks.
             // CPU-side fence-wait above guarantees the release has completed before this submit.
-            let graphics_cmd = vulkan_abstraction::cmd_buffer::new_command_buffer(
-                self.raw.core.graphics_cmd_pool(),
-                device,
-            )?;
+            let graphics_cmd = vulkan_abstraction::cmd_buffer::new_command_buffer(self.raw.core.graphics_cmd_pool(), device)?;
             let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
             unsafe { device.begin_command_buffer(graphics_cmd, &begin_info) }?;
 
@@ -233,7 +227,7 @@ impl<T> StagingBuffer<T> {
             unsafe { device.cmd_pipeline_barrier2(graphics_cmd, &dep) };
 
             unsafe { device.end_command_buffer(graphics_cmd) }?;
-             self.raw.core.graphics_queue().submit_sync(graphics_cmd)?;
+            self.raw.core.graphics_queue().submit_sync(graphics_cmd)?;
             unsafe { device.free_command_buffers(self.raw.core.graphics_cmd_pool().inner(), &[graphics_cmd]) };
         }
 

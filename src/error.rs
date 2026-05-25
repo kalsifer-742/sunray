@@ -1,10 +1,9 @@
-use ash::vk;
-use std::{backtrace::BacktraceStatus, fmt::Display};
 use crate::render_graph;
 use crate::vulkan_abstraction::{descriptor_heap, heap};
+use ash::vk;
+use std::{backtrace::BacktraceStatus, fmt::Display};
 
 pub type SrResult<T> = std::result::Result<T, SrError>;
-
 
 #[derive(Debug)]
 pub enum ErrorSource {
@@ -94,5 +93,3 @@ impl std::error::Error for SrError {
         }
     }
 }
-
-

@@ -1,7 +1,8 @@
 use ash::vk;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum HeapKind { //TODO could be removed, we know where they go based on what they are [ResourceDescriptorKind]
+pub enum HeapKind {
+    //TODO could be removed, we know where they go based on what they are [ResourceDescriptorKind]
     Resource,
     Sampler,
 }
@@ -38,9 +39,7 @@ impl ResourceDescriptorKind {
         match self {
             Self::SampledImage | Self::StorageImage => ResourceSection::Image,
             Self::UniformTexelBuffer | Self::StorageTexelBuffer => ResourceSection::TexelBuffer,
-            Self::UniformBuffer | Self::StorageBuffer | Self::AccelerationStructure => {
-                ResourceSection::Buffer
-            }
+            Self::UniformBuffer | Self::StorageBuffer | Self::AccelerationStructure => ResourceSection::Buffer,
         }
     }
 }

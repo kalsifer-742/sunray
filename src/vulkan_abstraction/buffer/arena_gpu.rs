@@ -58,7 +58,7 @@ impl<T: Copy> ArenaGpuBuffer<T> {
         self.inner.free_slot(index);
     }
 
-    pub fn inner_staging(&self) ->  vk::Buffer {
+    pub fn inner_staging(&self) -> vk::Buffer {
         self.inner.inner_staging()
     }
 }

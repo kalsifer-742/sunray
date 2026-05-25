@@ -2,11 +2,11 @@ use std::{collections::HashMap, rc::Rc};
 
 use crate::{error::SrResult, vulkan_abstraction};
 
+use crate::utils::na_mat4_to_vk_transform;
+use crate::vulkan_abstraction::ResourceManager;
 use ash::vk;
 use gltf::image::Format;
 use nalgebra as na;
-use crate::utils::na_mat4_to_vk_transform;
-use crate::vulkan_abstraction::ResourceManager;
 
 type BlasInstanceInfo = (usize, na::Matrix4<f32>);
 
@@ -48,7 +48,6 @@ impl Scene {
         Vec<vulkan_abstraction::Image>,
         Vec<vulkan_abstraction::gltf::EmissiveTriangle>,
     )> {
-
         blases.clear();
 
         let mut blas_instances_info = vec![];
@@ -114,7 +113,6 @@ impl Scene {
         ))
     }
 
-
     fn explore_node(
         &self,
         node: &vulkan_abstraction::gltf::Node,
@@ -158,7 +156,6 @@ impl Scene {
                             Vec::new()
                         };
 
-
                         let mut emissive_triangle_ranges = Vec::new();
                         if !local_emissive_data.is_empty() {
                             let start = emissive_triangles.len() as u32;
@@ -166,7 +163,7 @@ impl Scene {
                             let end = emissive_triangles.len() as u32;
                             emissive_triangle_ranges.push(start..end);
                         }
-                        
+
                         let blas = vulkan_abstraction::BLAS::new(
                             core.clone(),
                             primitive_data.vertex_buffer,
@@ -208,8 +205,6 @@ impl Scene {
     }
 }
 
-
-
 fn to_vk_image(
     core: &Rc<vulkan_abstraction::Core>,
     image: vulkan_abstraction::gltf::Image,
@@ -241,7 +236,6 @@ fn to_vk_image(
 pub trait FromGltf<T> {
     fn from_gltf(value: T) -> Self;
 }
-
 
 impl FromGltf<gltf::image::Format> for vk::Format {
     fn from_gltf(value: gltf::image::Format) -> Self {

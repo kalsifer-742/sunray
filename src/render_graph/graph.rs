@@ -1,8 +1,6 @@
 use crate::error::SrResult;
 use crate::render_graph::pass_builder::{ComputeRenderPass, DynRenderFn, RasterRenderPass, RaytracingRenderPass};
-use crate::vulkan_abstraction::{
-    AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer,
-};
+use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer};
 use enum_as_inner::EnumAsInner;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -59,7 +57,6 @@ fn global_barrier(core: &Core, cb: &CmdBuffer, previous_accesses: &[vk_sync::Acc
     );
 }
 
-
 #[derive(Clone)]
 pub enum GraphResourceImportInfo {
     Image {
@@ -77,16 +74,13 @@ pub enum GraphResourceImportInfo {
     SwapchainImage,
 }
 
-
 impl Into<GraphResourceInfo> for GraphResourceImportInfo {
     fn into(self) -> GraphResourceInfo {
         GraphResourceInfo::Imported(self)
     }
 }
 #[derive(Clone, Debug)]
-pub struct ImageDesc {
-
-}
+pub struct ImageDesc {}
 
 impl Into<GraphResourceDesc> for ImageDesc {
     fn into(self) -> GraphResourceDesc {
@@ -98,12 +92,8 @@ impl ResourceDesc for ImageDesc {
     type Resource = Image;
 }
 
-pub struct BufferDesc {
-
-}
-pub struct RaytracingASDesc {
-
-}
+pub struct BufferDesc {}
+pub struct RaytracingASDesc {}
 
 pub enum GraphResourceDesc {
     Image(ImageDesc),
@@ -141,7 +131,6 @@ pub enum AnyRenderPass {
     Compute(ComputeRenderPass),
 }
 
-
 pub struct RenderGraph<State: RenderGraphState> {
     state_index: u32,
     next_pass_id: u32,
@@ -178,7 +167,7 @@ impl RenderGraph<Setup> {
     }
     pub fn create<Desc: ResourceDesc>(&mut self, desc: Desc) -> Handle<<Desc as ResourceDesc>::Resource>
     where
-        Desc: TypeEquals<Other=<<Desc as ResourceDesc>::Resource as Resource>::Desc>,
+        Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
     {
         self.create_raw_resource(desc.clone().into());
         Handle {
@@ -196,9 +185,12 @@ impl RenderGraph<Setup> {
         self.virtual_resources.push(GraphResourceInfo::Created(resource_desc));
     }
 
-    pub fn import<Desc: ResourceDesc>(&mut self, res: impl RgImportable<Desc> + Into<GraphResourceImportInfo> ) -> Handle<<Desc as ResourceDesc>::Resource>
+    pub fn import<Desc: ResourceDesc>(
+        &mut self,
+        res: impl RgImportable<Desc> + Into<GraphResourceImportInfo>,
+    ) -> Handle<<Desc as ResourceDesc>::Resource>
     where
-        Desc: TypeEquals<Other=<<Desc as ResourceDesc>::Resource as Resource>::Desc>,
+        Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
     {
         let desc = res.import();
         self.virtual_resources.push(GraphResourceInfo::Imported(res.into()));
@@ -217,21 +209,15 @@ impl RenderGraph<Setup> {
         self.passes.push(render_pass)
     }
 
-
-    pub fn compile(mut self) -> RenderGraph<Built> { //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is the site where it will be published the paper https://dl.acm.org/profile/99661091135
+    pub fn compile(mut self) -> RenderGraph<Built> {
+        //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is the site where it will be published the paper https://dl.acm.org/profile/99661091135
         // let mut actual_resources = ResourceDeref
 
         for pass in self.passes.iter_mut() {
-            let common =match pass {
-                AnyRenderPass::Rt(rt) => {
-                    &mut rt.common
-                }
-                AnyRenderPass::Raster(raster) => {
-                    &mut raster.common
-                }
-                AnyRenderPass::Compute(compute) => {
-                    &mut compute.common
-                }
+            let common = match pass {
+                AnyRenderPass::Rt(rt) => &mut rt.common,
+                AnyRenderPass::Raster(raster) => &mut raster.common,
+                AnyRenderPass::Compute(compute) => &mut compute.common,
             };
 
             // for read in common.read.iter_mut() {
@@ -257,26 +243,21 @@ pub struct TransientResources {
     external_buffers: HashMap<u32, Arc<dyn Buffer>>,
     transient_buffers: HashMap<u32, Box<dyn Buffer>>,
     external_raytracing_ac: HashMap<u32, Arc<AccelerationStructure>>,
-    transient_raytracing_ac: HashMap<u32,AccelerationStructure>,
+    transient_raytracing_ac: HashMap<u32, AccelerationStructure>,
     //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
 }
 impl TransientResources {
-    pub fn populate(&mut self , virtual_resources: &[GraphResourceInfo]) {
-
-    }
+    pub fn populate(&mut self, virtual_resources: &[GraphResourceInfo]) {}
 }
 
-pub trait RgImportable<ResDesc: ResourceDesc> { //TODO do I want to take ownership of the data?
+pub trait RgImportable<ResDesc: ResourceDesc> {
+    //TODO do I want to take ownership of the data?
     fn import(&self) -> ResDesc;
-    
 }
-
 
 pub(crate) struct Render {}
 
-pub(crate) struct Built {
-
-}
+pub(crate) struct Built {}
 impl RenderGraphState for Built {}
 
 pub struct BuiltRenderGraph {

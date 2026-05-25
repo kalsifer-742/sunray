@@ -19,5 +19,5 @@ pub struct EmissiveTriangle {
 #[derive(Clone, Copy, Debug)]
 pub struct EmissiveIndirectionEntry {
     pub blas_tri_index: u32,
-    pub entity_id: u32, 
+    pub entity_id: u32,
 }

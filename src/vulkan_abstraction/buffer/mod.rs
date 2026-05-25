@@ -1,4 +1,5 @@
 pub mod arena_core;
+pub mod arena_gpu;
 pub mod arena_host;
 pub mod arena_keyed;
 pub mod gpu_only_buffer;
@@ -6,7 +7,6 @@ pub mod index_buffer;
 pub mod staging_buffer;
 pub mod uniform_buffer;
 pub mod vertex_buffer;
-pub mod arena_gpu;
 
 //why use and not just mod?
 pub use arena_core::*;

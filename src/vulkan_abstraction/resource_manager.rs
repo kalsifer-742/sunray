@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents, BLAS};
-use crate::{error::SrResult, vulkan_abstraction, CameraMatrices, MAX_TLAS_INSTANCES};
+use crate::vulkan_abstraction::{
+    ArenaBuffer, BLAS, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents,
+};
+use crate::{CameraMatrices, MAX_TLAS_INSTANCES, error::SrResult, vulkan_abstraction};
 use ash::vk;
 use log::info;
-use rand::{RngExt};
+use rand::RngExt;
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
-pub(crate) struct ResourceManager { //TODO ring buffer for cameras and instances_buffer
+pub(crate) struct ResourceManager {
+    //TODO ring buffer for cameras and instances_buffer
     // TODo ring buffering this would be needed for cpu stuff too if they were ever uses outside of gpu data build
     // Camera
     matrices_uniform_buffer: vulkan_abstraction::UniformBuffer<vulkan_abstraction::MatricesBufferContents>,
@@ -21,22 +24,19 @@ pub(crate) struct ResourceManager { //TODO ring buffer for cameras and instances
     // CPU-side metadata per entity (blas_index, transform — needed for TLAS rebuild & emissive indirection)
     entity_data: HashMap<u64, vulkan_abstraction::Entity>,
 
-
     // Acceleration structures
-    blases: HashMap<u64 ,vulkan_abstraction::BLAS>,
+    blases: HashMap<u64, vulkan_abstraction::BLAS>,
     tlas: vulkan_abstraction::TLAS,
 
     instances_buffer: vulkan_abstraction::StagingBuffer<vk::AccelerationStructureInstanceKHR>,
 
     /// instance index to entity this is needed to get O(1) reverse search on blas instance removal
-    instance_to_entity: HashMap<u64, u64 >,
-
+    instance_to_entity: HashMap<u64, u64>,
 
     // Emissive lighting — local-space triangles stored per-BLAS (arena ring buffer)
     blas_emissive_triangles: vulkan_abstraction::ArenaGpuBuffer<vulkan_abstraction::gltf::EmissiveTriangle>,
     // Dense indirection buffer for NEE sampling: (blas_tri_index, entity_arena_slot) pairs
     emissive_indirection_gpu: vulkan_abstraction::GpuOnlyBuffer,
-
 
     // Textures
     textures: Vec<(vk::Sampler, vk::ImageView)>,
@@ -61,7 +61,7 @@ pub(crate) struct ResourceManager { //TODO ring buffer for cameras and instances
     default_sampler: vulkan_abstraction::Sampler,
 
     //these are action to be done at the start or end of frame together with queued free slots for arena buffers
-    buffer_copies_queued : Vec<(vk::Buffer,vk::Buffer, vk::BufferCopy)>,
+    buffer_copies_queued: Vec<(vk::Buffer, vk::Buffer, vk::BufferCopy)>,
 
     core: Rc<vulkan_abstraction::Core>,
 }
@@ -90,8 +90,7 @@ impl ResourceManager {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "Entity transforms GPU buffer",
         )?;
-        
-        
+
         let mut instances_buffer = vulkan_abstraction::StagingBuffer::new(
             Rc::clone(&core),
             MAX_TLAS_INSTANCES as vk::DeviceSize,
@@ -157,7 +156,7 @@ impl ResourceManager {
             transforms,
             entity_data: HashMap::new(),
 
-            blases:Default::default(),
+            blases: Default::default(),
             tlas,
             instances_buffer,
 
@@ -191,19 +190,14 @@ impl ResourceManager {
         })
     }
 
-
     pub fn empty_out(self) -> SrResult<Self> {
         Self::new_empty(self.core)
     }
 
-
     pub fn start_of_frame(&mut self) -> SrResult<()> {
-        let frame =
-        self.entities.process_pending_frees();
+        let frame = self.entities.process_pending_frees();
         self.blas_emissive_triangles.process_pending_frees();
         self.transforms.process_pending_frees();
-
-
 
         if self.buffer_copies_queued.is_empty() {
             return Ok(());
@@ -211,13 +205,11 @@ impl ResourceManager {
 
         let copies = std::mem::take(&mut self.buffer_copies_queued);
 
-
         let mut seen: HashMap<(vk::Buffer, vk::DeviceSize, vk::DeviceSize), usize> = HashMap::new();
         for (i, (_, dst, region)) in copies.iter().enumerate() {
             seen.insert((*dst, region.dst_offset, region.size), i);
         }
         let copies: Vec<_> = seen.values().map(|&i| copies[i]).collect();
-
 
         let device = self.core.device().inner();
         let graphics_queue = self.core.graphics_queue();
@@ -240,10 +232,8 @@ impl ResourceManager {
                     vk::BufferMemoryBarrier2::default()
                         .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
                         .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                        .dst_stage_mask(
-                            vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags2::COMPUTE_SHADER,
-                        )
-                        .dst_access_mask(vk::AccessFlags2::SHADER_READ )
+                        .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags2::COMPUTE_SHADER)
+                        .dst_access_mask(vk::AccessFlags2::SHADER_READ)
                         .buffer(buf)
                         .offset(0)
                         .size(vk::WHOLE_SIZE)
@@ -281,9 +271,9 @@ impl ResourceManager {
         // matrix correctly without any per-shader `transpose()` call.
         let mem = self.matrices_uniform_buffer.map_mut()?;
         mem[0] = MatricesBufferContents {
-            view_inverse:   view_inverse.transpose(),
-            proj_inverse:   proj_inverse.transpose(),
-            view_proj:      view_proj.transpose(),
+            view_inverse: view_inverse.transpose(),
+            proj_inverse: proj_inverse.transpose(),
+            view_proj: view_proj.transpose(),
             prev_view_proj: prev_view_proj.transpose(),
         };
         Ok(())
@@ -292,10 +282,7 @@ impl ResourceManager {
     // ─── Entity management ───────────────────────────────────────────────────
 
     /// Build the GPU data for an entity from its BLAS, material, and transform.
-    fn build_entity_gpu_data(
-        blas: &vulkan_abstraction::BLAS,
-        material: &vulkan_abstraction::gltf::Material,
-    ) -> EntityGpuData {
+    fn build_entity_gpu_data(blas: &vulkan_abstraction::BLAS, material: &vulkan_abstraction::gltf::Material) -> EntityGpuData {
         EntityGpuData {
             vertex_buffer: blas.vertex_buffer().get_device_address(),
             index_buffer: blas.index_buffer().get_device_address(),
@@ -371,7 +358,11 @@ impl ResourceManager {
 
         for tri in triangles {
             let (_slot, copy_region) = self.blas_emissive_triangles.allocate_and_update(tri)?;
-            self.copy_commands_queue(self.blas_emissive_triangles.inner_staging(), self.blas_emissive_triangles.inner(), copy_region);
+            self.copy_commands_queue(
+                self.blas_emissive_triangles.inner_staging(),
+                self.blas_emissive_triangles.inner(),
+                copy_region,
+            );
         }
 
         Ok(())
@@ -450,11 +441,13 @@ impl ResourceManager {
     }
 
     pub fn rebuild_tlas(&mut self) -> SrResult<()> {
-        self.tlas.rebuild_from_entities(&self.entity_data, &self.blases, &mut self.instances_buffer)
+        self.tlas
+            .rebuild_from_entities(&self.entity_data, &self.blases, &mut self.instances_buffer)
     }
 
     pub fn update_tlas(&mut self) -> SrResult<()> {
-        self.tlas.update_from_entities(&self.entity_data, &self.blases, &mut self.instances_buffer)
+        self.tlas
+            .update_from_entities(&self.entity_data, &self.blases, &mut self.instances_buffer)
     }
 
     // ─── Textures ───────────────────────────────────────────────────────────
@@ -462,8 +455,6 @@ impl ResourceManager {
     pub fn default_sampler(&self) -> &vulkan_abstraction::Sampler {
         &self.default_sampler
     }
-
-
 
     pub fn set_textures(
         &mut self,
@@ -534,7 +525,11 @@ impl ResourceManager {
 
     // ─── Scene loading ───────────────────────────────────────────────────────
 
-    pub fn load_scene(&mut self, scene: &crate::Scene, scene_data: crate::SceneData) -> SrResult<Vec<vulkan_abstraction::EntityId>> {
+    pub fn load_scene(
+        &mut self,
+        scene: &crate::Scene,
+        scene_data: crate::SceneData,
+    ) -> SrResult<Vec<vulkan_abstraction::EntityId>> {
         let mut blases = vec![];
         let (blas_instances, blas_indices, materials, textures, samplers, images, emissive_triangles) =
             scene.load_into_gpu(&self.core, &mut blases, scene_data)?;
@@ -582,7 +577,11 @@ impl ResourceManager {
 
     /// Spawn a new instance that shares the same BLAS and material as `src` but has a different
     /// transform. The caller must rebuild the TLAS afterwards.
-    pub fn clone_entity(&mut self, src: vulkan_abstraction::EntityId, transform: vk::TransformMatrixKHR) -> SrResult<vulkan_abstraction::EntityId> {
+    pub fn clone_entity(
+        &mut self,
+        src: vulkan_abstraction::EntityId,
+        transform: vk::TransformMatrixKHR,
+    ) -> SrResult<vulkan_abstraction::EntityId> {
         let (blas_index, material) = self
             .entity_data
             .get(&src.0)

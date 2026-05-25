@@ -1,4 +1,3 @@
-
 /// Represents a single light candidate reservoir for Spatiotemporal Reservoir Resampling (ReSTIR).
 /// 48 bytes, packed to match std430: vec3 light_pos followed by scalar w_sum packs into 16 bytes
 /// without internal padding; same for light_normal/M.

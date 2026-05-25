@@ -6,9 +6,9 @@
 //!
 //! Slots are allocated lazily by resources on first use and returned on Drop.
 
+pub mod error;
 pub mod heap;
 pub mod slot;
-pub mod error;
 
 pub use heap::*;
 pub use slot::*;

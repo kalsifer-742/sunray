@@ -2,11 +2,11 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ash::vk;
-use log::info;
 use crate::vulkan_abstraction::Buffer;
 use crate::vulkan_abstraction::descriptor_heap::DescriptorSlot;
 use crate::{error::*, vulkan_abstraction};
+use ash::vk;
+use log::info;
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
@@ -39,7 +39,10 @@ impl TLAS {
             false,
         )?;
 
-        Ok(Self { tlas, slot: Cell::new(None) })
+        Ok(Self {
+            tlas,
+            slot: Cell::new(None),
+        })
     }
     /// "the application must not use an update operation to do any of the following:
     /// - Change primitives or instances from active to inactive, or vice versa
@@ -91,13 +94,14 @@ impl TLAS {
     }
 
     #[allow(unused)]
-    pub fn rebuild_from_entities( //TODO this lacks the actual syncronization
+    pub fn rebuild_from_entities(
+        //TODO this lacks the actual syncronization
         &mut self,
         entities: &HashMap<u64, vulkan_abstraction::Entity>,
-        blases : & HashMap<u64, vulkan_abstraction::BLAS>,
+        blases: &HashMap<u64, vulkan_abstraction::BLAS>,
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<()> {
-        Self::insert_in_instances_buffer_from_entity(Rc::clone(self.tlas.core()), entities ,blases, instances_buffer)?;
+        Self::insert_in_instances_buffer_from_entity(Rc::clone(self.tlas.core()), entities, blases, instances_buffer)?;
 
         let geometry = Self::make_geometry(instances_buffer);
 
@@ -108,12 +112,11 @@ impl TLAS {
         Ok(())
     }
 
-
-
-    pub fn new_from_entities( //TODO the instance buffer length and actual use since it is longer than needed 
+    pub fn new_from_entities(
+        //TODO the instance buffer length and actual use since it is longer than needed
         core: Rc<vulkan_abstraction::Core>,
         entities: &HashMap<u64, vulkan_abstraction::Entity>,
-        blases : & HashMap<u64, vulkan_abstraction::BLAS>,
+        blases: &HashMap<u64, vulkan_abstraction::BLAS>,
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<Self> {
         Self::insert_in_instances_buffer_from_entity(Rc::clone(&core), entities, blases, instances_buffer)?;
@@ -131,20 +134,23 @@ impl TLAS {
             false,
         )?;
 
-        Ok(Self { tlas, slot: Cell::new(None) })
+        Ok(Self {
+            tlas,
+            slot: Cell::new(None),
+        })
     }
 
     #[allow(unused)]
     pub fn update_from_entities(
-        &mut self, 
+        &mut self,
         entities: &HashMap<u64, vulkan_abstraction::Entity>,
-        blases : & HashMap<u64, vulkan_abstraction::BLAS>,
+        blases: &HashMap<u64, vulkan_abstraction::BLAS>,
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<()> {
         if !self.tlas.allow_update {
             return SrResult::Err(SrError::new_custom("The structure is not updatable".to_string()));
         }
-        Self::insert_in_instances_buffer_from_entity(Rc::clone(self.tlas.core()), entities ,blases, instances_buffer)?;
+        Self::insert_in_instances_buffer_from_entity(Rc::clone(self.tlas.core()), entities, blases, instances_buffer)?;
 
         let geometry = Self::make_geometry(instances_buffer);
 
@@ -155,16 +161,15 @@ impl TLAS {
         Ok(())
     }
 
-
     fn insert_in_instances_buffer_from_entity(
         core: Rc<vulkan_abstraction::Core>,
         entities: &HashMap<u64, vulkan_abstraction::Entity>,
-        blases : & HashMap<u64, vulkan_abstraction::BLAS>,
+        blases: &HashMap<u64, vulkan_abstraction::BLAS>,
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<()> {
         let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = entities
             .iter()
-            .map(|(_id , entity)| {
+            .map(|(_id, entity)| {
                 vk::AccelerationStructureInstanceKHR {
                     transform: entity.transform,
                     instance_custom_index_and_mask: vk::Packed24_8::new(entity.blas_instance_index as u32, 0xFF), // mask = 0 (don't know what actually does, NV tutorial writes "Only be hit if rayMask & instance.mask != 0")
@@ -182,10 +187,8 @@ impl TLAS {
                         },
                     },
                 }
-
             })
             .collect();
-     
 
         let mapped_memory = instances_buffer.raw_mut().map_mut::<vk::AccelerationStructureInstanceKHR>()?;
 
@@ -201,9 +204,6 @@ impl TLAS {
 
         Ok(())
     }
-    
-    
-
 
     fn insert_in_instances_buffer<'a>(
         core: Rc<vulkan_abstraction::Core>,
@@ -230,7 +230,6 @@ impl TLAS {
                         },
                     },
                 }
-
             })
             .collect();
 
@@ -294,8 +293,7 @@ impl TLAS {
         unsafe {
             core.acceleration_structure_device()
                 .get_acceleration_structure_device_address(
-                    &vk::AccelerationStructureDeviceAddressInfoKHR::default()
-                        .acceleration_structure(self.tlas.inner()),
+                    &vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(self.tlas.inner()),
                 )
         }
     }
@@ -309,12 +307,12 @@ impl TLAS {
         let address = unsafe {
             core.acceleration_structure_device()
                 .get_acceleration_structure_device_address(
-                    &vk::AccelerationStructureDeviceAddressInfoKHR::default()
-                        .acceleration_structure(self.tlas.inner()),
+                    &vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(self.tlas.inner()),
                 )
         };
         let mut heap = core.descriptor_heap_mut();
-        let slot = heap.alloc_resource_slot(crate::vulkan_abstraction::descriptor_heap::ResourceDescriptorKind::AccelerationStructure);
+        let slot =
+            heap.alloc_resource_slot(crate::vulkan_abstraction::descriptor_heap::ResourceDescriptorKind::AccelerationStructure);
         heap.write_acceleration_structure(slot, address)
             .expect("descriptor heap write_acceleration_structure failed");
         self.slot.set(Some(slot));

@@ -1,10 +1,10 @@
 pub mod camera;
 pub mod error;
+pub mod render_graph;
 pub mod scene;
 pub mod shader_compiler;
 pub mod utils;
 pub mod vulkan_abstraction;
-pub mod render_graph;
 
 pub use camera::*;
 use error::*;
@@ -12,12 +12,15 @@ pub use scene::*;
 
 use std::{collections::HashMap, rc::Rc};
 
-use ash::vk;
-use log::info;
 use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
-use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, DescriptorHeap, PostProcessDescriptorSets, PostprocessPass, PostprocessPushConstant, Reservoir, ReservoirGI, TemporalPass};
+use crate::vulkan_abstraction::{
+    DenoiseDescriptorSetLayout, DenoisePass, DescriptorHeap, PostProcessDescriptorSets, PostprocessPass, PostprocessPushConstant,
+    Reservoir, ReservoirGI, TemporalPass,
+};
+use ash::vk;
+use log::info;
 
 pub const DENOISE_PASSES: u32 = 8;
 
@@ -162,7 +165,6 @@ impl Renderer {
             create_surface,
         )?;
 
-
         let core = Rc::new(core);
 
         let image_extent = utils::tuple_to_extent3d(image_extent);
@@ -179,9 +181,9 @@ impl Renderer {
         // Heap-mode RT pipelines built from the Slang-compiled SPIR-V. Both
         // pipelines share the same miss / closest-hit / any-hit stages — only
         // the ray-gen stage differs (RIS audition vs. final shading pass).
-        let ray_miss_spirv    = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss_slang.spirv"));
+        let ray_miss_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss_slang.spirv"));
         let closest_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/closest_hit_slang.spirv"));
-        let any_hit_spirv     = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit_slang.spirv"));
+        let any_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit_slang.spirv"));
 
         let ray_tracing_pipeline_ris = vulkan_abstraction::RayTracingPipeline::new_heap(
             Rc::clone(&core),
@@ -190,7 +192,6 @@ impl Renderer {
             closest_hit_spirv,
             any_hit_spirv,
         )?;
-       
 
         let shader_binding_table_ris = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline_ris)?;
 
@@ -216,10 +217,8 @@ impl Renderer {
         let shader_compiler = shader_compiler::ShaderCompiler::new(shaders_dir)?;
 
         let postprocess_spirv = shader_compiler.compile("postprocess", "main")?;
-        let postprocess_pipeline = vulkan_abstraction::ComputePipeline::<PostprocessPass>::new_heap(
-            Rc::clone(&core),
-            &postprocess_spirv,
-        )?;
+        let postprocess_pipeline =
+            vulkan_abstraction::ComputePipeline::<PostprocessPass>::new_heap(Rc::clone(&core), &postprocess_spirv)?;
 
         let image_dependant_data = HashMap::new();
 
@@ -260,7 +259,7 @@ impl Renderer {
 
         let reservoir_gi_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
             Rc::clone(&core),
-            num_pixels  as vk::DeviceSize,
+            num_pixels as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR GI Reservoir Buffer A",
         )?;
@@ -376,7 +375,7 @@ impl Renderer {
 
         let reservoir_gi_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
             self.core.clone(),
-            num_pixels  as vk::DeviceSize,
+            num_pixels as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "ReSTIR GI Reservoir Buffer A",
         )?;
@@ -690,7 +689,6 @@ impl Renderer {
         Ok(())
     }
 
-
     pub fn load_gltf(&mut self, path: &str) -> SrResult<Vec<vulkan_abstraction::EntityId>> {
         let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
         let (default_scene, scene_data) = gltf.create_default_scene()?;
@@ -734,11 +732,7 @@ impl Renderer {
     }
 
     /// Update an entity's world transform. Does NOT rebuild the TLAS — call `rebuild_tlas` afterwards.
-    pub fn set_entity_transform(
-        &mut self,
-        id: vulkan_abstraction::EntityId,
-        transform: nalgebra::Matrix4<f32>,
-    ) -> SrResult<()> {
+    pub fn set_entity_transform(&mut self, id: vulkan_abstraction::EntityId, transform: nalgebra::Matrix4<f32>) -> SrResult<()> {
         let vk_transform = na_mat4_to_vk_transform(transform);
         self.resource_manager.set_entity_transform(id, vk_transform)
     }
@@ -829,12 +823,7 @@ impl Renderer {
 
             device.begin_command_buffer(cmd_buf, &begin_info)?;
 
-            (*this_ptr).cmd_raytracing_render(
-                cmd_buf,
-                &*img_dependent_data_ptr,
-                result_image,
-                result_extent,
-            )?;
+            (*this_ptr).cmd_raytracing_render(cmd_buf, &*img_dependent_data_ptr, result_image, result_extent)?;
 
             let memory_barrier = vk::MemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
@@ -1051,19 +1040,19 @@ impl Renderer {
         use vulkan_abstraction::Buffer;
         let pack = |idx: u32| -> [u32; 2] { [idx, 0] };
         let push_constants = vulkan_abstraction::RaytracingHeapPushConstant {
-            tlas:                 self.resource_manager.tlas().device_address(),
-            raw_color:            pack(img_dependent_data.raytrace_result_image.storage_slot()),
-            depth_img:            pack(img_dependent_data.depth_image.storage_slot()),
-            normal_img:           pack(img_dependent_data.normal_image.storage_slot()),
-            diffuse_img:          pack(img_dependent_data.diffuse_image.storage_slot()),
-            motion_vec_img:       pack(img_dependent_data.motion_vector_image.storage_slot()),
-            matrices:             self.resource_manager.matrices_buffer_address(),
-            meshes_info:          pack(self.resource_manager.meshes_info_storage_slot()),
-            emissive_triangles:   pack(self.resource_manager.emissive_triangles_storage_slot()),
+            tlas: self.resource_manager.tlas().device_address(),
+            raw_color: pack(img_dependent_data.raytrace_result_image.storage_slot()),
+            depth_img: pack(img_dependent_data.depth_image.storage_slot()),
+            normal_img: pack(img_dependent_data.normal_image.storage_slot()),
+            diffuse_img: pack(img_dependent_data.diffuse_image.storage_slot()),
+            motion_vec_img: pack(img_dependent_data.motion_vector_image.storage_slot()),
+            matrices: self.resource_manager.matrices_buffer_address(),
+            meshes_info: pack(self.resource_manager.meshes_info_storage_slot()),
+            emissive_triangles: pack(self.resource_manager.emissive_triangles_storage_slot()),
             emissive_indirection: pack(self.resource_manager.emissive_indirection_storage_slot()),
-            entity_transforms:    pack(self.resource_manager.entity_transforms_storage_slot()),
-            blue_noise_tex:       pack(self.blue_noise_image.sampled_slot()),
-            blue_noise_sampler:   pack(self.blue_noise_sampler.slot()),
+            entity_transforms: pack(self.resource_manager.entity_transforms_storage_slot()),
+            blue_noise_tex: pack(self.blue_noise_image.sampled_slot()),
+            blue_noise_sampler: pack(self.blue_noise_sampler.slot()),
             reservoirs: [
                 self.reservoir_buffers[0].get_device_address(),
                 self.reservoir_buffers[1].get_device_address(),
@@ -1074,7 +1063,11 @@ impl Renderer {
             ],
             textures_lookup: pack(self.resource_manager.textures_lookup_slot()),
             frame_count: self.relative_frame_count,
-            use_srgb: if self.image_format == vk::Format::R8G8B8A8_SRGB { 1 } else { 0 },
+            use_srgb: if self.image_format == vk::Format::R8G8B8A8_SRGB {
+                1
+            } else {
+                0
+            },
         };
 
         self.relative_frame_count += 1;
@@ -1160,13 +1153,11 @@ impl Renderer {
                 self.ray_tracing_pipeline_ris.inner(),
             );
 
-            let push_info = vk::PushDataInfoEXT::default()
-                .offset(0)
-                .data(vk::HostAddressRangeConstEXT {
-                    address: &push_constants as *const _ as *const std::ffi::c_void,
-                    size: std::mem::size_of::<vulkan_abstraction::RaytracingHeapPushConstant>(),
-                    _marker: Default::default(),
-                });
+            let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
+                address: &push_constants as *const _ as *const std::ffi::c_void,
+                size: std::mem::size_of::<vulkan_abstraction::RaytracingHeapPushConstant>(),
+                _marker: Default::default(),
+            });
             self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 
             self.core.cmd_set_checkpoint(cmd_buf, c"rt_pass_ris::before_trace_rays");
@@ -1506,7 +1497,6 @@ impl Renderer {
             exposure: EXPOSURE,
         };
 
-
         let input_barrier = vk::ImageMemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
@@ -1551,14 +1541,11 @@ impl Renderer {
 
             // Heap-mode pipelines have no VkPipelineLayout, so push constants go through
             // vkCmdPushDataEXT — the descriptor-heap replacement for vkCmdPushConstants.
-            let push_info = vk::PushDataInfoEXT::default()
-                .offset(0)
-                .data(vk::HostAddressRangeConstEXT {
-                    address: &push_constants as *const _ as *const std::ffi::c_void,
-                    size: size_of::<PostprocessPushConstant>() ,
-                    _marker: Default::default(),
-                });
-
+            let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
+                address: &push_constants as *const _ as *const std::ffi::c_void,
+                size: size_of::<PostprocessPushConstant>(),
+                _marker: Default::default(),
+            });
 
             self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 

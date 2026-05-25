@@ -1,11 +1,14 @@
 use crate::error::{SrError, SrResult};
-use crate::render_graph::graph::{AnyRenderPass, Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource, ResourceRef, Setup, TransientResources};
+use crate::render_graph::error::GraphError;
+use crate::render_graph::graph::{
+    AnyRenderPass, Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource,
+    ResourceRef, Setup, TransientResources,
+};
 use ash::vk;
 use ash::vk::CommandBuffer;
 use derive_builder::Builder;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::render_graph::error::GraphError;
 
 pub enum BindingElement {
     //TODO maybe compile time check the value corresponds to the inserted one
@@ -57,7 +60,7 @@ pub struct PassCommonDataBuilder {
     pass_common_data: PassCommonData,
 }
 impl PassCommonDataBuilder {
-    pub fn new(rg: & mut RenderGraph<Setup>, name: impl Into<String>) -> Self {
+    pub fn new(rg: &mut RenderGraph<Setup>, name: impl Into<String>) -> Self {
         Self {
             pass_common_data: PassCommonData {
                 read: vec![],
@@ -78,7 +81,10 @@ impl PassCommonDataBuilder {
             });
             Ok(())
         } else {
-            Err( SrError::new(GraphError::IncorrectRenderAccessFlags.into() , format!( "asked to read with such access: {access_type:?}" ) ))
+            Err(SrError::new(
+                GraphError::IncorrectRenderAccessFlags.into(),
+                format!("asked to read with such access: {access_type:?}"),
+            ))
         }
     }
 
@@ -96,32 +102,31 @@ impl PassCommonDataBuilder {
             });
             Ok(())
         } else {
-            Err( SrError::new(GraphError::IncorrectRenderAccessFlags.into() , format!( "asked to write with such access: {access_type:?}" ) ))
+            Err(SrError::new(
+                GraphError::IncorrectRenderAccessFlags.into(),
+                format!("asked to write with such access: {access_type:?}"),
+            ))
         }
     }
-
 }
 
-
-impl Into<AnyRenderPass>  for RaytracingRenderPass {
+impl Into<AnyRenderPass> for RaytracingRenderPass {
     fn into(self) -> AnyRenderPass {
         AnyRenderPass::Rt(self)
     }
 }
 
-impl Into<AnyRenderPass>  for RasterRenderPass {
+impl Into<AnyRenderPass> for RasterRenderPass {
     fn into(self) -> AnyRenderPass {
         AnyRenderPass::Raster(self)
     }
 }
 
-impl Into<AnyRenderPass>  for ComputeRenderPass {
+impl Into<AnyRenderPass> for ComputeRenderPass {
     fn into(self) -> AnyRenderPass {
         AnyRenderPass::Compute(self)
     }
 }
-
-
 
 #[derive(Builder)]
 #[builder(pattern = "owned")]
@@ -134,7 +139,6 @@ pub(crate) struct RaytracingRenderPass {
     pub(super) miss: Vec<RayTracingShaderDesc>,
     pub(super) trace_extent: [u32; 3],
 }
-
 
 pub(crate) struct RasterRenderPass {
     pub(super) common: PassCommonData,
@@ -171,4 +175,4 @@ pub enum ShaderSource {
     Glsl(PathBuf),
 }
 
-pub(crate) type DynRenderFn =  dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
+pub(crate) type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones

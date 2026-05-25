@@ -40,13 +40,9 @@ impl ComputeTypeDef for PostprocessPass {
     type DescriptorsLayout = PostProcessDescriptorSetLayout;
 
     fn spirv_bytes() -> &'static [u8] {
-         include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/postprocess.spirv"))
+        include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/postprocess.spirv"))
     }
 }
-
-
-
-
 
 ///Push Constant for the denoiser pass.
 /// Frame count is self explicative.
@@ -111,8 +107,7 @@ impl<T: ComputeTypeDef> ComputePipeline<T> {
         // VK_EXT_descriptor_heap requires `layout = VK_NULL_HANDLE` when
         // `DESCRIPTOR_HEAP_BIT_EXT` is set; the push-constant interface lives in the
         // shader's SPIR-V interface block instead, and is fed via `vkCmdPushDataEXT`.
-        let mut flags2 = vk::PipelineCreateFlags2CreateInfo::default()
-            .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
+        let mut flags2 = vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 
         let pipeline_info = vk::ComputePipelineCreateInfo::default()
             .stage(shader_stage_create_info)

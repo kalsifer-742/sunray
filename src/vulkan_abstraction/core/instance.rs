@@ -3,8 +3,8 @@ use std::{
     ffi::{CStr, c_void},
 };
 
-use ash::{ext, vk};
 use ash::vk::TaggedStructure;
+use ash::{ext, vk};
 
 use crate::error::SrResult;
 use crate::vulkan_abstraction::diagnostics::{DiagnosticTool, DiagnosticsContext};

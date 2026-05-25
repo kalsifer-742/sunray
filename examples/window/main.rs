@@ -4,10 +4,11 @@ use std::io::Read;
 use std::rc::Rc;
 
 use ash::vk;
-use nalgebra as na;
-use std::time::Instant;
 use log::info;
+use nalgebra as na;
 use rand::random_range;
+use std::time::Instant;
+use sunray::vulkan_abstraction::EntityId;
 use sunray::{
     MAX_FRAMES_IN_FLIGHT,
     camera::Camera,
@@ -22,7 +23,6 @@ use winit::{
     raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle},
     window::{CursorGrabMode, Window},
 };
-use sunray::vulkan_abstraction::EntityId;
 
 mod surface;
 mod swapchain;
@@ -385,15 +385,12 @@ impl App {
 
     /// Exercises runtime add / move / remove of entities each frame.
     fn update_runtime_test(&mut self) -> SrResult<()> {
-
         let frame = self.frame_count;
 
         // if !self.scene_entities.is_empty() {
         //     let id = self.scene_entities.pop().unwrap().0;
         //     return self.res_mut().renderer.destroy_entity(EntityId(id));
         // }
-
-
 
         // Animate the first loaded entity: orbit around Y every frame.
         let src = self.scene_entities.first();
@@ -409,31 +406,29 @@ impl App {
             self.res_mut().renderer.rebuild_tlas()?;
         }
 
-
         // At frame 120 spawn a duplicate of the first entity offset to the side.
-        if frame % 120  == 1 {
+        if frame % 120 == 1 {
             let src = self.scene_entities[random_range(0..self.scene_entities.len())];
 
-                let offset = na::Translation3::new(4.0, 0.0, 0.0).to_homogeneous();
-                match self.res_mut().renderer.duplicate_entity(src, offset) {
-                    Ok(id) => {
-                        self.spawned_entity = Some(id);
-                        // duplicate_entity calls clear_image_dependent_data(), which drops the
-                        // CmdBuffers whose fences were returned by render_to_image. Those
-                        // VkFence handles are now destroyed; null them out so draw()'s
-                        // wait_fence() skips the stale handles next frame.
-                        for fence in self.res_mut().img_rendered_fences.iter_mut() {
-                            *fence = vk::Fence::null();
-                        }
-                        log::info!("[runtime test] spawned duplicate entity {:?}", id);
+            let offset = na::Translation3::new(4.0, 0.0, 0.0).to_homogeneous();
+            match self.res_mut().renderer.duplicate_entity(src, offset) {
+                Ok(id) => {
+                    self.spawned_entity = Some(id);
+                    // duplicate_entity calls clear_image_dependent_data(), which drops the
+                    // CmdBuffers whose fences were returned by render_to_image. Those
+                    // VkFence handles are now destroyed; null them out so draw()'s
+                    // wait_fence() skips the stale handles next frame.
+                    for fence in self.res_mut().img_rendered_fences.iter_mut() {
+                        *fence = vk::Fence::null();
                     }
-                    Err(e) => log::error!("[runtime test] duplicate_entity failed: {e}"),
+                    log::info!("[runtime test] spawned duplicate entity {:?}", id);
                 }
+                Err(e) => log::error!("[runtime test] duplicate_entity failed: {e}"),
+            }
         }
 
         // At frame 240 remove the spawned duplicate.
-        if  frame % 240  == 1 {
-
+        if frame % 240 == 1 {
             if let Some(id) = self.spawned_entity.take() {
                 match self.res_mut().renderer.destroy_entity(id) {
                     Ok(()) => {
@@ -444,7 +439,8 @@ impl App {
                         for fence in self.res_mut().img_rendered_fences.iter_mut() {
                             *fence = vk::Fence::null();
                         }
-                        log::info!("[runtime test] removed entity {:?}", id) },
+                        log::info!("[runtime test] removed entity {:?}", id)
+                    }
                     Err(e) => log::error!("[runtime test] destroy_entity failed: {e}"),
                 }
             }

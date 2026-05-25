@@ -16,8 +16,8 @@ pub struct Entity {
 
     /// GPU-ready material (kept CPU-side to reconstruct EntityGpuData on updates).
     pub material: Material,
-    
-    pub transform : vk::TransformMatrixKHR
+
+    pub transform: vk::TransformMatrixKHR,
 }
 
 /// Per-entity data uploaded to GPU and read by shaders.
@@ -30,5 +30,3 @@ pub(crate) struct EntityGpuData {
     pub(crate) index_buffer: vk::DeviceAddress,
     pub(crate) material: Material,
 }
-
-

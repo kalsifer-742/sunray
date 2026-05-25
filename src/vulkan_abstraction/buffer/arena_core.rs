@@ -70,9 +70,6 @@ macro_rules! impl_arena_ring_buffer {
 
 pub(crate) use impl_arena_ring_buffer;
 
-
-
-
 /// Shared core for arena buffers that use a ring-buffered staging buffer
 /// and a GPU-only destination buffer.
 ///
@@ -96,7 +93,6 @@ impl<T: Copy> ArenaRingCore<T> {
         usage: vk::BufferUsageFlags,
         name: &'static str,
     ) -> SrResult<Self> {
-        
         let staging = StagingBuffer::new(
             core.clone(),
             capacity * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize,

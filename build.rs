@@ -72,12 +72,15 @@ fn shader_debug_enabled() -> bool {
     // is a build-time step — runtime DiagnosticTool selection alone can't
     // change what's already baked into the SPIR-V.
     println!("cargo::rerun-if-env-changed=SUNRAY_SHADER_DEBUG");
-    matches!(std::env::var("SUNRAY_SHADER_DEBUG").as_deref(), Ok("1") | Ok("true") | Ok("TRUE"))
+    matches!(
+        std::env::var("SUNRAY_SHADER_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
 }
 
 fn compile_slang_shader(module_name: &str, entry_point: &str, out_file_name: &str) {
-    let global_session = slang::GlobalSession::new()
-        .expect("Failed to create Slang GlobalSession (is the Slang runtime DLL on PATH?)");
+    let global_session =
+        slang::GlobalSession::new().expect("Failed to create Slang GlobalSession (is the Slang runtime DLL on PATH?)");
 
     let descriptor_heap_cap = global_session.find_capability("spvDescriptorHeapEXT");
     if descriptor_heap_cap.is_unknown() {
@@ -115,8 +118,8 @@ fn compile_slang_shader(module_name: &str, entry_point: &str, out_file_name: &st
     let targets = [target_desc];
 
     let shaders_dir = input_file_prefix("shaders");
-    let search_path = CString::new(shaders_dir.clone())
-        .unwrap_or_else(|e| panic!("shaders dir '{shaders_dir}' contains nul byte: {e}"));
+    let search_path =
+        CString::new(shaders_dir.clone()).unwrap_or_else(|e| panic!("shaders dir '{shaders_dir}' contains nul byte: {e}"));
     let search_paths = [search_path.as_ptr()];
 
     let session_desc = slang::SessionDesc::default()
@@ -199,9 +202,9 @@ fn main() {
 
     // Raytracing pipeline (heap mode). One Slang module per stage; the entry
     // point matches the [shader("…")] attribute inside each file.
-    compile_slang_shader("ray_miss",    "ray_miss",    "ray_miss_slang.spirv");
-    compile_slang_shader("any_hit",     "any_hit",     "any_hit_slang.spirv");
+    compile_slang_shader("ray_miss", "ray_miss", "ray_miss_slang.spirv");
+    compile_slang_shader("any_hit", "any_hit", "any_hit_slang.spirv");
     compile_slang_shader("closest_hit", "closest_hit", "closest_hit_slang.spirv");
-    compile_slang_shader("ray_gen_ris",   "ray_gen_ris",   "ray_gen_ris_slang.spirv");
+    compile_slang_shader("ray_gen_ris", "ray_gen_ris", "ray_gen_ris_slang.spirv");
     compile_slang_shader("ray_gen_final", "ray_gen_final", "ray_gen_final_slang.spirv");
 }

@@ -20,9 +20,7 @@ pub struct ShaderCompiler {
 impl ShaderCompiler {
     pub fn new(shaders_dir: PathBuf) -> SrResult<Self> {
         let global_session = slang::GlobalSession::new().ok_or_else(|| {
-            SrError::new_custom(
-                "Failed to create Slang GlobalSession (is the Slang runtime DLL on PATH?)".into(),
-            )
+            SrError::new_custom("Failed to create Slang GlobalSession (is the Slang runtime DLL on PATH?)".into())
         })?;
 
         let descriptor_heap_cap = global_session.find_capability("spvDescriptorHeapEXT");
@@ -37,8 +35,8 @@ impl ShaderCompiler {
         let dir_str = shaders_dir
             .to_str()
             .ok_or_else(|| SrError::new_custom(format!("non-utf8 shaders dir: {shaders_dir:?}")))?;
-        let search_path = CString::new(dir_str)
-            .map_err(|e| SrError::new_custom(format!("shaders dir contains nul byte: {e}")))?;
+        let search_path =
+            CString::new(dir_str).map_err(|e| SrError::new_custom(format!("shaders dir contains nul byte: {e}")))?;
 
         Ok(Self {
             global_session,
@@ -51,7 +49,6 @@ impl ShaderCompiler {
     /// `module_name` is the file stem under the shaders dir (no `.slang`); the entry point is
     /// looked up by name on that module.
     pub fn compile(&self, module_name: &str, entry_point: &str) -> SrResult<Vec<u8>> {
-
         let session_options = slang::CompilerOptions::default()
             .optimization(slang::OptimizationLevel::High)
             .matrix_layout_row(true)
@@ -69,30 +66,22 @@ impl ShaderCompiler {
             .search_paths(&search_paths)
             .options(&session_options);
 
-        let session = self.global_session.create_session(&session_desc).ok_or_else(|| {
-            SrError::new_custom("Slang create_session returned null".into())
-        })?;
+        let session = self
+            .global_session
+            .create_session(&session_desc)
+            .ok_or_else(|| SrError::new_custom("Slang create_session returned null".into()))?;
 
-        let module = session.load_module(module_name).map_err(|e| {
-            SrError::new_custom(format!(
-                "Slang load_module(\"{module_name}\") failed: {e}"
-            ))
-        })?;
+        let module = session
+            .load_module(module_name)
+            .map_err(|e| SrError::new_custom(format!("Slang load_module(\"{module_name}\") failed: {e}")))?;
 
-        let entry = module.find_entry_point_by_name(entry_point).ok_or_else(|| {
-            SrError::new_custom(format!(
-                "entry point \"{entry_point}\" not found in module \"{module_name}\""
-            ))
-        })?;
+        let entry = module
+            .find_entry_point_by_name(entry_point)
+            .ok_or_else(|| SrError::new_custom(format!("entry point \"{entry_point}\" not found in module \"{module_name}\"")))?;
 
         let program = session
-            .create_composite_component_type(&[
-                module.downcast().clone(),
-                entry.downcast().clone(),
-            ])
-            .map_err(|e| {
-                SrError::new_custom(format!("Slang create_composite_component_type failed: {e}"))
-            })?;
+            .create_composite_component_type(&[module.downcast().clone(), entry.downcast().clone()])
+            .map_err(|e| SrError::new_custom(format!("Slang create_composite_component_type failed: {e}")))?;
 
         let linked = program
             .link()

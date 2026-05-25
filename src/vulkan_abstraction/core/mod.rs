@@ -14,7 +14,7 @@ use ash::{ext, khr, vk};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{Mutex, RawMutex};
 use std::cell::{Ref, RefCell, RefMut};
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::rc::Rc;
 
 #[rustfmt::skip]
@@ -45,7 +45,15 @@ pub struct Core { //TODO core is completely single thread
 
 impl Core {
     pub fn new(with_validation_layer: bool, with_gpuav: bool, image_format: vk::Format) -> SrResult<Self> {
-        Ok(Self::new_with_surface(with_validation_layer, with_gpuav, DiagnosticTool::None, image_format, &[], None)?.0)
+        Ok(Self::new_with_surface(
+            with_validation_layer,
+            with_gpuav,
+            DiagnosticTool::None,
+            image_format,
+            &[],
+            None,
+        )?
+        .0)
     }
 
     // It is necessary to pass a function to create the surface, because surface depends on instance,
@@ -61,8 +69,13 @@ impl Core {
     ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
         let entry = ash::Entry::linked();
 
-        let mut instance =
-            vulkan_abstraction::Instance::new(&entry, required_instance_extensions, with_validation_layer, with_gpuav, diagnostics)?;
+        let mut instance = vulkan_abstraction::Instance::new(
+            &entry,
+            required_instance_extensions,
+            with_validation_layer,
+            with_gpuav,
+            diagnostics,
+        )?;
 
         let surface_support = match create_surface.as_ref() {
             Some(f) => Some((
