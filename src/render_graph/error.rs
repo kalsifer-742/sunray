@@ -6,6 +6,8 @@ use std::fmt::{Display, Formatter};
 pub enum GraphError {
     IncorrectRenderAccessFlags,
     InvalidResourceRef,
+    SwapchainAlreadyImported,
+    MissingCoreForCompile,
 }
 
 impl Display for GraphError {

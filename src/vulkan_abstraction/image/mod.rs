@@ -7,10 +7,13 @@ use ash::vk;
 use std::cell::Cell;
 use std::rc::Rc;
 
+use std::sync::Arc;
+
 use crate::render_graph::graph::{AnyRenderResource, GraphResourceImportInfo, ImageDesc, Resource, RgImportable};
 use crate::vulkan_abstraction::Buffer;
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::{error::SrResult, utils, vulkan_abstraction};
+use vk_sync_fork as vk_sync;
 
 pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
@@ -33,18 +36,35 @@ impl Resource for Image {
     type Desc = ImageDesc;
 
     fn borrow_resource(res: &AnyRenderResource) -> &Self {
-        todo!()
+        match res {
+            AnyRenderResource::OwnedImage(img) => img,
+            AnyRenderResource::ImportedImage(arc) => arc.as_ref(),
+            _ => panic!("borrow_resource::<Image> called on non-image AnyRenderResource variant"),
+        }
     }
 }
 
-impl RgImportable<ImageDesc> for Image {
+impl RgImportable<ImageDesc> for Arc<Image> {
     fn import(&self) -> ImageDesc {
-        ImageDesc {}
+        ImageDesc {
+            extent: self.extent,
+            format: self.format,
+            tiling: vk::ImageTiling::OPTIMAL,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            // Imported images already exist; the desc is informational for the graph.
+            usage: vk::ImageUsageFlags::empty(),
+            name: "imported",
+        }
     }
 }
-impl Into<GraphResourceImportInfo> for Image {
+
+impl Into<GraphResourceImportInfo> for Arc<Image> {
     fn into(self) -> GraphResourceImportInfo {
-        todo!()
+        GraphResourceImportInfo::Image {
+            resource: self,
+            //TODO let the caller supply the initial access state instead of defaulting to Nothing
+            access_type: vk_sync::AccessType::Nothing,
+        }
     }
 }
 
@@ -79,6 +99,24 @@ impl Image {
 
         Ok(image)
     }
+    /// Construct an image from a render-graph descriptor. Equivalent to calling
+    /// `Image::new` with the desc's fields; kept as a separate entry point so the
+    /// graph can build images straight from a `&ImageDesc` without unpacking.
+    pub fn new_from_desc(
+        core: Rc<vulkan_abstraction::Core>,
+        desc: &crate::render_graph::graph::ImageDesc,
+    ) -> SrResult<Self> {
+        Self::new(
+            core,
+            desc.extent,
+            desc.format,
+            desc.tiling,
+            desc.location,
+            desc.usage,
+            desc.name,
+        )
+    }
+
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         extent: vk::Extent3D,

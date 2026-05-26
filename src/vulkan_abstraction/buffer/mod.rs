@@ -102,6 +102,21 @@ pub struct RawBuffer {
 }
 
 impl RawBuffer {
+    /// Construct a buffer from a render-graph descriptor.
+    pub fn new_from_desc(
+        core: Rc<vulkan_abstraction::Core>,
+        desc: &crate::render_graph::graph::BufferDesc,
+    ) -> SrResult<Self> {
+        Self::new_aligned(
+            core,
+            desc.byte_size,
+            desc.alignment,
+            desc.memory_location,
+            desc.usage,
+            desc.name,
+        )
+    }
+
     pub fn new_aligned(
         core: Rc<vulkan_abstraction::Core>,
         byte_size: vk::DeviceSize,
@@ -376,4 +391,38 @@ pub fn infer_read_masks_from_usage(usage: vk::BufferUsageFlags) -> (vk::Pipeline
     }
 
     (stage_mask, access_mask)
+}
+
+impl crate::render_graph::graph::Resource for RawBuffer {
+    type Desc = crate::render_graph::graph::BufferDesc;
+
+    fn borrow_resource(res: &crate::render_graph::graph::AnyRenderResource) -> &Self {
+        match res {
+            crate::render_graph::graph::AnyRenderResource::OwnedBuffer(buf) => buf,
+            crate::render_graph::graph::AnyRenderResource::ImportedBuffer(arc) => arc.as_ref(),
+            _ => panic!("borrow_resource::<RawBuffer> called on non-buffer AnyRenderResource variant"),
+        }
+    }
+}
+
+impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::BufferDesc> for std::sync::Arc<RawBuffer> {
+    fn import(&self) -> crate::render_graph::graph::BufferDesc {
+        crate::render_graph::graph::BufferDesc {
+            byte_size: self.byte_size,
+            alignment: 1,
+            memory_location: gpu_allocator::MemoryLocation::GpuOnly,
+            usage: self.usage,
+            name: "imported",
+        }
+    }
+}
+
+impl Into<crate::render_graph::graph::GraphResourceImportInfo> for std::sync::Arc<RawBuffer> {
+    fn into(self) -> crate::render_graph::graph::GraphResourceImportInfo {
+        crate::render_graph::graph::GraphResourceImportInfo::Buffer {
+            resource: self,
+            //TODO let the caller supply the initial access state instead of defaulting to Nothing
+            access_type: vk_sync_fork::AccessType::Nothing,
+        }
+    }
 }

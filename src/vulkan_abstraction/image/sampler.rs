@@ -33,6 +33,22 @@ pub struct Sampler {
 }
 
 impl Sampler {
+    /// Construct a sampler from a render-graph descriptor.
+    pub fn new_from_desc(
+        core: Rc<vulkan_abstraction::Core>,
+        desc: &crate::render_graph::graph::SamplerDesc,
+    ) -> SrResult<Self> {
+        Self::new(
+            core,
+            desc.min_filter,
+            desc.mag_filter,
+            desc.address_mode_u,
+            desc.address_mode_v,
+            desc.address_mode_w,
+            desc.mipmap_mode,
+        )
+    }
+
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         min_filter: vk::Filter,
@@ -118,5 +134,36 @@ impl Drop for Sampler {
         if legacy != vk::Sampler::null() {
             unsafe { self.core.device().inner().destroy_sampler(legacy, None) };
         }
+    }
+}
+
+impl crate::render_graph::graph::Resource for Sampler {
+    type Desc = crate::render_graph::graph::SamplerDesc;
+
+    fn borrow_resource(res: &crate::render_graph::graph::AnyRenderResource) -> &Self {
+        match res {
+            crate::render_graph::graph::AnyRenderResource::OwnedSampler(s) => s,
+            crate::render_graph::graph::AnyRenderResource::ImportedSampler(arc) => arc.as_ref(),
+            _ => panic!("borrow_resource::<Sampler> called on non-sampler AnyRenderResource variant"),
+        }
+    }
+}
+
+impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::SamplerDesc> for std::sync::Arc<Sampler> {
+    fn import(&self) -> crate::render_graph::graph::SamplerDesc {
+        crate::render_graph::graph::SamplerDesc {
+            min_filter: self.params.min_filter,
+            mag_filter: self.params.mag_filter,
+            address_mode_u: self.params.address_mode_u,
+            address_mode_v: self.params.address_mode_v,
+            address_mode_w: self.params.address_mode_w,
+            mipmap_mode: self.params.mipmap_mode,
+        }
+    }
+}
+
+impl Into<crate::render_graph::graph::GraphResourceImportInfo> for std::sync::Arc<Sampler> {
+    fn into(self) -> crate::render_graph::graph::GraphResourceImportInfo {
+        crate::render_graph::graph::GraphResourceImportInfo::Sampler { resource: self }
     }
 }
