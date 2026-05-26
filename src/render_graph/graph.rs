@@ -1,16 +1,10 @@
-use crate::error::{SrError, SrResult};
 use crate::render_graph::pass_builder::{ComputeRenderPass, DynRenderFn, RasterRenderPass, RaytracingRenderPass};
 use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer};
 use enum_as_inner::EnumAsInner;
 use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use ash::vk;
-use ash::vk::PipelineStageFlags;
-use gpu_allocator::d3d12::ResourceType;
-use shader_slang_sys::spReflectionType_GetRowCount;
 use vk_sync_fork as vk_sync;
-use crate::render_graph::error::GraphError;
 
 pub trait Resource {
     type Desc: ResourceDesc;
@@ -108,6 +102,7 @@ pub enum GraphResourceDesc {
 }
 #[derive(EnumAsInner)]
 pub enum GraphResourceInfo {
+    //TODO imported res with ownership taking option for internal aliasing later
     //this is description of what I need to allocate to satisfy the request pof the render pass
     Created(GraphResourceDesc),
     Imported(GraphResourceImportInfo),
@@ -135,6 +130,87 @@ pub enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
     Compute(ComputeRenderPass),
+}
+
+/// A single transition required before a destination pass can run, derived from
+/// a read/write hazard on `resource_id` against an earlier producer or reader.
+#[derive(Clone, Debug)]
+pub(crate) struct ResourceBarrier {
+    pub(crate) resource_id: u32,
+    pub(crate) prev_access: vk_sync::AccessType,
+    pub(crate) next_access: vk_sync::AccessType,
+}
+
+/// Edge weight on the pass dependency graph: all barriers that must be issued
+/// before the destination pass runs because of the source pass.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PassDependency {
+    pub(crate) barriers: Vec<ResourceBarrier>,
+}
+
+/// Per-resource lifetime + ordered list of (pass, access) touches. Lifetime is
+/// inclusive: the resource must be live from `first_pass` through `last_pass`.
+#[derive(Debug)]
+pub(crate) struct ResourceLifetimeUsage {
+    pub(crate) first_pass: usize,
+    pub(crate) last_pass: usize,
+    pub(crate) usages: Vec<(usize, PassResourceAccessType)>,
+}
+
+/// Hazard-tracking state for a single resource while scanning passes in order.
+#[derive(Debug, Default)]
+struct ResourceHazardState {
+    last_writer: Option<(usize, vk_sync::AccessType)>,
+    readers_since_write: Vec<(usize, vk_sync::AccessType)>,
+}
+
+/// A weakly-connected component of the dependency graph: a set of passes that
+/// transitively share resources, plus the resource ids those passes touch.
+/// Transient memory aliasing is computed independently per component.
+#[derive(Debug)]
+pub(crate) struct PassComponent {
+    pub(crate) passes: Vec<usize>,
+    pub(crate) resources: Vec<u32>,
+}
+
+fn record_usage(
+    usages: &mut BTreeMap<u32, ResourceLifetimeUsage>,
+    res_id: u32,
+    pass_id: usize,
+    access: PassResourceAccessType,
+) {
+    usages
+        .entry(res_id)
+        .and_modify(|u| {
+            u.last_pass = pass_id;
+            u.usages.push((pass_id, access));
+        })
+        .or_insert_with(|| ResourceLifetimeUsage {
+            first_pass: pass_id,
+            last_pass: pass_id,
+            usages: vec![(pass_id, access)],
+        });
+}
+
+fn add_dep_edge(
+    graph: &mut petgraph::graph::DiGraph<usize, PassDependency>,
+    nodes: &[petgraph::graph::NodeIndex],
+    src: usize,
+    dst: usize,
+    barrier: ResourceBarrier,
+) {
+    // A pass that reads-then-writes its own resource produces a self-edge; the hazard
+    // is already serialized by the pass itself, so skip it.
+    if src == dst {
+        return;
+    }
+    let s = nodes[src];
+    let d = nodes[dst];
+    if let Some(e) = graph.find_edge(s, d) {
+        graph.edge_weight_mut(e).expect("edge just found must have a weight").barriers.push(barrier);
+    } else {
+        graph.add_edge(s, d, PassDependency { barriers: vec![barrier] });
+    }
 }
 
 pub struct RenderGraph<State: RenderGraphState> {
@@ -212,58 +288,118 @@ impl RenderGraph<Setup> {
     }
 
     pub fn compile(mut self) -> RenderGraph<Built> {
+        //TODO mark the render pass goals as the result of the graph so anything unnecessary can be removed
         //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is the site where it will be published the paper https://dl.acm.org/profile/99661091135
         
-        let mut resources_usage: BTreeMap<u32,((usize,usize), Vec<(usize, ResourceRef)>)>= BTreeMap::new(); //the key is the id of the resource, the inclusive range  is the lifetime as of first pass id and last and the vec of u size the list of passes usage
+        //TODO respect PassResourceAccessSyncType (NeverSync / SkipSyncIfSameAccessType) when deciding whether to emit a barrier
 
+        let pass_count = self.passes.len();
 
-        for (pass_id, pass) in self.passes.iter_mut().enumerate() {
+        let mut resource_usages: BTreeMap<u32, ResourceLifetimeUsage> = BTreeMap::new();
+        let mut hazard_states: HashMap<u32, ResourceHazardState> = HashMap::new();
+
+        let mut dep_graph =
+            petgraph::graph::DiGraph::<usize, PassDependency>::with_capacity(pass_count, pass_count * 2);
+        let pass_nodes: Vec<petgraph::graph::NodeIndex> =
+            (0..pass_count).map(|i| dep_graph.add_node(i)).collect();
+
+        for (pass_id, pass) in self.passes.iter().enumerate() {
             let common = match pass {
-                AnyRenderPass::Rt(rt) => &mut rt.common,
-                AnyRenderPass::Raster(raster) => &mut raster.common,
-                AnyRenderPass::Compute(compute) => &mut compute.common,
+                AnyRenderPass::Rt(rt) => &rt.common,
+                AnyRenderPass::Raster(raster) => &raster.common,
+                AnyRenderPass::Compute(compute) => &compute.common,
             };
 
-            //the idea is to update all resource with same last user when applying a global barrier and only the specific resource when applying local ones like images
-            let resource_last_usage =  bimap::BiHashMap::<usize, usize>::new(); //first is the resource,second is the render pass
-            struct Barrier{//TODO this are the complete set of barriers between two render passes
-
-            }
-            //The transitions are the necessary barriers and I probably need to have the node be the render passes
-            let graph = petgraph::graph::Graph::<usize,Barrier >::new() ; //TODO size
-
-
-            for read in common.read.iter_mut() {
-                if let Some((lifetime , usages)) = resources_usage.get_mut(&read.raw.id) {
-                  lifetime.1 = pass_id;
-                    usages.push((pass_id , read.clone()));
+            for read in &common.read {
+                let res_id = read.raw.id;
+                record_usage(&mut resource_usages, res_id, pass_id, read.access);
+                let state = hazard_states.entry(res_id).or_default();
+                if let Some((w_pass, w_access)) = state.last_writer {
+                    add_dep_edge(
+                        &mut dep_graph,
+                        &pass_nodes,
+                        w_pass,
+                        pass_id,
+                        ResourceBarrier {
+                            resource_id: res_id,
+                            prev_access: w_access,
+                            next_access: read.access.access_type,
+                        },
+                    );
                 }
-                else {
-                    resources_usage.insert( read.raw.id ,  ((pass_id, pass_id), vec![(pass_id, read.clone() )] )  );
-                }
-            }
-
-            for write in common.write.iter_mut() {
-                if let Some((lifetime , usages)) = resources_usage.get_mut(&write.raw.id) {
-                    lifetime.1 = pass_id;
-                    usages.push((pass_id , write.clone()));
-                }
-                else {
-                    resources_usage.insert( write.raw.id ,  ((pass_id, pass_id), vec![(pass_id, write.clone() )] )  );
-                }
+                state.readers_since_write.push((pass_id, read.access.access_type));
             }
 
-
-
-
-
-
+            for write in &common.write {
+                let res_id = write.raw.id;
+                record_usage(&mut resource_usages, res_id, pass_id, write.access);
+                let state = hazard_states.entry(res_id).or_default();
+                if !state.readers_since_write.is_empty() {
+                    for (r_pass, r_access) in &state.readers_since_write {
+                        add_dep_edge(
+                            &mut dep_graph,
+                            &pass_nodes,
+                            *r_pass,
+                            pass_id,
+                            ResourceBarrier {
+                                resource_id: res_id,
+                                prev_access: *r_access,
+                                next_access: write.access.access_type,
+                            },
+                        );
+                    }
+                } else if let Some((w_pass, w_access)) = state.last_writer {
+                    add_dep_edge(
+                        &mut dep_graph,
+                        &pass_nodes,
+                        w_pass,
+                        pass_id,
+                        ResourceBarrier {
+                            resource_id: res_id,
+                            prev_access: w_access,
+                            next_access: write.access.access_type,
+                        },
+                    );
+                }
+                state.last_writer = Some((pass_id, write.access.access_type));
+                state.readers_since_write.clear();
+            }
         }
 
-        let mut actual_resources = self.transient_resources.populate(&self.virtual_resources);
+        // Weakly-connected components via union-find over dependency edges. Any resource
+        // shared by multiple passes already produced at least one hazard edge above, so
+        // passes that share a resource end up in the same component.
+        let mut uf = petgraph::unionfind::UnionFind::<usize>::new(pass_count);
+        for edge in dep_graph.edge_indices() {
+            let (a, b) = dep_graph.edge_endpoints(edge).expect("edge from iterator must exist");
+            uf.union(a.index(), b.index());
+        }
+        let labels = uf.into_labeling();
 
+        let mut components_by_root: HashMap<usize, PassComponent> = HashMap::new();
+        for (pass_id, root) in labels.iter().enumerate() {
+            components_by_root
+                .entry(*root)
+                .or_insert_with(|| PassComponent { passes: vec![], resources: vec![] })
+                .passes
+                .push(pass_id);
+        }
+        for (res_id, usage) in &resource_usages {
+            let root = labels[usage.first_pass];
+            components_by_root
+                .get_mut(&root)
+                .expect("pass component must exist for any resource that was touched")
+                .resources
+                .push(*res_id);
+        }
+        let components: Vec<PassComponent> = components_by_root.into_values().collect();
 
-        let mut graph = ;
+        self.transient_resources
+            .populate(&self.virtual_resources, &components, &resource_usages);
+
+        //TODO topological-order traversal of dep_graph, emit barriers per edge, invoke each pass's DynRenderFn
+        //TODO build the final BuiltRenderGraph (cmd buffer recording) and transition into RenderGraph<Built>
+        todo!("compile: command-buffer recording from dep_graph + components is not implemented yet")
     }
 
 }
@@ -285,17 +421,32 @@ pub struct TransientResources {
     //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
 }
 impl TransientResources {
-    pub fn populate(&mut self, virtual_resources: &[GraphResourceInfo]) {
+    /// Allocate (or import) backing storage for every virtual resource. `components`
+    /// groups passes that transitively share resources; aliasing decisions are made
+    /// per-component because resources in different components have disjoint pass
+    /// sets and can always reuse memory. `usages` carries the per-resource lifetime
+    /// the interval-graph aliaser needs.
+    pub(crate) fn populate(
+        &mut self,
+        virtual_resources: &[GraphResourceInfo],
+        components: &[PassComponent],
+        usages: &BTreeMap<u32, ResourceLifetimeUsage>,
+    ) {
+        //TODO per-component: build an interval graph over each component's transient
+        //     resources (using `usages[res_id].first_pass..=last_pass`) and assign
+        //     non-overlapping resources to the same physical allocation.
+        //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
+        let _ = (components, usages);
         for resource_info in virtual_resources {
             match resource_info {
-                GraphResourceInfo::Created(created) => {
-
+                GraphResourceInfo::Created(_created) => {
+                    //TODO actually allocate the image/buffer/AS once aliasing has assigned a slot
                 }
-                GraphResourceInfo::Imported(imported) => {}
+                GraphResourceInfo::Imported(_imported) => {
+                    //TODO register the imported handle into the matching external_* map
+                }
             }
         }
-
-
     }
 }
 
