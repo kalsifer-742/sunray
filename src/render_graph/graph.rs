@@ -39,7 +39,7 @@ pub enum AnyRenderResource {
     OwnedImage(Image),
     ImportedImage(Arc<Image>),
     OwnedBuffer(RawBuffer),
-    ImportedBuffer(Arc<dyn Buffer>),
+    ImportedBuffer(Arc<RawBuffer>),
     ImportedRayTracingAcceleration(Arc<AccelerationStructure>),
 }
 
@@ -414,11 +414,16 @@ pub(super) struct CompiledPass {
 pub struct TransientResources {
     external_images: HashMap<u32, Arc<Image>>,
     transient_images: HashMap<u32, Image>,
-    external_buffers: HashMap<u32, Arc<dyn Buffer>>,
+    external_buffers: HashMap<u32, Arc<RawBuffer>>,
     transient_buffers: HashMap<u32, Box<dyn Buffer>>,
     external_raytracing_ac: HashMap<u32, Arc<AccelerationStructure>>,
     transient_raytracing_ac: HashMap<u32, AccelerationStructure>,
-    //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
+    /// Maps each *transient* (Created) resource id to the alias slot id it shares with
+    /// other resources whose lifetimes do not overlap. Populated by `populate`; consumed
+    /// by the (still-TODO) per-slot physical allocation step.
+    resource_slots: HashMap<u32, u32>,
+    //TODO swapchain image: the import variant carries no Arc; resolve at frame-begin time
+    //     and stash the per-frame swapchain Image here.
 }
 impl TransientResources {
     /// Allocate (or import) backing storage for every virtual resource. `components`
@@ -432,19 +437,88 @@ impl TransientResources {
         components: &[PassComponent],
         usages: &BTreeMap<u32, ResourceLifetimeUsage>,
     ) {
-        //TODO per-component: build an interval graph over each component's transient
-        //     resources (using `usages[res_id].first_pass..=last_pass`) and assign
-        //     non-overlapping resources to the same physical allocation.
-        //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
-        let _ = (components, usages);
-        for resource_info in virtual_resources {
+        // Clear last frame's bindings so re-compiling is idempotent.
+        // TODO: once we have a real recycler we should reuse transient allocations across
+        // frames instead of dropping + reallocating every compile.
+        self.external_images.clear();
+        self.transient_images.clear();
+        self.external_buffers.clear();
+        self.transient_buffers.clear();
+        self.external_raytracing_ac.clear();
+        self.transient_raytracing_ac.clear();
+        self.resource_slots.clear();
+
+        // 1. Per-component greedy interval coloring -> alias slots.
+        // Within a component, sort transient resources by `first_pass` then for each one
+        // reuse any slot whose last active resource finished before this one starts.
+        // Slots are globally unique across components so callers can key allocations on
+        // them without remembering which component a slot came from.
+        // TODO: also gate reuse on resource-type / size / format compatibility once the
+        //       descriptor structs (currently empty placeholders) actually carry that info.
+        let mut next_slot: u32 = 0;
+        for component in components {
+            // (last_pass_in_slot, slot_id) for slots currently holding a still-live resource.
+            let mut active: Vec<(usize, u32)> = Vec::new();
+
+            let mut transients: Vec<u32> = component
+                .resources
+                .iter()
+                .copied()
+                .filter(|res_id| {
+                    matches!(
+                        virtual_resources.get(*res_id as usize),
+                        Some(GraphResourceInfo::Created(_))
+                    )
+                })
+                .collect();
+            transients.sort_by_key(|res_id| usages[res_id].first_pass);
+
+            for res_id in transients {
+                let lifetime = &usages[&res_id];
+                let reused = active
+                    .iter()
+                    .position(|(last_pass, _)| *last_pass < lifetime.first_pass);
+                let slot = if let Some(idx) = reused {
+                    let (_, slot) = active[idx];
+                    active[idx] = (lifetime.last_pass, slot);
+                    slot
+                } else {
+                    let slot = next_slot;
+                    next_slot += 1;
+                    active.push((lifetime.last_pass, slot));
+                    slot
+                };
+                self.resource_slots.insert(res_id, slot);
+            }
+        }
+
+        // 2. Wire imported handles into the matching external_* maps, keyed by resource
+        // id so later barrier emission and pass execution can look them up.
+        // Created resources are deferred (see TODO below) because the *Desc placeholders
+        // do not yet carry the format/extent/usage info needed to construct anything.
+        for (res_id, resource_info) in virtual_resources.iter().enumerate() {
+            let res_id = res_id as u32;
             match resource_info {
-                GraphResourceInfo::Created(_created) => {
-                    //TODO actually allocate the image/buffer/AS once aliasing has assigned a slot
+                GraphResourceInfo::Created(_desc) => {
+                    //TODO allocate the physical image / buffer / AS for `self.resource_slots[&res_id]`
+                    //     once ImageDesc / BufferDesc / RaytracingASDesc gain real fields.
+                    //     The slot id already tells us which resources can share memory.
                 }
-                GraphResourceInfo::Imported(_imported) => {
-                    //TODO register the imported handle into the matching external_* map
-                }
+                GraphResourceInfo::Imported(import) => match import {
+                    GraphResourceImportInfo::Image { resource, .. } => {
+                        self.external_images.insert(res_id, resource.clone());
+                    }
+                    GraphResourceImportInfo::Buffer { resource, .. } => {
+                        self.external_buffers.insert(res_id, resource.clone());
+                    }
+                    GraphResourceImportInfo::RayTracingAcceleration { resource, .. } => {
+                        self.external_raytracing_ac.insert(res_id, resource.clone());
+                    }
+                    GraphResourceImportInfo::SwapchainImage => {
+                        //TODO resolve the swapchain image at frame-begin time and insert
+                        //     into `external_images` keyed by `res_id`.
+                    }
+                },
             }
         }
     }

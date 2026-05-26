@@ -136,7 +136,8 @@
       "Bash(\"/c/VulkanSDK/1.4.350.0/Bin/spirv-dis.exe\" target/debug/build/sunray-1fd94b22c57bc0b3/out/ray_gen_final_slang.spirv)",
       "Bash(awk '{print $2}')",
       "Bash(xargs -r kill)",
-      "PowerShell(Add-Type -AssemblyName System.Drawing; $bmp = [System.Drawing.Bitmap]::FromFile\\(\"$PWD\\\\window_dim_debug.png\"\\); foreach \\($pt in @\\(@\\(5,35\\), @\\(10,35\\), @\\(20,35\\), @\\(20,50\\), @\\(20,55\\), @\\(5,55\\)\\)\\) { $p = $bmp.GetPixel\\($pt[0], $pt[1]\\); Write-Host \"\\($\\($pt[0]\\),$\\($pt[1]\\)\\): R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\" }; $bmp.Dispose\\(\\))"
+      "PowerShell(Add-Type -AssemblyName System.Drawing; $bmp = [System.Drawing.Bitmap]::FromFile\\(\"$PWD\\\\window_dim_debug.png\"\\); foreach \\($pt in @\\(@\\(5,35\\), @\\(10,35\\), @\\(20,35\\), @\\(20,50\\), @\\(20,55\\), @\\(5,55\\)\\)\\) { $p = $bmp.GetPixel\\($pt[0], $pt[1]\\); Write-Host \"\\($\\($pt[0]\\),$\\($pt[1]\\)\\): R=$\\($p.R\\) G=$\\($p.G\\) B=$\\($p.B\\)\" }; $bmp.Dispose\\(\\))",
+      "PowerShell($lines = Get-Content 'src/render_graph/graph.rs'; for \\($i=289; $i -lt 302; $i++\\) { $bytes = [System.Text.Encoding]::UTF8.GetBytes\\($lines[$i]\\); Write-Output \\(\"line {0} len={1}: {2}\" -f \\($i+1\\), $bytes.Length, \\([BitConverter]::ToString\\($bytes\\)\\)\\) })"
     ]
   }
 }
