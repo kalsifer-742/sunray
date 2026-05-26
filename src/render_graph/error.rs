@@ -5,6 +5,7 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug)]
 pub enum GraphError {
     IncorrectRenderAccessFlags,
+    InvalidResourceRef,
 }
 
 impl Display for GraphError {

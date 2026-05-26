@@ -10,13 +10,13 @@ use derive_builder::Builder;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub enum BindingElement {
+pub(crate) enum BindingElement {
     //TODO maybe compile time check the value corresponds to the inserted one
     RgResource {
         resource: RawResourceHandle,
     },
 
-    /// Buffer Device Address: Directly pass a 64-bit GPU pointer. TODO this is unsafe and suggested by gemini
+    /// Buffer Device Address: Directly pass a 64-bit GPU pointer. TODO this is unsafe and suggested by gemini, this is a bda basically
     /// Highly recommended for SSBOs in a modern bindless engine.
     DeviceAddress {
         resource: vk::DeviceMemory,
@@ -28,7 +28,7 @@ pub enum BindingIntent {
     ArrayElement { name: &'static str, array_index: u32 },
 }
 
-type DescriptorsLayout = HashMap<String, rspirv_reflect::DescriptorInfo>;
+type DescriptorsLayout = HashMap<String, rspirv_reflect::DescriptorInfo>; //TODO rspirv_reflect does not support descriptor_heap
 
 type DescriptorOps = HashMap<BindingIntent, BindingElement>;
 pub struct RayTracingShaderDesc {
@@ -72,6 +72,9 @@ impl PassCommonDataBuilder {
     }
     pub fn read<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
         if !access_type.is_write_access() {
+            
+            
+            
             self.pass_common_data.read.push(ResourceRef {
                 raw: resource.raw,
                 access: PassResourceAccessType {
@@ -176,3 +179,5 @@ pub enum ShaderSource {
 }
 
 pub(crate) type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
+
+

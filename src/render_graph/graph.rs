@@ -1,11 +1,16 @@
-use crate::error::SrResult;
+use crate::error::{SrError, SrResult};
 use crate::render_graph::pass_builder::{ComputeRenderPass, DynRenderFn, RasterRenderPass, RaytracingRenderPass};
 use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer};
 use enum_as_inner::EnumAsInner;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 use std::sync::Arc;
+use ash::vk;
+use ash::vk::PipelineStageFlags;
+use gpu_allocator::d3d12::ResourceType;
+use shader_slang_sys::spReflectionType_GetRowCount;
 use vk_sync_fork as vk_sync;
+use crate::render_graph::error::GraphError;
 
 pub trait Resource {
     type Desc: ResourceDesc;
@@ -19,7 +24,6 @@ pub trait ResourceDesc: Clone + std::fmt::Debug + Into<GraphResourceDesc> {
 pub(crate) struct RawResourceHandle {
     pub(crate) id: u32,
     pub(crate) version: u32,
-    pub(super) render_state_index: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -34,6 +38,8 @@ pub(crate) struct ResourceRef {
     pub(crate) raw: RawResourceHandle,
     pub(crate) access: PassResourceAccessType,
 }
+
+
 
 pub enum AnyRenderResource {
     OwnedImage(Image),
@@ -132,7 +138,6 @@ pub enum AnyRenderPass {
 }
 
 pub struct RenderGraph<State: RenderGraphState> {
-    state_index: u32,
     next_pass_id: u32,
     next_resource_id: u32,
     //TODO debug hooks and tools
@@ -145,7 +150,6 @@ pub struct RenderGraph<State: RenderGraphState> {
 impl RenderGraph<Setup> {
     pub fn new() -> Self {
         RenderGraph {
-            state_index: 0,
             next_pass_id: 0,
             next_resource_id: 0,
             passes: vec![],
@@ -174,7 +178,6 @@ impl RenderGraph<Setup> {
             raw: RawResourceHandle {
                 id: self.next_resource_id(),
                 version: 0,
-                render_state_index: self.state_index,
             },
             desc: TypeEquals::same(desc),
             marker: Default::default(),
@@ -198,7 +201,6 @@ impl RenderGraph<Setup> {
             raw: RawResourceHandle {
                 id: self.next_resource_id(),
                 version: 0,
-                render_state_index: self.state_index,
             },
             desc: TypeEquals::same(desc),
             marker: Default::default(),
@@ -211,23 +213,59 @@ impl RenderGraph<Setup> {
 
     pub fn compile(mut self) -> RenderGraph<Built> {
         //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is the site where it will be published the paper https://dl.acm.org/profile/99661091135
-        // let mut actual_resources = ResourceDeref
+        
+        let mut resources_usage: BTreeMap<u32,((usize,usize), Vec<(usize, ResourceRef)>)>= BTreeMap::new(); //the key is the id of the resource, the inclusive range  is the lifetime as of first pass id and last and the vec of u size the list of passes usage
 
-        for pass in self.passes.iter_mut() {
+
+        for (pass_id, pass) in self.passes.iter_mut().enumerate() {
             let common = match pass {
                 AnyRenderPass::Rt(rt) => &mut rt.common,
                 AnyRenderPass::Raster(raster) => &mut raster.common,
                 AnyRenderPass::Compute(compute) => &mut compute.common,
             };
 
-            // for read in common.read.iter_mut() {
-            //     read.access.
-            // }
+            //the idea is to update all resource with same last user when applying a global barrier and only the specific resource when applying local ones like images
+            let resource_last_usage =  bimap::BiHashMap::<usize, usize>::new(); //first is the resource,second is the render pass
+            struct Barrier{//TODO this are the complete set of barriers between two render passes
+
+            }
+            //The transitions are the necessary barriers and I probably need to have the node be the render passes
+            let graph = petgraph::graph::Graph::<usize,Barrier >::new() ; //TODO size
+
+
+            for read in common.read.iter_mut() {
+                if let Some((lifetime , usages)) = resources_usage.get_mut(&read.raw.id) {
+                  lifetime.1 = pass_id;
+                    usages.push((pass_id , read.clone()));
+                }
+                else {
+                    resources_usage.insert( read.raw.id ,  ((pass_id, pass_id), vec![(pass_id, read.clone() )] )  );
+                }
+            }
+
+            for write in common.write.iter_mut() {
+                if let Some((lifetime , usages)) = resources_usage.get_mut(&write.raw.id) {
+                    lifetime.1 = pass_id;
+                    usages.push((pass_id , write.clone()));
+                }
+                else {
+                    resources_usage.insert( write.raw.id ,  ((pass_id, pass_id), vec![(pass_id, write.clone() )] )  );
+                }
+            }
+
+
+
+
+
+
         }
 
-        todo!()
-        // let mut graph = ;
+        let mut actual_resources = self.transient_resources.populate(&self.virtual_resources);
+
+
+        let mut graph = ;
     }
+
 }
 
 pub(super) struct CompiledPass {
@@ -247,7 +285,18 @@ pub struct TransientResources {
     //TODO this struct needs to be emptied after the next frame creation so that resources can be reused
 }
 impl TransientResources {
-    pub fn populate(&mut self, virtual_resources: &[GraphResourceInfo]) {}
+    pub fn populate(&mut self, virtual_resources: &[GraphResourceInfo]) {
+        for resource_info in virtual_resources {
+            match resource_info {
+                GraphResourceInfo::Created(created) => {
+
+                }
+                GraphResourceInfo::Imported(imported) => {}
+            }
+        }
+
+
+    }
 }
 
 pub trait RgImportable<ResDesc: ResourceDesc> {

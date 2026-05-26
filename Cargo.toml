@@ -35,6 +35,8 @@ shader-slang-sys = "0.1.0"
 # device-diagnostics-config + checkpoint extensions, which alone already help
 # localize a faulting dispatch.
 aftermath-rs = { git = "https://github.com/MatteoBallardin/aftermath-rs.git", optional = true }
+petgraph = "0.8.3"
+bimap = "0.6.3"
 #na = "0.32.2"
 
 [features]
