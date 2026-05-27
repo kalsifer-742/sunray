@@ -98,10 +98,10 @@ impl Instance {
                 return vk::FALSE;
             }
             (vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0)
-            | (vk::DebugUtilsMessageSeverityFlagsEXT::INFO, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0) => {
-                if msg_id_name == "Loader Message" {
-                    return vk::FALSE;
-                }
+            | (vk::DebugUtilsMessageSeverityFlagsEXT::INFO, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0)
+                if msg_id_name == "Loader Message" =>
+            {
+                return vk::FALSE;
             }
             _ => {}
         }
@@ -139,7 +139,7 @@ impl Instance {
 
         let (enable_validation_layer, layer_names) = {
             let enable_validation_layer = if with_validation_layer {
-                if Self::check_validation_layer_support(&entry)? {
+                if Self::check_validation_layer_support(entry)? {
                     log::info!("Validation layer enabled");
                     true
                 } else {
@@ -162,7 +162,7 @@ impl Instance {
 
         let supported_debug_extensions = Self::filter_supported_exts(entry, None, &Self::DEBUG_EXTENSIONS)?;
         let enable_layer_settings = enable_validation_layer
-            && Self::filter_supported_exts(entry, Some(Self::VALIDATION_LAYER_NAME), &[ext::layer_settings::NAME])?.len() > 0;
+            && !Self::filter_supported_exts(entry, Some(Self::VALIDATION_LAYER_NAME), &[ext::layer_settings::NAME])?.is_empty();
         let enable_debug_utils = enable_validation_layer && supported_debug_extensions.contains(&ext::debug_utils::NAME);
 
         let instance_extensions = {
@@ -173,7 +173,7 @@ impl Instance {
                     .chain(supported_debug_extensions.iter().map(|arr| arr.as_ptr()))
                     .collect::<Vec<*const i8>>()
             } else {
-                instance_exts.iter().copied().collect::<Vec<_>>()
+                instance_exts.to_vec()
             }
         };
 
@@ -243,7 +243,7 @@ impl Instance {
         let instance = unsafe { entry.create_instance(&instance_create_info, None) }?;
 
         let (debug_utils_instance, debug_messenger) = if enable_debug_utils {
-            let debug_utils_instance = ext::debug_utils::Instance::load(&entry, &instance);
+            let debug_utils_instance = ext::debug_utils::Instance::load(entry, &instance);
             let debug_messenger = unsafe {
                 debug_utils_instance.create_debug_utils_messenger(debug_messenger_create_info.as_ref().unwrap(), None)
             }?;

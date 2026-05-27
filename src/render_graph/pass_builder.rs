@@ -72,9 +72,6 @@ impl PassCommonDataBuilder {
     }
     pub fn read<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
         if !access_type.is_write_access() {
-            
-            
-            
             self.pass_common_data.read.push(ResourceRef {
                 raw: resource.raw,
                 access: PassResourceAccessType {
@@ -113,21 +110,21 @@ impl PassCommonDataBuilder {
     }
 }
 
-impl Into<AnyRenderPass> for RaytracingRenderPass {
-    fn into(self) -> AnyRenderPass {
-        AnyRenderPass::Rt(self)
+impl From<RaytracingRenderPass> for AnyRenderPass {
+    fn from(val: RaytracingRenderPass) -> Self {
+        AnyRenderPass::Rt(val)
     }
 }
 
-impl Into<AnyRenderPass> for RasterRenderPass {
-    fn into(self) -> AnyRenderPass {
-        AnyRenderPass::Raster(self)
+impl From<RasterRenderPass> for AnyRenderPass {
+    fn from(val: RasterRenderPass) -> Self {
+        AnyRenderPass::Raster(val)
     }
 }
 
-impl Into<AnyRenderPass> for ComputeRenderPass {
-    fn into(self) -> AnyRenderPass {
-        AnyRenderPass::Compute(self)
+impl From<ComputeRenderPass> for AnyRenderPass {
+    fn from(val: ComputeRenderPass) -> Self {
+        AnyRenderPass::Compute(val)
     }
 }
 
@@ -179,5 +176,3 @@ pub enum ShaderSource {
 }
 
 pub(crate) type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
-
-

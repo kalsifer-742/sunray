@@ -1,5 +1,5 @@
 use crate::render_graph;
-use crate::vulkan_abstraction::{descriptor_heap, heap};
+use crate::vulkan_abstraction::descriptor_heap;
 use ash::vk;
 use std::{backtrace::BacktraceStatus, fmt::Display};
 

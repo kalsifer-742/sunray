@@ -47,7 +47,7 @@ impl AccelerationStructure {
         // and the final version which is used to really build the acceleration structure will be based on it,
         // with some additional args based on the allocations that were performed.
         let incomplete_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-            .geometries(&geometries)
+            .geometries(geometries)
             // PREFER_FAST_TRACE -> prioritize trace performance over build time
             .flags(build_type | allow_update_flag)
             // BUILD as opposed to UPDATE
@@ -135,7 +135,7 @@ impl AccelerationStructure {
             core.acceleration_structure_device().cmd_build_acceleration_structures(
                 build_command_buffer,
                 &[build_geometry_info],
-                &[Some(&build_range_infos[..])],
+                &[Some(build_range_infos)],
             );
 
             core.device().inner().end_command_buffer(build_command_buffer)?
@@ -197,7 +197,7 @@ impl AccelerationStructure {
         // and the final version which is used to really build the acceleration structure will be based on it,
         // with some additional args based on the allocations that were performed.
         let incomplete_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-            .geometries(&geometries)
+            .geometries(geometries)
             // PREFER_FAST_TRACE -> prioritize trace performance over build time
             .flags(
                 vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
@@ -257,7 +257,7 @@ impl AccelerationStructure {
             self.core.acceleration_structure_device().cmd_build_acceleration_structures(
                 build_command_buffer,
                 &[build_geometry_info],
-                &[Some(&build_range_infos[..])],
+                &[Some(build_range_infos)],
             );
 
             self.core.device().inner().end_command_buffer(build_command_buffer)?

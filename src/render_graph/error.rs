@@ -1,4 +1,4 @@
-use crate::error::{ErrorSource, SrError, SrResult};
+use crate::error::ErrorSource;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -18,8 +18,8 @@ impl Display for GraphError {
 
 impl Error for GraphError {}
 
-impl Into<ErrorSource> for GraphError {
-    fn into(self) -> ErrorSource {
-        ErrorSource::RenderGraph(self)
+impl From<GraphError> for ErrorSource {
+    fn from(val: GraphError) -> Self {
+        ErrorSource::RenderGraph(val)
     }
 }

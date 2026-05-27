@@ -37,8 +37,6 @@ pub(crate) struct ResourceRef {
     pub(crate) access: PassResourceAccessType,
 }
 
-
-
 pub enum AnyRenderResource {
     OwnedImage(Image),
     ImportedImage(Arc<Image>),
@@ -88,9 +86,9 @@ pub enum GraphResourceImportInfo {
     },
 }
 
-impl Into<GraphResourceInfo> for GraphResourceImportInfo {
-    fn into(self) -> GraphResourceInfo {
-        GraphResourceInfo::Imported(self)
+impl From<GraphResourceImportInfo> for GraphResourceInfo {
+    fn from(val: GraphResourceImportInfo) -> Self {
+        GraphResourceInfo::Imported(val)
     }
 }
 #[derive(Clone, Debug)]
@@ -103,9 +101,9 @@ pub struct ImageDesc {
     pub name: &'static str,
 }
 
-impl Into<GraphResourceDesc> for ImageDesc {
-    fn into(self) -> GraphResourceDesc {
-        GraphResourceDesc::Image(self)
+impl From<ImageDesc> for GraphResourceDesc {
+    fn from(val: ImageDesc) -> Self {
+        GraphResourceDesc::Image(val)
     }
 }
 
@@ -122,9 +120,9 @@ pub struct BufferDesc {
     pub name: &'static str,
 }
 
-impl Into<GraphResourceDesc> for BufferDesc {
-    fn into(self) -> GraphResourceDesc {
-        GraphResourceDesc::Buffer(self)
+impl From<BufferDesc> for GraphResourceDesc {
+    fn from(val: BufferDesc) -> Self {
+        GraphResourceDesc::Buffer(val)
     }
 }
 
@@ -142,9 +140,9 @@ pub struct SamplerDesc {
     pub mipmap_mode: vk::SamplerMipmapMode,
 }
 
-impl Into<GraphResourceDesc> for SamplerDesc {
-    fn into(self) -> GraphResourceDesc {
-        GraphResourceDesc::Sampler(self)
+impl From<SamplerDesc> for GraphResourceDesc {
+    fn from(val: SamplerDesc) -> Self {
+        GraphResourceDesc::Sampler(val)
     }
 }
 
@@ -155,9 +153,9 @@ impl ResourceDesc for SamplerDesc {
 #[derive(Clone, Debug)]
 pub struct RaytracingASDesc {}
 
-impl Into<GraphResourceDesc> for RaytracingASDesc {
-    fn into(self) -> GraphResourceDesc {
-        GraphResourceDesc::RaytracingAS(self)
+impl From<RaytracingASDesc> for GraphResourceDesc {
+    fn from(val: RaytracingASDesc) -> Self {
+        GraphResourceDesc::RaytracingAS(val)
     }
 }
 
@@ -240,12 +238,7 @@ pub(crate) struct PassComponent {
     pub(crate) resources: Vec<u32>,
 }
 
-fn record_usage(
-    usages: &mut BTreeMap<u32, ResourceLifetimeUsage>,
-    res_id: u32,
-    pass_id: usize,
-    access: PassResourceAccessType,
-) {
+fn record_usage(usages: &mut BTreeMap<u32, ResourceLifetimeUsage>, res_id: u32, pass_id: usize, access: PassResourceAccessType) {
     usages
         .entry(res_id)
         .and_modify(|u| {
@@ -274,7 +267,11 @@ fn add_dep_edge(
     let s = nodes[src];
     let d = nodes[dst];
     if let Some(e) = graph.find_edge(s, d) {
-        graph.edge_weight_mut(e).expect("edge just found must have a weight").barriers.push(barrier);
+        graph
+            .edge_weight_mut(e)
+            .expect("edge just found must have a weight")
+            .barriers
+            .push(barrier);
     } else {
         graph.add_edge(s, d, PassDependency { barriers: vec![barrier] });
     }
@@ -291,6 +288,12 @@ pub struct RenderGraph<State: RenderGraphState> {
     /// flag the present-target layout transition without scanning every resource.
     swapchain_resource_id: Option<u32>,
     state_data: State,
+}
+
+impl Default for RenderGraph<Setup> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RenderGraph<Setup> {
@@ -363,7 +366,8 @@ impl RenderGraph<Setup> {
     /// `GraphError::SwapchainAlreadyImported`. The returned handle can be used as
     /// any other image handle for reads/writes; compile will tag the final
     /// transition into `PRESENT_SRC_KHR` on this resource.
-    pub fn import_swapchain(&mut self, image: Arc<Image>) -> SrResult<Handle<Image>> { //TODO this approach doesn't work I'll change it later so that the swapchain can change without actually rebuild the graph
+    pub fn import_swapchain(&mut self, image: Arc<Image>) -> SrResult<Handle<Image>> {
+        //TODO this approach doesn't work I'll change it later so that the swapchain can change without actually rebuild the graph
         if self.swapchain_resource_id.is_some() {
             return Err(SrError::new(
                 GraphError::SwapchainAlreadyImported.into(),
@@ -401,10 +405,8 @@ impl RenderGraph<Setup> {
         let mut resource_usages: BTreeMap<u32, ResourceLifetimeUsage> = BTreeMap::new();
         let mut hazard_states: HashMap<u32, ResourceHazardState> = HashMap::new();
 
-        let mut dep_graph =
-            petgraph::graph::DiGraph::<usize, PassDependency>::with_capacity(pass_count, pass_count * 2);
-        let pass_nodes: Vec<petgraph::graph::NodeIndex> =
-            (0..pass_count).map(|i| dep_graph.add_node(i)).collect();
+        let mut dep_graph = petgraph::graph::DiGraph::<usize, PassDependency>::with_capacity(pass_count, pass_count * 2);
+        let pass_nodes: Vec<petgraph::graph::NodeIndex> = (0..pass_count).map(|i| dep_graph.add_node(i)).collect();
 
         for (pass_id, pass) in self.passes.iter().enumerate() {
             let common = match pass {
@@ -483,7 +485,10 @@ impl RenderGraph<Setup> {
         for (pass_id, root) in labels.iter().enumerate() {
             components_by_root
                 .entry(*root)
-                .or_insert_with(|| PassComponent { passes: vec![], resources: vec![] })
+                .or_insert_with(|| PassComponent {
+                    passes: vec![],
+                    resources: vec![],
+                })
                 .passes
                 .push(pass_id);
         }
@@ -504,7 +509,6 @@ impl RenderGraph<Setup> {
         //TODO build the final BuiltRenderGraph (cmd buffer recording) and transition into RenderGraph<Built>
         todo!("compile: command-buffer recording from dep_graph + components is not implemented yet")
     }
-
 }
 
 pub(super) struct CompiledPass {
@@ -640,8 +644,7 @@ impl TransientResources {
                     );
                 }
                 GraphResourceDesc::Buffer(buffer_desc) => {
-                    let (handle, reqs) =
-                        RawBuffer::create_unbound(&core, buffer_desc.byte_size, buffer_desc.usage)?;
+                    let (handle, reqs) = RawBuffer::create_unbound(&core, buffer_desc.byte_size, buffer_desc.usage)?;
                     pending.insert(
                         res_id,
                         PendingTransient::Buffer {
@@ -769,8 +772,7 @@ impl TransientResources {
             match p {
                 PendingTransient::Image { handle, reqs, desc } => {
                     unsafe { device.bind_image_memory(handle, alloc.memory(), alloc.offset()) }?;
-                    let image =
-                        Image::from_aliased(Rc::clone(&core), handle, desc.extent, desc.format, reqs.size)?;
+                    let image = Image::from_aliased(Rc::clone(&core), handle, desc.extent, desc.format, reqs.size)?;
                     // TODO: this descriptor pre-assignment exists for the legacy single-
                     //       slot-per-resource model; the heap rework will replace it.
                     if desc.usage.contains(vk::ImageUsageFlags::STORAGE) {
@@ -783,8 +785,7 @@ impl TransientResources {
                 }
                 PendingTransient::Buffer { handle, reqs: _, desc } => {
                     unsafe { device.bind_buffer_memory(handle, alloc.memory(), alloc.offset()) }?;
-                    let buffer =
-                        RawBuffer::from_aliased(Rc::clone(&core), handle, desc.byte_size, desc.usage)?;
+                    let buffer = RawBuffer::from_aliased(Rc::clone(&core), handle, desc.byte_size, desc.usage)?;
                     // TODO: same legacy-descriptor caveat as the image path above.
                     if desc.usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER) {
                         let _ = buffer.storage_slot();
@@ -847,9 +848,7 @@ impl TransientResources {
             let mut allocator = core.allocator_mut();
             for allocation in self.slot_allocations.drain(..) {
                 if let Err(e) = allocator.free(allocation) {
-                    log::error!(
-                        "Allocator::free returned {e} in TransientResources::free_internal_state"
-                    );
+                    log::error!("Allocator::free returned {e} in TransientResources::free_internal_state");
                 }
             }
         } else {

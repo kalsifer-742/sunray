@@ -16,11 +16,10 @@ use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
 use crate::vulkan_abstraction::{
-    DenoiseDescriptorSetLayout, DenoisePass, DescriptorHeap, PostProcessDescriptorSets, PostprocessPass, PostprocessPushConstant,
-    Reservoir, ReservoirGI, TemporalPass,
+    DenoiseDescriptorSetLayout, DenoisePass, PostProcessDescriptorSets, PostprocessPass, PostprocessPushConstant, Reservoir,
+    ReservoirGI, TemporalPass,
 };
 use ash::vk;
-use log::info;
 
 pub const DENOISE_PASSES: u32 = 8;
 
@@ -788,7 +787,7 @@ impl Renderer {
         let cmd_buf = img_dependent_data.raytracing_cmd_buf.inner();
         let result_image = img_dependent_data.raytrace_result_image.inner();
         let motion_vector_image = img_dependent_data.motion_vector_image.inner();
-        let postprocessed_image = img_dependent_data.postprocess_result_image.inner();
+        let _postprocessed_image = img_dependent_data.postprocess_result_image.inner();
         let result_extent = img_dependent_data.raytrace_result_image.extent();
 
         // Raw-pointer alias keeps the borrow-checker happy: the unsafe block
@@ -800,7 +799,7 @@ impl Renderer {
             as *const vulkan_abstraction::TemporalAccumulationDescriptorSets;
         let denoise_descriptor_sets_ptr =
             &img_dependent_data.denoise_descriptor_sets as *const vulkan_abstraction::DenoiseDescriptorSets;
-        let postprocess_descriptor_sets_ptr =
+        let _postprocess_descriptor_sets_ptr =
             &img_dependent_data.postprocess_descriptor_sets as *const vulkan_abstraction::PostProcessDescriptorSets;
 
         unsafe {
@@ -814,7 +813,7 @@ impl Renderer {
             // Se la TLAS viene aggiornata in questo cmd buffer, aggiungi anche ACCELERATION_STRUCTURE_BUILD_KHR
             let wait_stages = wait_semaphores
                 .iter()
-                .map(|semaphore| {
+                .map(|_semaphore| {
                     vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
                 })
                 .collect::<Vec<_>>();
@@ -985,8 +984,8 @@ impl Renderer {
             // Again, use (*this_ptr) because img_dependent_data is still alive here
             (*this_ptr).core.graphics_queue().submit_async(
                 img_dependent_data.blit_cmd_buf.inner(),
-                &wait_sems,
-                &wait_dst_stages,
+                wait_sems,
+                wait_dst_stages,
                 &[],
                 signal_fence,
             )?;
@@ -1016,7 +1015,7 @@ impl Renderer {
             vulkan_abstraction::wait_fence(self.core.device(), wait_fence)?;
         }
 
-        Ok(dst_image.get_raw_image_data_with_no_padding()?)
+        dst_image.get_raw_image_data_with_no_padding()
     }
 
     fn cmd_raytracing_render(
@@ -1340,8 +1339,8 @@ impl Renderer {
                 .values(&push_bytes);
             device.cmd_push_constants2(cmd_buf, &push_info);
 
-            let group_x = (width + 15) / 16;
-            let group_y = (height + 15) / 16;
+            let group_x = width.div_ceil(16);
+            let group_y = height.div_ceil(16);
             device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
         }
 
@@ -1470,8 +1469,8 @@ impl Renderer {
                     .values(&push_bytes);
                 device.cmd_push_constants2(cmd_buf, &push_info);
 
-                let group_x = (width + 15) / 16;
-                let group_y = (height + 15) / 16;
+                let group_x = width.div_ceil(16);
+                let group_y = height.div_ceil(16);
                 device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
             }
         }
@@ -1549,8 +1548,8 @@ impl Renderer {
 
             self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
 
-            let group_x = (width + 15) / 16;
-            let group_y = (height + 15) / 16;
+            let group_x = width.div_ceil(16);
+            let group_y = height.div_ceil(16);
             device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
 
             // Final barrier: Ensure post-process is done before the Blit/Transfer starts
@@ -1701,11 +1700,11 @@ impl Renderer {
 }
 
 // useful environment variables, set to 1 or 0
-const ENABLE_VALIDATION_LAYER_ENV_VAR: &'static str = "ENABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
-const ENABLE_GPUAV_ENV_VAR_NAME: &'static str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled, defaults to 0
-const ENABLE_NVIDIA_AFTERMATH_VAR_NAME: &'static str = "ENABLE_NVIDIA_AFTERMATH"; // does nothing unless validation layer is enabled, defaults to 0
+const ENABLE_VALIDATION_LAYER_ENV_VAR: &str = "ENABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
+const ENABLE_GPUAV_ENV_VAR_NAME: &str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled, defaults to 0
+const ENABLE_NVIDIA_AFTERMATH_VAR_NAME: &str = "ENABLE_NVIDIA_AFTERMATH"; // does nothing unless validation layer is enabled, defaults to 0
 
-const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &'static str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
+const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
 const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 
 impl Drop for Renderer {

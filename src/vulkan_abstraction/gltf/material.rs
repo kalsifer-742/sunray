@@ -1,5 +1,3 @@
-use gltf::json::extensions::material::EmissiveStrength;
-
 #[derive(Clone)]
 pub struct PbrMetallicRoughnessProperties {
     pub base_color_factor: [f32; 4],

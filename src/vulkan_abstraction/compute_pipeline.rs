@@ -1,6 +1,6 @@
 use crate::error::SrResult;
 use crate::vulkan_abstraction::TemporalAccumulationDescriptorSetLayout;
-use crate::vulkan_abstraction::{self, Core, DenoiseDescriptorSetLayout, PostProcessDescriptorSetLayout};
+use crate::vulkan_abstraction::{Core, DenoiseDescriptorSetLayout, PostProcessDescriptorSetLayout};
 use ash::vk;
 use ash::vk::TaggedStructure;
 use std::marker::PhantomData;

@@ -62,7 +62,7 @@ impl GpuOnlyBuffer {
     where
         T: Copy,
     {
-        if data.len() == 0 {
+        if data.is_empty() {
             return Ok(Self::new_null(core));
         }
 

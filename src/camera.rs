@@ -34,7 +34,7 @@ impl Camera {
         let up = &na::vector![0.0, 1.0, 0.0];
 
         //view-space: camera pov
-        let view = na::Isometry3::look_at_rh(&eye, &target, &up);
+        let view = na::Isometry3::look_at_rh(&eye, &target, up);
         //clip_space: normalised coordinates adding perspective
         let projection = na::Perspective3::new(
             extent.width as f32 / extent.height as f32,

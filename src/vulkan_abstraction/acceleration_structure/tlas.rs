@@ -6,7 +6,6 @@ use crate::vulkan_abstraction::Buffer;
 use crate::vulkan_abstraction::descriptor_heap::DescriptorSlot;
 use crate::{error::*, vulkan_abstraction};
 use ash::vk;
-use log::info;
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
@@ -168,8 +167,8 @@ impl TLAS {
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<()> {
         let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = entities
-            .iter()
-            .map(|(_id, entity)| {
+            .values()
+            .map(|entity| {
                 vk::AccelerationStructureInstanceKHR {
                     transform: entity.transform,
                     instance_custom_index_and_mask: vk::Packed24_8::new(entity.blas_instance_index as u32, 0xFF), // mask = 0 (don't know what actually does, NV tutorial writes "Only be hit if rayMask & instance.mask != 0")

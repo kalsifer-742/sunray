@@ -4,7 +4,6 @@ use crate::vulkan_abstraction::{GpuOnlyBuffer, HostAccessibleBuffer, RawBuffer, 
 use crate::{impl_buffer_trait, vulkan_abstraction};
 use ash::vk;
 use ash::vk::DeviceSize;
-use log::info;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
@@ -58,7 +57,7 @@ impl<T> StagingBuffer<T> {
     where
         T: Copy,
     {
-        if data.len() == 0 {
+        if data.is_empty() {
             return Ok(Self::new_null(core));
         }
 
@@ -79,7 +78,7 @@ impl<T> StagingBuffer<T> {
     where
         T: Copy,
     {
-        if data.len() == 0 {
+        if data.is_empty() {
             return Ok(Self::new_null(core));
         }
 

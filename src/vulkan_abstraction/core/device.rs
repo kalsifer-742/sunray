@@ -41,7 +41,7 @@ impl Device {
                 .into_iter()
                 //only allow devices which support all required extensions
                 .filter(|physical_device| {
-                    Self::check_device_extension_support(&instance, *physical_device, &device_extensions).unwrap_or(false)
+                    Self::check_device_extension_support(instance, *physical_device, device_extensions).unwrap_or(false)
                 })
                 //check for blit support
                 .filter(|physical_device| {
@@ -77,8 +77,8 @@ impl Device {
                     Some((
                         physical_device,
                         surface_support_details,
-                        Self::select_graphics_queue_family(&instance, physical_device)?,
-                        Self::select_dedicated_transfer_queue(&instance, physical_device),
+                        Self::select_graphics_queue_family(instance, physical_device)?,
+                        Self::select_dedicated_transfer_queue(instance, physical_device),
                     ))
                 })
                 // try to get a discrete or at least integrated gpu
@@ -176,7 +176,7 @@ impl Device {
             let mut diagnostics_config = diagnostics::device_diagnostics_p_next(diagnostics);
 
             let mut device_create_info = vk::DeviceCreateInfo::default()
-                .enabled_extension_names(&device_extensions)
+                .enabled_extension_names(device_extensions)
                 .push(&mut vk12_features)
                 .push(&mut vk13_features)
                 .push(&mut physical_device_rt_pipeline_features)

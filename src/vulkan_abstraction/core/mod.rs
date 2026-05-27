@@ -14,7 +14,7 @@ use ash::{ext, khr, vk};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{Mutex, RawMutex};
 use std::cell::{Ref, RefCell, RefMut};
-use std::ffi::{CStr, c_char};
+use std::ffi::CStr;
 use std::rc::Rc;
 
 #[rustfmt::skip]
@@ -97,7 +97,7 @@ impl Core {
         ]
         .map(CStr::as_ptr);
 
-        let mut device_extensions = raytracing_device_extensions.iter().copied().collect::<Vec<_>>();
+        let mut device_extensions = raytracing_device_extensions.to_vec();
 
         if surface_support.is_some() {
             device_extensions.push(khr::swapchain::NAME.as_ptr());
@@ -134,10 +134,10 @@ impl Core {
             allocation_sizes: Default::default(),
         })?;
 
-        let acceleration_structure_device = khr::acceleration_structure::Device::load(&instance.inner(), &device.inner());
-        let ray_tracing_pipeline_device = khr::ray_tracing_pipeline::Device::load(&instance.inner(), &device.inner());
-        let descriptor_heap_device = ext::descriptor_heap::Device::load(&instance.inner(), &device.inner());
-        let descriptor_heap_instance = ext::descriptor_heap::Instance::load(&entry, &instance.inner());
+        let acceleration_structure_device = khr::acceleration_structure::Device::load(instance.inner(), device.inner());
+        let ray_tracing_pipeline_device = khr::ray_tracing_pipeline::Device::load(instance.inner(), device.inner());
+        let descriptor_heap_device = ext::descriptor_heap::Device::load(instance.inner(), device.inner());
+        let descriptor_heap_instance = ext::descriptor_heap::Instance::load(&entry, instance.inner());
 
         let descriptor_heap = vulkan_abstraction::DescriptorHeap::new(
             device.inner(),

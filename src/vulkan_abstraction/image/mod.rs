@@ -63,10 +63,10 @@ impl RgImportable<ImageDesc> for Arc<Image> {
     }
 }
 
-impl Into<GraphResourceImportInfo> for Arc<Image> {
-    fn into(self) -> GraphResourceImportInfo {
+impl From<Arc<Image>> for GraphResourceImportInfo {
+    fn from(val: Arc<Image>) -> Self {
         GraphResourceImportInfo::Image {
-            resource: self,
+            resource: val,
             //TODO let the caller supply the initial access state instead of defaulting to Nothing
             access_type: vk_sync::AccessType::Nothing,
         }
@@ -107,10 +107,7 @@ impl Image {
     /// Construct an image from a render-graph descriptor. Equivalent to calling
     /// `Image::new` with the desc's fields; kept as a separate entry point so the
     /// graph can build images straight from a `&ImageDesc` without unpacking.
-    pub fn new_from_desc(
-        core: Rc<vulkan_abstraction::Core>,
-        desc: &crate::render_graph::graph::ImageDesc,
-    ) -> SrResult<Self> {
+    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &crate::render_graph::graph::ImageDesc) -> SrResult<Self> {
         Self::new(
             core,
             desc.extent,
@@ -457,7 +454,7 @@ impl Drop for Image {
         // Aliased images don't own their memory (it's held by a transient slot in
         // TransientResources); skip free in that case.
         if self.owns_memory {
-            let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+            let allocation = std::mem::take(&mut self.allocation);
             match self.core.allocator_mut().free(allocation) {
                 Ok(()) => {}
                 Err(e) => {

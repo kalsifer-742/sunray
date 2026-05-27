@@ -1,4 +1,4 @@
-use crate::error::{ErrorSource, SrError, SrResult};
+use crate::error::ErrorSource;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -15,8 +15,8 @@ impl Display for HeapError {
 
 impl Error for HeapError {}
 
-impl Into<ErrorSource> for HeapError {
-    fn into(self) -> ErrorSource {
-        ErrorSource::DescriptorHeap(self)
+impl From<HeapError> for ErrorSource {
+    fn from(val: HeapError) -> Self {
+        ErrorSource::DescriptorHeap(val)
     }
 }

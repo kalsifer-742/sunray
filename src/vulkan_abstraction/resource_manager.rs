@@ -6,7 +6,6 @@ use crate::vulkan_abstraction::{
 };
 use crate::{CameraMatrices, MAX_TLAS_INSTANCES, error::SrResult, vulkan_abstraction};
 use ash::vk;
-use log::info;
 use rand::RngExt;
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
@@ -111,8 +110,7 @@ impl ResourceManager {
                         0xffff00ffu32
                     }
                 })
-                .map(u32::to_be_bytes)
-                .flatten()
+                .flat_map(u32::to_be_bytes)
                 .collect::<Vec<u8>>();
 
             vulkan_abstraction::Image::new_from_data(
@@ -195,7 +193,7 @@ impl ResourceManager {
     }
 
     pub fn start_of_frame(&mut self) -> SrResult<()> {
-        let frame = self.entities.process_pending_frees();
+        self.entities.process_pending_frees();
         self.blas_emissive_triangles.process_pending_frees();
         self.transforms.process_pending_frees();
 

@@ -135,7 +135,7 @@ impl BLAS {
     }
 
     fn make_build_range_info(index_buffer: &IndexBuffer) -> AccelerationStructureBuildRangeInfoKHR {
-        let build_range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
+        vk::AccelerationStructureBuildRangeInfoKHR::default()
             // the value of first_vertex is added to index values before fetching verts
             .first_vertex(0u32)
             // the number of triangles to read (3 * the number of indices to read)
@@ -143,8 +143,7 @@ impl BLAS {
             // an offset (in bytes) into geometry.geometry_data.index_data from which to start reading
             .primitive_offset(0u32)
             // transform_offset is an offset (in bytes) into geometry.geometry_data.transform_data
-            .transform_offset(0);
-        build_range_info
+            .transform_offset(0)
     }
 
     #[allow(unused)]

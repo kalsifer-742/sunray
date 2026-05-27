@@ -16,15 +16,13 @@ pub use arena_keyed::*;
 pub use gpu_only_buffer::*;
 pub use index_buffer::*;
 pub use staging_buffer::*;
-use std::marker::PhantomData;
 pub use uniform_buffer::*;
 pub use vertex_buffer::*;
 
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::{error::*, vulkan_abstraction};
 use ash::vk;
-use ash::vk::{BufferUsageFlags, BufferUsageFlags2KHR, DeviceAddress, DeviceSize, Handle};
-use log::{error, info};
+use ash::vk::{BufferUsageFlags, Handle};
 use std::cell::Cell;
 use std::rc::Rc;
 //TODO revert capacity as vk::device length some methods signatures
@@ -40,13 +38,11 @@ pub fn get_memory_type_index(
 
     let mem_types = core.device().memory_properties().memory_types;
     let mut idx = -1;
-    for i in 0..(8 * size_of::<BitsType>()) {
+    for i in 0..BitsType::BITS as usize {
         let mem_type_is_supported = bits & (1 << i) != 0;
-        if mem_type_is_supported {
-            if mem_types[i].property_flags & mem_prop_flags == mem_prop_flags {
-                idx = i as isize;
-                break;
-            }
+        if mem_type_is_supported && mem_types[i].property_flags & mem_prop_flags == mem_prop_flags {
+            idx = i as isize;
+            break;
         }
     }
     if idx < 0 {
@@ -107,10 +103,7 @@ pub struct RawBuffer {
 
 impl RawBuffer {
     /// Construct a buffer from a render-graph descriptor.
-    pub fn new_from_desc(
-        core: Rc<vulkan_abstraction::Core>,
-        desc: &crate::render_graph::graph::BufferDesc,
-    ) -> SrResult<Self> {
+    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &crate::render_graph::graph::BufferDesc) -> SrResult<Self> {
         Self::new_aligned(
             core,
             desc.byte_size,
@@ -133,7 +126,7 @@ impl RawBuffer {
             return Ok(Self::new_null(core));
         }
 
-        let queue_family_indices = [
+        let _queue_family_indices = [
             core.graphics_queue().queue_family_index(),
             core.transfer_queue().queue_family_index(),
         ];
@@ -257,7 +250,7 @@ impl RawBuffer {
             let ret = unsafe { std::slice::from_raw_parts_mut(slice.as_ptr() as *mut V, slice.len() / std::mem::size_of::<V>()) };
             Ok(ret)
         } else {
-            Ok(&mut [])
+            Ok(&[])
         }
     }
 
@@ -292,8 +285,7 @@ impl Drop for RawBuffer {
             // Aliased buffers don't own their memory (held by a transient slot in
             // TransientResources); skip free in that case.
             if self.owns_memory {
-                let allocation =
-                    std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+                let allocation = std::mem::take(&mut self.allocation);
                 if let Err(e) = self.core.allocator_mut().free(allocation) {
                     log::error!("Allocator::free returned {e} in RawBuffer::drop");
                 }
@@ -467,10 +459,10 @@ impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::Buffer
     }
 }
 
-impl Into<crate::render_graph::graph::GraphResourceImportInfo> for std::sync::Arc<RawBuffer> {
-    fn into(self) -> crate::render_graph::graph::GraphResourceImportInfo {
+impl From<std::sync::Arc<RawBuffer>> for crate::render_graph::graph::GraphResourceImportInfo {
+    fn from(val: std::sync::Arc<RawBuffer>) -> Self {
         crate::render_graph::graph::GraphResourceImportInfo::Buffer {
-            resource: self,
+            resource: val,
             //TODO let the caller supply the initial access state instead of defaulting to Nothing
             access_type: vk_sync_fork::AccessType::Nothing,
         }

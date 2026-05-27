@@ -136,7 +136,7 @@ impl DenoiseDescriptorSets {
 
         // Ping-Pong specific infos
         let temp_0 = create_info(&temporal_results[0]);
-        let temp_1 = create_info(&temporal_results[1]);
+        let _temp_1 = create_info(&temporal_results[1]); //TODO why is this unused
         let denoise_0 = create_info(&denoise_ping_pong_images[0]);
         let denoise_1 = create_info(&denoise_ping_pong_images[1]);
 

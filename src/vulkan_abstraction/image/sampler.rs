@@ -34,10 +34,7 @@ pub struct Sampler {
 
 impl Sampler {
     /// Construct a sampler from a render-graph descriptor.
-    pub fn new_from_desc(
-        core: Rc<vulkan_abstraction::Core>,
-        desc: &crate::render_graph::graph::SamplerDesc,
-    ) -> SrResult<Self> {
+    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &crate::render_graph::graph::SamplerDesc) -> SrResult<Self> {
         Self::new(
             core,
             desc.min_filter,
@@ -162,8 +159,8 @@ impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::Sample
     }
 }
 
-impl Into<crate::render_graph::graph::GraphResourceImportInfo> for std::sync::Arc<Sampler> {
-    fn into(self) -> crate::render_graph::graph::GraphResourceImportInfo {
-        crate::render_graph::graph::GraphResourceImportInfo::Sampler { resource: self }
+impl From<std::sync::Arc<Sampler>> for crate::render_graph::graph::GraphResourceImportInfo {
+    fn from(val: std::sync::Arc<Sampler>) -> Self {
+        crate::render_graph::graph::GraphResourceImportInfo::Sampler { resource: val }
     }
 }

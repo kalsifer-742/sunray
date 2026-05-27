@@ -30,7 +30,6 @@ pub use image::*;
 pub use queue::*;
 pub(crate) use ray_tracing_pipeline::*;
 pub(crate) use resource_manager::*;
-pub use resources::entity::*;
 pub use resources::*;
 pub(crate) use shader_binding_table::*;
 pub use synchronization::*;

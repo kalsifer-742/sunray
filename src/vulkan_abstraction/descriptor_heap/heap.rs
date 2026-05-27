@@ -146,9 +146,9 @@ impl DescriptorHeap {
 
         // Shader index = byte_offset / descriptor_size + slot_in_section. The
         // base is constant per section so we cache it once.
-        debug_assert!(image_section_byte_offset % image_size == 0);
-        debug_assert!(texel_section_byte_offset % image_size == 0);
-        debug_assert!(buffer_section_byte_offset % buffer_size == 0);
+        debug_assert!(image_section_byte_offset.is_multiple_of(image_size));
+        debug_assert!(texel_section_byte_offset.is_multiple_of(image_size));
+        debug_assert!(buffer_section_byte_offset.is_multiple_of(buffer_size));
 
         let image_section_base_index = (image_section_byte_offset / image_size) as u32;
         let texel_section_base_index = (texel_section_byte_offset / image_size) as u32;
@@ -573,7 +573,7 @@ fn create_heap_buffer(
 
 ///aligns v up to the nearest multiple of a without floating point for faster calc with the use of integer rounding
 fn align_up(v: u64, a: u64) -> u64 {
-    (v + a - 1) / a * a
+    v.div_ceil(a) * a
 }
 
 fn lcm(a: u64, b: u64) -> u64 {
