@@ -99,6 +99,10 @@ pub struct RawBuffer {
     uniform_slot: Cell<Option<DescriptorSlot>>,
     /// Lazily-allocated heap slot for `STORAGE_BUFFER` descriptors.
     storage_slot: Cell<Option<DescriptorSlot>>,
+    /// True when this RawBuffer holds its own `Allocation`. False when memory is
+    /// owned elsewhere (e.g. by a transient alias slot in `TransientResources`);
+    /// `Drop` still destroys the `vk::Buffer` but skips `Allocator::free`.
+    owns_memory: bool,
 }
 
 impl RawBuffer {
@@ -166,6 +170,7 @@ impl RawBuffer {
             usage: buffer_usage_flags,
             uniform_slot: Cell::new(None),
             storage_slot: Cell::new(None),
+            owns_memory: true,
         })
     }
 
@@ -178,7 +183,47 @@ impl RawBuffer {
             usage: BufferUsageFlags::empty(),
             uniform_slot: Cell::new(None),
             storage_slot: Cell::new(None),
+            // Null buffer: the existing `Drop` early-returns on null anyway, but mark
+            // ownership consistent with `new_aligned`.
+            owns_memory: true,
         }
+    }
+
+    /// Create a bare `vk::Buffer` handle and report its memory requirements without
+    /// allocating or binding any memory. Counterpart to `Image::create_unbound`;
+    /// used by the render-graph transient allocator.
+    pub(crate) fn create_unbound(
+        core: &vulkan_abstraction::Core,
+        byte_size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+    ) -> SrResult<(vk::Buffer, vk::MemoryRequirements)> {
+        let buf_info = vk::BufferCreateInfo::default()
+            .size(byte_size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let buffer = unsafe { core.device().inner().create_buffer(&buf_info, None) }?;
+        let reqs = unsafe { core.device().inner().get_buffer_memory_requirements(buffer) };
+        Ok((buffer, reqs))
+    }
+
+    /// Wrap an already-bound `vk::Buffer` whose memory is owned elsewhere. `Drop`
+    /// will destroy the handle but NOT free the memory.
+    pub(crate) fn from_aliased(
+        core: Rc<vulkan_abstraction::Core>,
+        buffer: vk::Buffer,
+        byte_size: u64,
+        usage: vk::BufferUsageFlags,
+    ) -> SrResult<Self> {
+        Ok(Self {
+            core,
+            buffer,
+            allocation: gpu_allocator::vulkan::Allocation::default(),
+            byte_size,
+            usage,
+            uniform_slot: Cell::new(None),
+            storage_slot: Cell::new(None),
+            owns_memory: false,
+        })
     }
 
     /// Heap slot for `UNIFORM_BUFFER`. Lazily allocates on first call.
@@ -244,9 +289,14 @@ impl Drop for RawBuffer {
             unsafe {
                 device.destroy_buffer(self.buffer, None);
             }
-            let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
-            if let Err(e) = self.core.allocator_mut().free(allocation) {
-                log::error!("Allocator::free returned {e} in RawBuffer::drop");
+            // Aliased buffers don't own their memory (held by a transient slot in
+            // TransientResources); skip free in that case.
+            if self.owns_memory {
+                let allocation =
+                    std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+                if let Err(e) = self.core.allocator_mut().free(allocation) {
+                    log::error!("Allocator::free returned {e} in RawBuffer::drop");
+                }
             }
         }
     }

@@ -30,6 +30,11 @@ pub struct Image {
     storage_slot: Cell<Option<DescriptorSlot>>,
     /// Lazily-allocated heap slot for SAMPLED_IMAGE descriptors.
     sampled_slot: Cell<Option<DescriptorSlot>>,
+    /// True when this Image holds its own `Allocation` (i.e. it was created via
+    /// `Image::new`). False when memory is owned elsewhere (e.g. by a transient
+    /// alias slot in `TransientResources`); in that case `Drop` still destroys
+    /// the `vk::Image` + view but skips `Allocator::free`.
+    owns_memory: bool,
 }
 
 impl Resource for Image {
@@ -195,6 +200,76 @@ impl Image {
             view_type,
             storage_slot: Cell::new(None),
             sampled_slot: Cell::new(None),
+            owns_memory: true,
+        })
+    }
+
+    /// Create a bare `vk::Image` handle and report its memory requirements without
+    /// allocating or binding any memory. Used by the render-graph transient
+    /// allocator: it queries requirements across every member of an alias slot,
+    /// allocates a single memory range that satisfies all of them, then binds each
+    /// returned handle via `from_aliased`.
+    pub(crate) fn create_unbound(
+        core: &vulkan_abstraction::Core,
+        extent: vk::Extent3D,
+        format: vk::Format,
+        tiling: vk::ImageTiling,
+        usage: vk::ImageUsageFlags,
+    ) -> SrResult<(vk::Image, vk::MemoryRequirements)> {
+        let info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(extent)
+            .flags(vk::ImageCreateFlags::empty())
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(tiling)
+            .usage(usage)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        let image = unsafe { core.device().inner().create_image(&info, None) }?;
+        let reqs = unsafe { core.device().inner().get_image_memory_requirements(image) };
+        Ok((image, reqs))
+    }
+
+    /// Wrap an already-bound `vk::Image` (memory owned elsewhere). Creates the image
+    /// view; `Drop` will destroy the handle + view but NOT free the memory. Used
+    /// for transient images that share a slot allocation in `TransientResources`.
+    pub(crate) fn from_aliased(
+        core: Rc<vulkan_abstraction::Core>,
+        image: vk::Image,
+        extent: vk::Extent3D,
+        format: vk::Format,
+        byte_size: u64,
+    ) -> SrResult<Self> {
+        let image_subresource_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let view_type = vk::ImageViewType::TYPE_2D;
+        let view_info = vk::ImageViewCreateInfo::default()
+            .view_type(view_type)
+            .format(format)
+            .subresource_range(image_subresource_range)
+            .image(image);
+        let image_view = unsafe { core.device().inner().create_image_view(&view_info, None) }?;
+
+        Ok(Self {
+            core,
+            image,
+            allocation: gpu_allocator::vulkan::Allocation::default(),
+            byte_size,
+            image_view,
+            image_subresource_range,
+            extent,
+            format,
+            view_type,
+            storage_slot: Cell::new(None),
+            sampled_slot: Cell::new(None),
+            owns_memory: false,
         })
     }
 
@@ -379,12 +454,15 @@ impl Drop for Image {
             device.destroy_image(self.image, None);
         }
 
-        //need to take ownership to pass to free
-        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
-        match self.core.allocator_mut().free(allocation) {
-            Ok(()) => {}
-            Err(e) => {
-                log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop")
+        // Aliased images don't own their memory (it's held by a transient slot in
+        // TransientResources); skip free in that case.
+        if self.owns_memory {
+            let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
+            match self.core.allocator_mut().free(allocation) {
+                Ok(()) => {}
+                Err(e) => {
+                    log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop")
+                }
             }
         }
     }

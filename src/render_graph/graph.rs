@@ -516,48 +516,87 @@ pub(super) struct CompiledPass {
 #[derive(Default)]
 pub struct TransientResources {
     external_images: HashMap<u32, Arc<Image>>,
-    /// Keyed by *alias slot id*, not resource id. Multiple resources whose
-    /// lifetimes do not overlap share a slot — look up `resource_slots[&res_id]`
-    /// first, then index here.
-    transient_image_slots: HashMap<u32, Image>,
     external_buffers: HashMap<u32, Arc<RawBuffer>>,
-    /// Same slot indirection as `transient_image_slots`.
-    transient_buffer_slots: HashMap<u32, RawBuffer>,
     external_samplers: HashMap<u32, Arc<Sampler>>,
-    /// Samplers are not aliased (descriptor state, not memory), so this is keyed
-    /// directly by resource id.
-    transient_samplers: HashMap<u32, Sampler>,
     external_raytracing_ac: HashMap<u32, Arc<AccelerationStructure>>,
-    /// AS physical allocation is not implemented yet; map stays empty until then.
-    transient_raytracing_ac: HashMap<u32, AccelerationStructure>,
-    /// Maps each *aliased* transient resource id (images, buffers) to its slot id.
-    /// Samplers and acceleration structures are absent (they aren't aliased).
+    /// One wrapper per *resource id*, even when several resources share a memory
+    /// slot. Each wrapper holds its own `vk::Image` handle + view; the underlying
+    /// memory is owned by `slot_allocations` (Image::owns_memory == false).
+    transient_images: HashMap<u32, Image>,
+    /// Same indirection as `transient_images` for buffers.
+    transient_buffers: HashMap<u32, RawBuffer>,
+    /// Samplers are not memory-backed in the aliasable sense; one per resource id.
+    transient_samplers: HashMap<u32, Sampler>,
+    /// One `gpu_allocator` allocation per memory slot. Resources sharing a slot
+    /// bind to the same `Allocation` at offset 0. Indexed by slot id.
+    slot_allocations: Vec<gpu_allocator::vulkan::Allocation>,
+    /// Maps each aliased transient resource id (images + buffers) to its slot id
+    /// in `slot_allocations`. Samplers and AS are absent (they're not aliased).
     resource_slots: HashMap<u32, u32>,
+    /// Cached for `Drop`. Set on first `populate`.
+    core: Option<Rc<Core>>,
 }
 
-/// Kind tag used to keep slot reuse type-homogeneous: a slot can only ever hold
-/// resources of the same kind (an image slot can't be reused for a buffer).
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum SlotKind {
-    Image,
-    Buffer,
+/// Aggregated memory requirements for a single transient alias slot — built up as
+/// resources are folded in, then handed to `gpu_allocator` once per slot.
+#[derive(Clone, Copy, Debug)]
+struct SlotMemReqs {
+    size: u64,
+    alignment: u64,
+    /// AND of every member's `memory_type_bits`. A slot whose intersection is
+    /// empty cannot be allocated and signals a bad aliasing decision.
+    memory_type_bits: u32,
+    location: gpu_allocator::MemoryLocation,
 }
 
-fn desc_slot_kind(desc: &GraphResourceDesc) -> Option<SlotKind> {
-    match desc {
-        GraphResourceDesc::Image(_) => Some(SlotKind::Image),
-        GraphResourceDesc::Buffer(_) => Some(SlotKind::Buffer),
-        // Samplers and acceleration structures aren't aliased.
-        GraphResourceDesc::Sampler(_) | GraphResourceDesc::RaytracingAS(_) => None,
+/// Pre-built `vk::Image` / `vk::Buffer` handle with its memory requirements; held
+/// during populate between the "create handles" pass and the "bind to slot memory"
+/// pass.
+enum PendingTransient {
+    Image {
+        handle: vk::Image,
+        reqs: vk::MemoryRequirements,
+        desc: ImageDesc,
+    },
+    Buffer {
+        handle: vk::Buffer,
+        reqs: vk::MemoryRequirements,
+        desc: BufferDesc,
+    },
+}
+
+impl PendingTransient {
+    fn reqs(&self) -> vk::MemoryRequirements {
+        match self {
+            PendingTransient::Image { reqs, .. } => *reqs,
+            PendingTransient::Buffer { reqs, .. } => *reqs,
+        }
+    }
+    fn location(&self) -> gpu_allocator::MemoryLocation {
+        match self {
+            PendingTransient::Image { desc, .. } => desc.location,
+            PendingTransient::Buffer { desc, .. } => desc.memory_location,
+        }
     }
 }
 
 impl TransientResources {
-    /// Allocate (or import) backing storage for every virtual resource. `components`
-    /// groups passes that transitively share resources; aliasing decisions are made
-    /// per-component because resources in different components have disjoint pass
-    /// sets and can always reuse memory. `usages` carries the per-resource lifetime
-    /// the interval-graph aliaser needs.
+    /// Allocate (or import) backing storage for every virtual resource.
+    ///
+    /// Slots are assigned by lifetime alone — a buffer's memory can later back an
+    /// image and vice versa. Compatibility is enforced at slot creation: when a
+    /// candidate slot is reused, its accumulated `memory_type_bits` must still
+    /// intersect with the new member's; otherwise a fresh slot is opened. The
+    /// resulting slot allocation's `requirements = (max size, max alignment, AND
+    /// of memory_type_bits)` is what `gpu_allocator` actually sees.
+    ///
+    /// Lifetime + Drop:
+    ///   - Slot allocations live on `Self`. `Drop` frees them via the cached `core`.
+    ///   - Individual transient `Image` / `RawBuffer` wrappers are constructed with
+    ///     `owns_memory == false` so their own `Drop` only destroys the `vk::Image`
+    ///     / `vk::Buffer` handle (+ view), never `Allocator::free`.
+    ///   - This lets `TransientResources` outlive a single frame: the same graph
+    ///     can be replayed each frame without re-allocating.
     pub(crate) fn populate(
         &mut self,
         core: Rc<Core>,
@@ -565,74 +604,17 @@ impl TransientResources {
         components: &[PassComponent],
         usages: &BTreeMap<u32, ResourceLifetimeUsage>,
     ) -> SrResult<()> {
-        // Clear last frame's bindings so re-compiling is idempotent.
-        // TODO: once we have a real recycler we should reuse transient allocations across
-        // frames instead of dropping + reallocating every compile.
-        self.external_images.clear();
-        self.transient_image_slots.clear();
-        self.external_buffers.clear();
-        self.transient_buffer_slots.clear();
-        self.external_samplers.clear();
-        self.transient_samplers.clear();
-        self.external_raytracing_ac.clear();
-        self.transient_raytracing_ac.clear();
-        self.resource_slots.clear();
+        // Drop previous frame's bindings + free their allocations. The graph is
+        // designed to be re-populated; cross-frame reuse of the same allocations is
+        // a future optimization.
+        // TODO: detect that desc+lifetimes haven't changed and keep `slot_allocations`
+        //       alive across populate calls so we don't churn the allocator each frame.
+        self.free_internal_state();
+        self.core = Some(Rc::clone(&core));
 
-        // 1. Per-component greedy interval coloring -> alias slots.
-        // Within a component, sort aliasable transient resources by `first_pass` then
-        // reuse any slot of the same kind whose last active resource finished before
-        // this one starts. Slot ids are global across components so callers can index
-        // straight into `transient_*_slots`. Samplers and AS are skipped here.
-        // TODO: also gate reuse on memory-requirement compatibility (format/extent for
-        //       images, max size for buffers) — right now we just pick the union/max
-        //       inside the allocation step, which is correct but sometimes wasteful.
-        let mut next_slot: u32 = 0;
-        for component in components {
-            // (last_pass_in_slot, slot_id, slot_kind) for slots holding a still-live resource.
-            let mut active: Vec<(usize, u32, SlotKind)> = Vec::new();
-
-            let mut transients: Vec<(u32, SlotKind)> = component
-                .resources
-                .iter()
-                .copied()
-                .filter_map(|res_id| {
-                    let info = virtual_resources.get(res_id as usize)?;
-                    let desc = match info {
-                        GraphResourceInfo::Created(desc) => desc,
-                        GraphResourceInfo::Imported(_) => return None,
-                    };
-                    desc_slot_kind(desc).map(|k| (res_id, k))
-                })
-                .collect();
-            transients.sort_by_key(|(res_id, _)| usages[res_id].first_pass);
-
-            for (res_id, kind) in transients {
-                let lifetime = &usages[&res_id];
-                let reused = active
-                    .iter()
-                    .position(|(last_pass, _, k)| *k == kind && *last_pass < lifetime.first_pass);
-                let slot = if let Some(idx) = reused {
-                    let (_, slot, _) = active[idx];
-                    active[idx] = (lifetime.last_pass, slot, kind);
-                    slot
-                } else {
-                    let slot = next_slot;
-                    next_slot += 1;
-                    active.push((lifetime.last_pass, slot, kind));
-                    slot
-                };
-                self.resource_slots.insert(res_id, slot);
-            }
-        }
-
-
-
-        // 2. Per-slot, derive a single physical descriptor that satisfies every resource
-        // assigned to that slot, then allocate the actual image / buffer.
-        let mut image_slot_descs: HashMap<u32, ImageDesc> = HashMap::new();
-        let mut buffer_slot_descs: HashMap<u32, BufferDesc> = HashMap::new();
-
-
+        // ---------- Phase 1: create unbound handles + collect memory requirements. ----------
+        // Sampler / AS are handled separately because they don't participate in slot aliasing.
+        let mut pending: HashMap<u32, PendingTransient> = HashMap::new();
         for (res_id, resource_info) in virtual_resources.iter().enumerate() {
             let res_id = res_id as u32;
             let desc = match resource_info {
@@ -641,43 +623,41 @@ impl TransientResources {
             };
             match desc {
                 GraphResourceDesc::Image(image_desc) => {
-                    let slot = self.resource_slots[&res_id];
-                    image_slot_descs
-                        .entry(slot)
-                        .and_modify(|d| {
-                            // Union usage flags so any pass can use the slot. Extent / format /
-                            // tiling / location must match — otherwise the aliasing decision
-                            // was wrong (caller asked for two incompatible images at the same
-                            // memory slot).
-                            // TODO: take the max extent and pick the most-permissive format
-                            //       once we want to alias images with different layouts.
-                            debug_assert_eq!(d.extent, image_desc.extent, "aliased images must share extent");
-                            debug_assert_eq!(d.format, image_desc.format, "aliased images must share format");
-                            debug_assert_eq!(d.tiling, image_desc.tiling, "aliased images must share tiling");
-                            d.usage |= image_desc.usage;
-                        })
-                        .or_insert_with(|| image_desc.clone());
+                    let (handle, reqs) = Image::create_unbound(
+                        &core,
+                        image_desc.extent,
+                        image_desc.format,
+                        image_desc.tiling,
+                        image_desc.usage,
+                    )?;
+                    pending.insert(
+                        res_id,
+                        PendingTransient::Image {
+                            handle,
+                            reqs,
+                            desc: image_desc.clone(),
+                        },
+                    );
                 }
                 GraphResourceDesc::Buffer(buffer_desc) => {
-                    let slot = self.resource_slots[&res_id];
-                    buffer_slot_descs
-                        .entry(slot)
-                        .and_modify(|d| {
-                            d.byte_size = d.byte_size.max(buffer_desc.byte_size);
-                            d.alignment = d.alignment.max(buffer_desc.alignment);
-                            d.usage |= buffer_desc.usage;
-                            // Memory location must match; aliasing GPU-only with host-visible
-                            // would silently reinterpret memory.
-                            debug_assert_eq!(
-                                d.memory_location, buffer_desc.memory_location,
-                                "aliased buffers must share memory location"
-                            );
-                        })
-                        .or_insert_with(|| buffer_desc.clone());
+                    let (handle, reqs) =
+                        RawBuffer::create_unbound(&core, buffer_desc.byte_size, buffer_desc.usage)?;
+                    pending.insert(
+                        res_id,
+                        PendingTransient::Buffer {
+                            handle,
+                            reqs,
+                            desc: buffer_desc.clone(),
+                        },
+                    );
                 }
                 GraphResourceDesc::Sampler(sampler_desc) => {
-                    // Samplers aren't slot-aliased; allocate one per resource id.
+                    // Samplers aren't aliased. Build the wrapper and (eagerly) reserve
+                    // its descriptor heap slot.
                     let sampler = Sampler::new_from_desc(Rc::clone(&core), sampler_desc)?;
+                    // TODO: this descriptor pre-assignment exists for the legacy single-
+                    //       slot-per-resource model; the heap rework will replace it.
+                    let _ = sampler.slot();
                     self.transient_samplers.insert(res_id, sampler);
                 }
                 GraphResourceDesc::RaytracingAS(_) => {
@@ -690,19 +670,135 @@ impl TransientResources {
             }
         }
 
-        for (slot, desc) in image_slot_descs {
-            let image = Image::new_from_desc(Rc::clone(&core), &desc)?;
-            self.transient_image_slots.insert(slot, image);
-        }
-        for (slot, desc) in buffer_slot_descs {
-            let buffer = RawBuffer::new_from_desc(Rc::clone(&core), &desc)?;
-            self.transient_buffer_slots.insert(slot, buffer);
+        // ---------- Phase 2: per-component slot assignment by lifetime, with mem compat. ----------
+        // Slots are global (numbered across all components). Reuse condition: the
+        // candidate slot's last_pass < this resource's first_pass AND its current
+        // (memory_type_bits, location) is compatible with this resource's
+        // (memory_type_bits, location). On reuse, the slot's accumulated requirements
+        // grow to the max(size), max(alignment), AND(memory_type_bits).
+        let mut next_slot: u32 = 0;
+        let mut slot_reqs: HashMap<u32, SlotMemReqs> = HashMap::new();
+        for component in components {
+            // (last_pass_in_slot, slot_id) — kind isn't tracked here, slot_reqs drives compat.
+            let mut active: Vec<(usize, u32)> = Vec::new();
+
+            let mut transients: Vec<u32> = component
+                .resources
+                .iter()
+                .copied()
+                .filter(|res_id| pending.contains_key(res_id))
+                .collect();
+            transients.sort_by_key(|res_id| usages[res_id].first_pass);
+
+            for res_id in transients {
+                let lifetime = &usages[&res_id];
+                let p = &pending[&res_id];
+                let this_reqs = p.reqs();
+                let this_loc = p.location();
+
+                let candidate = active.iter().position(|(last_pass, slot)| {
+                    if *last_pass >= lifetime.first_pass {
+                        return false;
+                    }
+                    let s = &slot_reqs[slot];
+                    s.location == this_loc && (s.memory_type_bits & this_reqs.memory_type_bits) != 0
+                });
+
+                let slot = if let Some(idx) = candidate {
+                    let (_, slot) = active[idx];
+                    let s = slot_reqs.get_mut(&slot).expect("slot reqs missing");
+                    s.size = s.size.max(this_reqs.size);
+                    s.alignment = s.alignment.max(this_reqs.alignment);
+                    s.memory_type_bits &= this_reqs.memory_type_bits;
+                    active[idx] = (lifetime.last_pass, slot);
+                    slot
+                } else {
+                    let slot = next_slot;
+                    next_slot += 1;
+                    slot_reqs.insert(
+                        slot,
+                        SlotMemReqs {
+                            size: this_reqs.size,
+                            alignment: this_reqs.alignment,
+                            memory_type_bits: this_reqs.memory_type_bits,
+                            location: this_loc,
+                        },
+                    );
+                    active.push((lifetime.last_pass, slot));
+                    slot
+                };
+                self.resource_slots.insert(res_id, slot);
+            }
         }
 
-        // 3. Wire imported handles into the matching external_* maps, keyed by resource
-        // id so later barrier emission and pass execution can look them up. Swapchain
-        // images live in `external_images` alongside regular image imports — the
-        // graph remembers the resource id separately when special handling is needed.
+        // ---------- Phase 3: allocate one chunk of memory per slot. ----------
+        // Iterate by slot id so `slot_allocations[i]` corresponds to slot `i`.
+        let mut slot_allocations: Vec<gpu_allocator::vulkan::Allocation> = Vec::with_capacity(next_slot as usize);
+        for slot in 0..next_slot {
+            let s = slot_reqs[&slot];
+            if s.memory_type_bits == 0 {
+                // Should not be reachable: the compat check above guarantees a non-zero
+                // intersection on every reuse.
+                return Err(SrError::new_custom(format!(
+                    "transient slot {slot}: empty memory_type_bits after aliasing"
+                )));
+            }
+            let mem_reqs = vk::MemoryRequirements {
+                size: s.size,
+                alignment: s.alignment,
+                memory_type_bits: s.memory_type_bits,
+            };
+            // linear: false — slots may host optimal-tiled images, and since members
+            // never co-occupy the slot, bufferImageGranularity within the allocation
+            // isn't an issue. Buffers placed in non-linear regions still work.
+            let allocation = core.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                name: "render_graph_transient_slot",
+                requirements: mem_reqs,
+                location: s.location,
+                linear: false,
+                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            })?;
+            slot_allocations.push(allocation);
+        }
+
+        // ---------- Phase 4: bind each handle into its slot's memory, wrap, pre-reserve descriptors. ----------
+        let device = core.device().inner();
+        for (res_id, p) in pending {
+            let slot = self.resource_slots[&res_id];
+            let alloc = &slot_allocations[slot as usize];
+            match p {
+                PendingTransient::Image { handle, reqs, desc } => {
+                    unsafe { device.bind_image_memory(handle, alloc.memory(), alloc.offset()) }?;
+                    let image =
+                        Image::from_aliased(Rc::clone(&core), handle, desc.extent, desc.format, reqs.size)?;
+                    // TODO: this descriptor pre-assignment exists for the legacy single-
+                    //       slot-per-resource model; the heap rework will replace it.
+                    if desc.usage.contains(vk::ImageUsageFlags::STORAGE) {
+                        let _ = image.storage_slot();
+                    }
+                    if desc.usage.contains(vk::ImageUsageFlags::SAMPLED) {
+                        let _ = image.sampled_slot();
+                    }
+                    self.transient_images.insert(res_id, image);
+                }
+                PendingTransient::Buffer { handle, reqs: _, desc } => {
+                    unsafe { device.bind_buffer_memory(handle, alloc.memory(), alloc.offset()) }?;
+                    let buffer =
+                        RawBuffer::from_aliased(Rc::clone(&core), handle, desc.byte_size, desc.usage)?;
+                    // TODO: same legacy-descriptor caveat as the image path above.
+                    if desc.usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER) {
+                        let _ = buffer.storage_slot();
+                    }
+                    if desc.usage.contains(vk::BufferUsageFlags::UNIFORM_BUFFER) {
+                        let _ = buffer.uniform_slot();
+                    }
+                    self.transient_buffers.insert(res_id, buffer);
+                }
+            }
+        }
+        self.slot_allocations = slot_allocations;
+
+        // ---------- Phase 5: wire imported handles into external_* maps. ----------
         for (res_id, resource_info) in virtual_resources.iter().enumerate() {
             let res_id = res_id as u32;
             let import = match resource_info {
@@ -729,6 +825,43 @@ impl TransientResources {
         }
 
         Ok(())
+    }
+
+    /// Drop all transient wrappers (which destroy their vk handles but won't free
+    /// memory) and free every slot allocation. Used by both `populate` (rebuild)
+    /// and `Drop`.
+    fn free_internal_state(&mut self) {
+        self.external_images.clear();
+        self.external_buffers.clear();
+        self.external_samplers.clear();
+        self.external_raytracing_ac.clear();
+        // Drop the wrappers first: their Drop destroys vk handles and skips
+        // Allocator::free (owns_memory == false), so the underlying allocations are
+        // still valid afterwards.
+        self.transient_images.clear();
+        self.transient_buffers.clear();
+        self.transient_samplers.clear();
+        self.resource_slots.clear();
+
+        if let Some(core) = self.core.as_ref() {
+            let mut allocator = core.allocator_mut();
+            for allocation in self.slot_allocations.drain(..) {
+                if let Err(e) = allocator.free(allocation) {
+                    log::error!(
+                        "Allocator::free returned {e} in TransientResources::free_internal_state"
+                    );
+                }
+            }
+        } else {
+            // No core cached: there cannot be allocations to free, but defensively clear.
+            self.slot_allocations.clear();
+        }
+    }
+}
+
+impl Drop for TransientResources {
+    fn drop(&mut self) {
+        self.free_internal_state();
     }
 }
 
