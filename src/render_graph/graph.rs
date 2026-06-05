@@ -337,7 +337,7 @@ impl RenderGraph<Setup> {
         self.next_resource_id += 1;
         id
     }
-    pub fn create<Desc: ResourceDesc>(&mut self, desc: Desc) -> Handle<<Desc as ResourceDesc>::Resource>
+    pub fn create_resource<Desc: ResourceDesc>(&mut self, desc: Desc) -> Handle<<Desc as ResourceDesc>::Resource>
     where
         Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
     {
@@ -352,7 +352,7 @@ impl RenderGraph<Setup> {
         }
     }
 
-    pub fn create_raw_resource(&mut self, resource_desc: GraphResourceDesc) {
+    fn create_raw_resource(&mut self, resource_desc: GraphResourceDesc) {
         self.virtual_resources.push(GraphResourceInfo::Created(resource_desc));
     }
 
@@ -521,12 +521,8 @@ impl RenderGraph<Setup> {
         }
         let components: Vec<PassComponent> = components_by_root.into_values().collect();
 
-        self.transient_resources.populate(
-            Rc::clone(&self.core),
-            &self.virtual_resources,
-            &components,
-            &resource_usages,
-        )?;
+        self.transient_resources
+            .populate(Rc::clone(&self.core), &self.virtual_resources, &components, &resource_usages)?;
 
         // Topological order of passes. petgraph's toposort fails iff there is a
         // cycle, which would be a logic bug since hazards only ever produce
@@ -564,9 +560,7 @@ impl RenderGraph<Setup> {
 
             if let Some(barriers) = incoming.remove(&pass_id) {
                 self.transient_resources.emit_barriers(&device, raw_cb, &barriers);
-                self.transient_resources
-                    .recorded_barriers
-                    .push((pass_id, barriers));
+                self.transient_resources.recorded_barriers.push((pass_id, barriers));
             }
 
             let common = match &mut self.passes[pass_id] {
@@ -1361,16 +1355,14 @@ mod tests {
     /// `RenderGraph<Built>` carrying a real `CmdBuffer`.
     #[test]
     fn compile_runs_passes_in_topo_order() {
-        use crate::render_graph::pass_builder::{
-            ComputeRenderPassBuilder, PassCommonDataBuilder,
-        };
+        use crate::render_graph::pass_builder::{ComputeRenderPassBuilder, PassCommonDataBuilder};
         use std::cell::RefCell;
 
         let core = Rc::new(Core::new(false, false, vk::Format::R8G8B8A8_UNORM).expect("Core::new failed"));
         let mut rg = RenderGraph::<Setup>::new(Rc::clone(&core)).expect("RenderGraph::new failed");
 
-        let img_a = rg.create(image(64, "img_a"));
-        let img_b = rg.create(image(64, "img_b"));
+        let img_a = rg.create_resource(image(64, "img_a"));
+        let img_b = rg.create_resource(image(64, "img_b"));
 
         // Shared trace: each render closure pushes its name.
         let trace: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
