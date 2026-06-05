@@ -84,8 +84,8 @@ impl TemporalAccumulationDescriptorSets {
         layout: &TemporalAccumulationDescriptorSetLayout,
         input_image: &vulkan_abstraction::Image,         // Binding 0: Noisy Raytrace result
         motion_vector_image: &vulkan_abstraction::Image, // Binding 1: Motion Vectors
-        accumulation_images: &[vulkan_abstraction::Image; 2], // Binding 2: Storage Images (Ping-Pong Output)
-        history_images: &[vulkan_abstraction::Image; 2], // Binding 3: Samplers (Ping-Pong History)
+        accumulation_images: [&vulkan_abstraction::Image; 2], // Binding 2: Storage Images (Ping-Pong Output)
+        history_images: [&vulkan_abstraction::Image; 2], // Binding 3: Samplers (Ping-Pong History)
         history_sampler: vk::Sampler,
     ) -> SrResult<Self> {
         let device = core.device().inner();
@@ -129,7 +129,7 @@ impl TemporalAccumulationDescriptorSets {
         };
         let mv_info = create_info(motion_vector_image);
 
-        let accumulation_infos = [create_info(&accumulation_images[0]), create_info(&accumulation_images[1])];
+        let accumulation_infos = [create_info(accumulation_images[0]), create_info(accumulation_images[1])];
 
         let history_infos = [
             vk::DescriptorImageInfo::default()

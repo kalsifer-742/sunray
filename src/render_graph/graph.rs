@@ -187,11 +187,6 @@ pub enum GraphResourceInfo {
     Imported(GraphResourceImportInfo),
 }
 
-pub trait RenderGraphState {}
-#[derive(Default)]
-pub(crate) struct Setup {}
-impl RenderGraphState for Setup {}
-
 #[derive(Copy, Clone, Debug)]
 pub enum PassResourceAccessSyncType {
     AlwaysSync,
@@ -291,7 +286,7 @@ fn add_dep_edge(
     }
 }
 
-pub struct RenderGraph<State: RenderGraphState> {
+pub struct RenderGraph {
     next_pass_id: u32,
     next_resource_id: u32,
     //TODO debug hooks and tools
@@ -302,16 +297,14 @@ pub struct RenderGraph<State: RenderGraphState> {
     /// flag the present-target layout transition without scanning every resource.
     swapchain_resource_id: Option<u32>,
     /// Lives across `compile` / `run` cycles so the same primary command buffer
-    /// is re-recorded each frame rather than reallocated. Carried through the
-    /// `Setup` → `Built` → `Setup` state transitions.
+    /// is re-recorded each frame rather than reallocated.
     cmd_buffer: CmdBuffer,
     /// Cached so `run` can submit and `compile` can record without the caller
     /// having to re-thread `Core` through every call.
     core: Rc<Core>,
-    state_data: State,
 }
 
-impl RenderGraph<Setup> {
+impl RenderGraph {
     pub fn new(core: Rc<Core>) -> SrResult<Self> {
         let cmd_buffer = CmdBuffer::new(Rc::clone(&core))?;
         Ok(RenderGraph {
@@ -323,8 +316,22 @@ impl RenderGraph<Setup> {
             swapchain_resource_id: None,
             cmd_buffer,
             core,
-            state_data: Setup::default(),
         })
+    }
+
+    /// Clear all per-frame state (passes, virtual resources, transient bindings,
+    /// swapchain import, recorded barrier trace) so the graph can be rebuilt
+    /// from scratch on the next frame. The persistent `CmdBuffer` and cached
+    /// `Core` survive: this is the entry point for "graph is an attribute of
+    /// the renderer, rebuilt each frame, but the underlying primary command
+    /// buffer is reused".
+    pub fn reset(&mut self) {
+        self.next_pass_id = 0;
+        self.next_resource_id = 0;
+        self.passes.clear();
+        self.virtual_resources.clear();
+        self.swapchain_resource_id = None;
+        self.transient_resources.free_internal_state();
     }
 
     pub(super) fn next_pass_id(&mut self) -> u32 {
@@ -413,7 +420,7 @@ impl RenderGraph<Setup> {
         })
     }
 
-    pub fn compile(mut self) -> SrResult<RenderGraph<Built>> {
+    pub fn compile(&mut self) -> SrResult<()> {
         //TODO mark the render pass goals as the result of the graph so anything unnecessary can be removed
         //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is the site where it will be published the paper https://dl.acm.org/profile/99661091135
         //TODO respect PassResourceAccessSyncType (NeverSync / SkipSyncIfSameAccessType) when deciding whether to emit a barrier
@@ -576,17 +583,19 @@ impl RenderGraph<Setup> {
 
         unsafe { device.end_command_buffer(raw_cb)? };
 
-        Ok(RenderGraph {
-            next_pass_id: self.next_pass_id,
-            next_resource_id: self.next_resource_id,
-            virtual_resources: self.virtual_resources,
-            passes: self.passes,
-            transient_resources: self.transient_resources,
-            swapchain_resource_id: self.swapchain_resource_id,
-            cmd_buffer: self.cmd_buffer,
-            core: self.core,
-            state_data: Built {},
-        })
+        Ok(())
+    }
+
+    /// Submit the recorded command buffer to the graphics queue, signaling
+    /// `signal_fence` when GPU execution completes. The caller owns the fence
+    /// and is responsible for waiting on it before the next `compile`
+    /// re-records into the same command buffer.
+    pub fn run(&mut self, signal_fence: &mut Fence) -> SrResult<()> {
+        let fence_handle = signal_fence.submit()?;
+        self.core
+            .graphics_queue()
+            .submit_async(self.cmd_buffer.inner(), &[], &[], &[], fence_handle)?;
+        Ok(())
     }
 }
 
@@ -911,7 +920,7 @@ impl TransientResources {
     /// Drop all transient wrappers (which destroy their vk handles but won't free
     /// memory) and free every slot allocation. Used by both `populate` (rebuild)
     /// and `Drop`.
-    fn free_internal_state(&mut self) {
+    pub(crate) fn free_internal_state(&mut self) {
         self.external_images.clear();
         self.external_buffers.clear();
         self.external_samplers.clear();
@@ -1186,43 +1195,6 @@ pub trait RgImportable<ResDesc: ResourceDesc> {
     fn import(&self) -> ResDesc;
 }
 
-pub(crate) struct Render {}
-
-/// Type-state marker for a graph whose passes have been recorded into the
-/// persistent command buffer on `RenderGraph` itself. The command buffer (and
-/// the cached `Core`) live on the outer struct so they survive the `Built` →
-/// `Setup` → `Built` cycle without being reallocated.
-pub struct Built {}
-impl RenderGraphState for Built {}
-
-impl RenderGraph<Built> {
-    /// Submit the recorded command buffer to the graphics queue, signaling
-    /// `signal_fence` when GPU execution completes. The caller owns the fence
-    /// and is responsible for waiting on it before the next `compile`
-    /// re-records into the same command buffer.
-    ///
-    /// Returns the graph back to `Setup` so it can be edited and re-compiled.
-    /// The command buffer and cached `Core` are carried across the transition.
-    pub fn run(self, signal_fence: &mut Fence) -> SrResult<RenderGraph<Setup>> {
-        let fence_handle = signal_fence.submit()?;
-        self.core
-            .graphics_queue()
-            .submit_async(self.cmd_buffer.inner(), &[], &[], &[], fence_handle)?;
-
-        Ok(RenderGraph {
-            next_pass_id: self.next_pass_id,
-            next_resource_id: self.next_resource_id,
-            virtual_resources: self.virtual_resources,
-            passes: self.passes,
-            transient_resources: self.transient_resources,
-            swapchain_resource_id: self.swapchain_resource_id,
-            cmd_buffer: self.cmd_buffer,
-            core: self.core,
-            state_data: Setup::default(),
-        })
-    }
-}
-
 pub trait TypeEquals {
     type Other;
     fn same(value: Self) -> Self::Other;
@@ -1359,7 +1331,7 @@ mod tests {
         use std::cell::RefCell;
 
         let core = Rc::new(Core::new(false, false, vk::Format::R8G8B8A8_UNORM).expect("Core::new failed"));
-        let mut rg = RenderGraph::<Setup>::new(Rc::clone(&core)).expect("RenderGraph::new failed");
+        let mut rg = RenderGraph::new(Rc::clone(&core)).expect("RenderGraph::new failed");
 
         let img_a = rg.create_resource(image(64, "img_a"));
         let img_b = rg.create_resource(image(64, "img_b"));
@@ -1414,11 +1386,11 @@ mod tests {
             .expect("build consumer pass");
         rg.add_render_pass(AnyRenderPass::Compute(consumer));
 
-        let built = rg.compile().expect("compile failed");
+        rg.compile().expect("compile failed");
 
         // Print the transient state — the report now includes the barrier
         // trace recorded by compile.
-        println!("{:?}", built.transient_resources);
+        println!("{:?}", rg.transient_resources);
 
         // Both render closures must have fired, producer before consumer.
         {
@@ -1426,23 +1398,22 @@ mod tests {
             assert_eq!(*trace, vec!["producer", "consumer"], "topo order violated");
         }
         // Persistent cmd buffer must be recorded.
-        let recorded_cb = built.cmd_buffer.inner();
+        let recorded_cb = rg.cmd_buffer.inner();
         assert_ne!(recorded_cb, vk::CommandBuffer::null());
         // At least one barrier must have been recorded (producer→consumer RAW on img_a).
         assert!(
-            !built.transient_resources.recorded_barriers.is_empty(),
+            !rg.transient_resources.recorded_barriers.is_empty(),
             "expected at least one recorded barrier between producer and consumer"
         );
 
-        // Submit + wait. The graph goes back to Setup so it can be re-compiled.
+        // Submit + wait. The graph stays usable for re-compile after run.
         let mut fence = Fence::new_unsignaled(Rc::clone(core.device())).expect("Fence::new");
-        let setup_again = built.run(&mut fence).expect("run failed");
+        rg.run(&mut fence).expect("run failed");
         fence.wait().expect("fence wait failed");
 
-        // The same primary command buffer must persist across the Built → Setup
-        // transition; not reallocated.
+        // The same primary command buffer persists; not reallocated by run().
         assert_eq!(
-            setup_again.cmd_buffer.inner(),
+            rg.cmd_buffer.inner(),
             recorded_cb,
             "cmd_buffer was reallocated across run()"
         );

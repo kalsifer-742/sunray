@@ -85,11 +85,11 @@ impl DenoiseDescriptorSets {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         layout: &DenoiseDescriptorSetLayout,
-        temporal_results: &[vulkan_abstraction::Image; 2],
+        temporal_results: [&vulkan_abstraction::Image; 2],
         depth_image: &vulkan_abstraction::Image,
         normal_image: &vulkan_abstraction::Image,
         diffuse_image: &vulkan_abstraction::Image,
-        denoise_ping_pong_images: &[vulkan_abstraction::Image; 2],
+        denoise_ping_pong_images: [&vulkan_abstraction::Image; 2],
         sampler: vk::Sampler,
     ) -> SrResult<Self> {
         let device = core.device().inner();
@@ -135,10 +135,10 @@ impl DenoiseDescriptorSets {
         let diffuse_info = create_sampled_info(diffuse_image);
 
         // Ping-Pong specific infos
-        let temp_0 = create_info(&temporal_results[0]);
-        let _temp_1 = create_info(&temporal_results[1]); //TODO why is this unused
-        let denoise_0 = create_info(&denoise_ping_pong_images[0]);
-        let denoise_1 = create_info(&denoise_ping_pong_images[1]);
+        let temp_0 = create_info(temporal_results[0]);
+        let _temp_1 = create_info(temporal_results[1]); //TODO why is this unused
+        let denoise_0 = create_info(denoise_ping_pong_images[0]);
+        let denoise_1 = create_info(denoise_ping_pong_images[1]);
 
         let mut writes = Vec::new();
 

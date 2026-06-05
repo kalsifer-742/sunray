@@ -66,7 +66,7 @@ impl PostProcessDescriptorSets {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         layout: &PostprocessDescriptorSetLayout,
-        denoised_input_images: &[vulkan_abstraction::Image; 2],
+        denoised_input_images: [&vulkan_abstraction::Image; 2],
         output_image: &vulkan_abstraction::Image, // The final output image
     ) -> SrResult<Self> {
         let device = core.device().inner();
@@ -97,8 +97,8 @@ impl PostProcessDescriptorSets {
         };
 
         // 3. Image Infos
-        let input_info_0 = create_info(&denoised_input_images[0]);
-        let input_info_1 = create_info(&denoised_input_images[1]);
+        let input_info_0 = create_info(denoised_input_images[0]);
+        let input_info_1 = create_info(denoised_input_images[1]);
         let output_info = create_info(output_image);
 
         let writes = [

@@ -10,8 +10,10 @@ pub use camera::*;
 use error::*;
 pub use scene::*;
 
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, rc::Rc, sync::Arc};
 
+use crate::render_graph::graph::AnyRenderPass;
+use crate::render_graph::pass_builder::{ComputeRenderPassBuilder, PassCommonDataBuilder};
 use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
@@ -20,6 +22,7 @@ use crate::vulkan_abstraction::{
     ReservoirGI, TemporalPass,
 };
 use ash::vk;
+use vk_sync_fork as vk_sync;
 
 pub const DENOISE_PASSES: u32 = 8;
 
@@ -41,7 +44,7 @@ struct ImageDependentData {
     #[allow(unused)]
     raytrace_result_image: vulkan_abstraction::Image,
     #[allow(unused)]
-    postprocess_result_image: vulkan_abstraction::Image,
+    postprocess_result_image: Arc<vulkan_abstraction::Image>,
     #[allow(unused)]
     depth_image: vulkan_abstraction::Image,
     #[allow(unused)]
@@ -109,12 +112,21 @@ pub struct Renderer {
     core: Rc<vulkan_abstraction::Core>,
 
     //2 images to avoid race conditions when reading/writing
-    pub accumulation_images: [vulkan_abstraction::Image; 2],
-    pub denoising_images: [vulkan_abstraction::Image; 2],
+    pub accumulation_images: [Arc<vulkan_abstraction::Image>; 2],
+    pub denoising_images: [Arc<vulkan_abstraction::Image>; 2],
     ///this is used for temporal accumulation, there is an absolute frame counter in the core
     pub relative_frame_count: u32,
 
     prev_view_proj: nalgebra::Matrix4<f32>, //used to calculate motion vectors
+
+    /// Persistent render graph used for the denoise + post-process pipeline.
+    /// Re-populated each frame (passes / imports change because the ping-pong
+    /// indices and per-frame descriptor sets do), but the underlying command
+    /// buffer is reused across `compile` calls.
+    render_graph: crate::render_graph::graph::RenderGraph,
+    /// Fence signaled when the render graph's submission completes.
+    render_graph_fence: vulkan_abstraction::Fence,
+
     reservoir_buffers: [vulkan_abstraction::GpuOnlyBuffer; 2],
     // Ping-pong pair of GI reservoir buffers for ReSTIR GI (Ouyang 2021); same lifetime/layout
     // contract as reservoir_buffers above, but storing surface samples (x2) instead of light samples.
@@ -221,8 +233,8 @@ impl Renderer {
 
         let image_dependant_data = HashMap::new();
 
-        let create_accum_image = |name: &'static str| -> SrResult<vulkan_abstraction::Image> {
-            vulkan_abstraction::Image::new(
+        let create_accum_image = |name: &'static str| -> SrResult<Arc<vulkan_abstraction::Image>> {
+            Ok(Arc::new(vulkan_abstraction::Image::new(
                 core.clone(),
                 image_extent, // <--- USE THIS (it's already a vk::Extent3D)
                 vk::Format::B10G11R11_UFLOAT_PACK32,
@@ -230,7 +242,7 @@ impl Renderer {
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 name,
-            )
+            )?))
         };
 
         let accumulation_images = [
@@ -301,9 +313,60 @@ impl Renderer {
             vk::SamplerMipmapMode::NEAREST,
         )?;
 
+        let render_graph = crate::render_graph::graph::RenderGraph::new(Rc::clone(&core))?;
+        let render_graph_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(core.device()))?;
+
+        // Discard-init accumulation + denoising images to GENERAL once at startup.
+        // Frame-0 denoise descriptor bindings expect GENERAL layout — the in-cmd-buf
+        // discard barriers that used to do this transition lived inside the old
+        // `cmd_denoise_image` and are gone now that denoise is in the render graph.
+        {
+            let device = core.device().inner();
+            let mut setup_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&core))?;
+            let create_barrier = |image: vk::Image| {
+                vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_access_mask(vk::AccessFlags2::empty())
+                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+            };
+            let barriers = [
+                create_barrier(accumulation_images[0].inner()),
+                create_barrier(accumulation_images[1].inner()),
+                create_barrier(denoising_images[0].inner()),
+                create_barrier(denoising_images[1].inner()),
+            ];
+            let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            unsafe {
+                device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
+                let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+                device.cmd_pipeline_barrier2(setup_cmd_buf.inner(), &dep_info);
+                device.end_command_buffer(setup_cmd_buf.inner())?;
+                let fence = setup_cmd_buf.fence_mut().submit()?;
+                core.graphics_queue()
+                    .submit_async(setup_cmd_buf.inner(), &[], &[], &[], fence)?;
+                setup_cmd_buf.fence_mut().wait()?;
+            }
+        }
+
         Ok((
             Self {
                 image_dependant_data,
+
+                render_graph,
+                render_graph_fence,
 
                 reservoir_buffers,
 
@@ -390,8 +453,8 @@ impl Renderer {
 
         self.image_extent = new_extent;
 
-        let create_accum_image = |name: &'static str| -> SrResult<vulkan_abstraction::Image> {
-            vulkan_abstraction::Image::new(
+        let create_accum_image = |name: &'static str| -> SrResult<Arc<vulkan_abstraction::Image>> {
+            Ok(Arc::new(vulkan_abstraction::Image::new(
                 self.core.clone(),
                 new_extent,
                 vk::Format::B10G11R11_UFLOAT_PACK32,
@@ -399,7 +462,7 @@ impl Renderer {
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 name,
-            )
+            )?))
         };
 
         self.accumulation_images = [create_accum_image("Accumulation_1")?, create_accum_image("Accumulation_2")?];
@@ -483,7 +546,7 @@ impl Renderer {
                 "sunray (internal, pre-blit) denoise result image",
             )?;
 
-            let postprocess_result_image = vulkan_abstraction::Image::new(
+            let postprocess_result_image = Arc::new(vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
                 vk::Format::R8G8B8A8_UNORM,
@@ -491,7 +554,7 @@ impl Renderer {
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC,
                 "sunray (internal, pre-blit) postprocess result image",
-            )?;
+            )?);
 
             let depth_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
@@ -609,31 +672,34 @@ impl Renderer {
                 &self.resource_manager,
             )?;
 
+            let accum_refs = [&*self.accumulation_images[0], &*self.accumulation_images[1]];
+            let denoise_refs = [&*self.denoising_images[0], &*self.denoising_images[1]];
+
             let temporal_accumulation_descriptor_sets = vulkan_abstraction::TemporalAccumulationDescriptorSets::new(
                 &self.core, // Passed as &Rc<Core> based on our previous struct signature
                 &self.temporal_accumulation_descriptor_set_layout,
-                &raytrace_result_image,    // Binding 0: Noisy Input
-                &motion_vector_image,      // Binding 1: Motion Vectors
-                &self.accumulation_images, // Binding 2: Ping-Pong Output (Storage)
-                &self.accumulation_images, // Binding 3: Ping-Pong History (Samplers)
+                &raytrace_result_image, // Binding 0: Noisy Input
+                &motion_vector_image,   // Binding 1: Motion Vectors
+                accum_refs,             // Binding 2: Ping-Pong Output (Storage)
+                accum_refs,             // Binding 3: Ping-Pong History (Samplers)
                 self.resource_manager.default_sampler().inner(),
             )?;
 
             let denoise_descriptor_sets = vulkan_abstraction::DenoiseDescriptorSets::new(
                 Rc::clone(&self.core),
                 &self.denoise_descriptor_set_layout,
-                &self.accumulation_images,
+                accum_refs,
                 &depth_image,
                 &normal_image,
                 &diffuse_image,
-                &self.denoising_images,
+                denoise_refs,
                 self.resource_manager.default_sampler().inner(),
             )?;
 
             let postprocess_descriptor_sets = vulkan_abstraction::PostProcessDescriptorSets::new(
                 Rc::clone(&self.core),
                 &self.postprocess_descriptor_set_layout,
-                &self.denoising_images,
+                denoise_refs,
                 &postprocess_result_image,
             )?;
 
@@ -776,6 +842,11 @@ impl Renderer {
             self.build_image_dependent_data(&[dst_image])?;
         }
 
+        // Wait the render graph's previous frame BEFORE we touch render_graph state
+        // (compile() will reset+re-record the persistent cmd buffer, which is UB if
+        // the GPU is still using it).
+        self.render_graph_fence.wait()?;
+
         let this_ptr = self as *mut Self;
 
         let img_dependent_data = self.image_dependant_data.get_mut(&dst_image).unwrap();
@@ -787,7 +858,6 @@ impl Renderer {
         let cmd_buf = img_dependent_data.raytracing_cmd_buf.inner();
         let result_image = img_dependent_data.raytrace_result_image.inner();
         let motion_vector_image = img_dependent_data.motion_vector_image.inner();
-        let _postprocessed_image = img_dependent_data.postprocess_result_image.inner();
         let result_extent = img_dependent_data.raytrace_result_image.extent();
 
         // Raw-pointer alias keeps the borrow-checker happy: the unsafe block
@@ -797,20 +867,12 @@ impl Renderer {
         let img_dependent_data_ptr = img_dependent_data as *const ImageDependentData;
         let temporal_accumulation_descriptor_sets_ptr = &img_dependent_data.temporal_accumulation_descriptor_sets
             as *const vulkan_abstraction::TemporalAccumulationDescriptorSets;
-        let denoise_descriptor_sets_ptr =
-            &img_dependent_data.denoise_descriptor_sets as *const vulkan_abstraction::DenoiseDescriptorSets;
-        let _postprocess_descriptor_sets_ptr =
-            &img_dependent_data.postprocess_descriptor_sets as *const vulkan_abstraction::PostProcessDescriptorSets;
 
+        // === Phase 1: record the RT + temporal accumulation cmd buf ===
         unsafe {
-            // Use (*this_ptr).core because 'self.core' is locked by 'img_dependent_data'
             let device = (*this_ptr).core.device().inner();
 
-            // Supponiamo che tu abbia salvato il semaforo restituito dalla transfer queue
-            // in un campo opzionale `self.pending_transfer_semaphore`
             let wait_semaphores = (*this_ptr).core.transfer_semaphores_mut().drain(..).collect::<Vec<_>>();
-            // IMPORTANTE: Diciamo alla GPU di aspettare PRIMA di lanciare i Ray Tracing Shader
-            // Se la TLAS viene aggiornata in questo cmd buffer, aggiungi anche ACCELERATION_STRUCTURE_BUILD_KHR
             let wait_stages = wait_semaphores
                 .iter()
                 .map(|_semaphore| {
@@ -819,20 +881,23 @@ impl Renderer {
                 .collect::<Vec<_>>();
 
             let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
             device.begin_command_buffer(cmd_buf, &begin_info)?;
 
             (*this_ptr).cmd_raytracing_render(cmd_buf, &*img_dependent_data_ptr, result_image, result_extent)?;
 
+            // RT → TAA / denoise read barrier.
             let memory_barrier = vk::MemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                .src_access_mask(vk::AccessFlags2::SHADER_WRITE) // Wait for RT to finish writing
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
                 .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_access_mask(vk::AccessFlags2::SHADER_READ); // Make sure Denoise can see the data
-
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ);
             let dep_info = vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&memory_barrier));
             device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
+            // depth/normal/diffuse transition GENERAL → SHADER_READ_ONLY for the denoise
+            // descriptor bindings. They stay in SHADER_READ_ONLY after this cmd buf
+            // ends; next frame's cmd_raytracing_render discards them back to GENERAL
+            // via its pre-RT barriers.
             let read_only_barriers = [
                 vk::ImageMemoryBarrier2::default()
                     .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
@@ -871,117 +936,67 @@ impl Renderer {
                 &*temporal_accumulation_descriptor_sets_ptr,
                 result_extent.width,
                 result_extent.height,
-                result_image,        // Raw RT output
-                motion_vector_image, // From G-buffer
+                result_image,
+                motion_vector_image,
                 &self.accumulation_images,
             )?;
-
-            // Make the temporal pass's writes to accumulation_images visible to the
-            // denoise pass's reads. The denoise descriptor set always reads
-            // accumulation_images[0]; cmd_denoise_image's own pre-dispatch barrier
-            // only touches accumulation_images[history_idx] (the *other* slot most
-            // frames), so without this global compute-to-compute barrier denoise picks
-            // up stale (zero) data.
-            let temporal_to_denoise = vk::MemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_access_mask(vk::AccessFlags2::SHADER_READ);
-            let dep_info = vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&temporal_to_denoise));
-            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
-
-            // 5. Denoise Ping-Pong Loop
-            (*this_ptr).cmd_denoise_image(
-                cmd_buf,
-                &*denoise_descriptor_sets_ptr,
-                result_extent.width,
-                result_extent.height,
-                &self.accumulation_images,
-                &self.denoising_images,
-            )?;
-
-            // 6. Post-process
-            // Use result of the last denoise pass. Heap-mode: pass Image refs directly so
-            // we can read their lazy heap slots inside the dispatch helper.
-            let final_denoise_idx = ((DENOISE_PASSES - 1) % 2) as usize; //TODO suggested by ai 
-
-            (*this_ptr).cmd_postprocess_image(
-                cmd_buf,
-                result_extent.width,
-                result_extent.height,
-                &self.denoising_images[final_denoise_idx],
-                &img_dependent_data.postprocess_result_image,
-            )?;
-
-            let return_to_general_barriers = [
-                vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                    .src_access_mask(vk::AccessFlags2::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .image(img_dependent_data.depth_image.inner())
-                    .subresource_range(*img_dependent_data.depth_image.image_subresource_range()),
-                vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                    .src_access_mask(vk::AccessFlags2::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .image(img_dependent_data.normal_image.inner())
-                    .subresource_range(*img_dependent_data.normal_image.image_subresource_range()),
-                vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                    .src_access_mask(vk::AccessFlags2::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .image(img_dependent_data.diffuse_image.inner())
-                    .subresource_range(*img_dependent_data.diffuse_image.image_subresource_range()),
-                vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                    .src_access_mask(vk::AccessFlags2::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .image(img_dependent_data.raytrace_result_image.inner())
-                    .subresource_range(*img_dependent_data.raytrace_result_image.image_subresource_range()),
-            ];
-
-            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&return_to_general_barriers);
-            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
             device.end_command_buffer(cmd_buf)?;
-
-            // Submit using (*this_ptr)
-            (*this_ptr).core.graphics_queue().submit_async(
-                img_dependent_data.raytracing_cmd_buf.inner(),
-                &wait_semaphores,
-                &wait_stages,
-                &[img_dependent_data.raytracing_finished_semaphore.inner()],
-                img_dependent_data.raytracing_cmd_buf.fence_mut().submit()?,
-            )?;
         }
 
-        // Blitting
+        // === Phase 2: build & compile the render graph for denoise + postprocess ===
+        // `cmd_raytracing_render` has already advanced `relative_frame_count`, so the
+        // ping-pong indices below match the post-increment values the old in-cmd-buf
+        // denoise code used.
+        let temporal_accum_idx = ((self.relative_frame_count + 1) % 2) as usize;
+
+        // Re-aim the denoise descriptor set's pass-0 input at this frame's accum slot.
+        img_dependent_data
+            .denoise_descriptor_sets
+            .update_initial_input(&self.accumulation_images[temporal_accum_idx]);
+
+        unsafe {
+            (*this_ptr).build_denoise_postprocess_graph(temporal_accum_idx, &*img_dependent_data_ptr, result_extent)?;
+        }
+
+        // === Phase 3: submit RT+temporal, wait_idle, then run the render graph ===
+        let (raytracing_cmd, raytracing_fence_handle) = {
+            let f = img_dependent_data.raytracing_cmd_buf.fence_mut().submit()?;
+            (img_dependent_data.raytracing_cmd_buf.inner(), f)
+        };
+        unsafe {
+            let wait_semaphores = (*this_ptr).core.transfer_semaphores_mut().drain(..).collect::<Vec<_>>();
+            let wait_stages = wait_semaphores
+                .iter()
+                .map(|_| vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR)
+                .collect::<Vec<_>>();
+            (*this_ptr).core.graphics_queue().submit_async(
+                raytracing_cmd,
+                &wait_semaphores,
+                &wait_stages,
+                &[],
+                raytracing_fence_handle,
+            )?;
+            (*this_ptr).core.device().inner().device_wait_idle()?;
+
+            (*this_ptr).render_graph.run(&mut (*this_ptr).render_graph_fence)?;
+            (*this_ptr).render_graph_fence.wait()?;
+        }
+
+        // === Phase 4: blit ===
         let (wait_sems, wait_dst_stages) = (
-            [wait_sem, img_dependent_data.raytracing_finished_semaphore.inner()],
+            [wait_sem, vk::Semaphore::null()],
             [vk::PipelineStageFlags::ALL_GRAPHICS, vk::PipelineStageFlags::TRANSFER],
         );
         let (wait_sems, wait_dst_stages) = if wait_sem == vk::Semaphore::null() {
             ([].as_slice(), [].as_slice())
         } else {
-            (wait_sems.as_slice(), wait_dst_stages.as_slice())
+            (&wait_sems[..1], &wait_dst_stages[..1])
         };
 
         let signal_fence = img_dependent_data.blit_cmd_buf.fence_mut().submit()?;
 
         unsafe {
-            // Again, use (*this_ptr) because img_dependent_data is still alive here
             (*this_ptr).core.graphics_queue().submit_async(
                 img_dependent_data.blit_cmd_buf.inner(),
                 wait_sems,
@@ -992,6 +1007,155 @@ impl Renderer {
         }
 
         Ok(signal_fence)
+    }
+
+    /// Populate `self.render_graph` with the denoise (8 a-trous passes) and the
+    /// postprocess pass, then compile. Splits out of `render_to_image` to keep
+    /// the closure-heavy bookkeeping isolated.
+    fn build_denoise_postprocess_graph(
+        &mut self,
+        temporal_accum_idx: usize,
+        img_dependent_data: &ImageDependentData,
+        result_extent: vk::Extent3D,
+    ) -> SrResult<()> {
+        // Capture-by-value snapshot for the 'static closures.
+        let core_for_closures = Rc::clone(&self.core);
+        let denoise_pipeline = self.denoise_pipeline.inner();
+        let denoise_layout = self.denoise_pipeline.layout();
+        let postprocess_pipeline = self.postprocess_pipeline.inner();
+        let frame_count = self.relative_frame_count;
+        let width = result_extent.width;
+        let height = result_extent.height;
+        let dset_handles = [
+            img_dependent_data.denoise_descriptor_sets.inner()[0],
+            img_dependent_data.denoise_descriptor_sets.inner()[1],
+            img_dependent_data.denoise_descriptor_sets.inner()[2],
+        ];
+        let denoising_images = [
+            Arc::clone(&self.denoising_images[0]),
+            Arc::clone(&self.denoising_images[1]),
+        ];
+        let postprocess_out_arc = Arc::clone(&img_dependent_data.postprocess_result_image);
+        let accum_input_arc = Arc::clone(&self.accumulation_images[temporal_accum_idx]);
+
+        let rg = &mut self.render_graph;
+        rg.reset();
+
+        let accum_handle = rg.import::<crate::render_graph::graph::ImageDesc>(accum_input_arc);
+        let denoise_a_handle = rg.import::<crate::render_graph::graph::ImageDesc>(Arc::clone(&denoising_images[0]));
+        let denoise_b_handle = rg.import::<crate::render_graph::graph::ImageDesc>(Arc::clone(&denoising_images[1]));
+        let postprocess_out_handle = rg.import::<crate::render_graph::graph::ImageDesc>(Arc::clone(&postprocess_out_arc));
+
+        for pass_index in 0..DENOISE_PASSES {
+            let step_width = 1u32 << pass_index;
+            let descriptor_idx = if pass_index == 0 {
+                0usize
+            } else if pass_index % 2 == 1 {
+                1
+            } else {
+                2
+            };
+            let (read_handle, write_handle) = if pass_index == 0 {
+                (&accum_handle, &denoise_a_handle)
+            } else if pass_index % 2 == 1 {
+                (&denoise_a_handle, &denoise_b_handle)
+            } else {
+                (&denoise_b_handle, &denoise_a_handle)
+            };
+
+            let mut builder = PassCommonDataBuilder::new(rg, format!("denoise_{pass_index}"));
+            builder.read(read_handle, vk_sync::AccessType::ComputeShaderReadOther)?;
+            builder.write(write_handle, vk_sync::AccessType::ComputeShaderWrite)?;
+
+            let core = Rc::clone(&core_for_closures);
+            let dset = dset_handles[descriptor_idx];
+            let push = vulkan_abstraction::DenoisePushConstant {
+                frame_count,
+                step_width,
+                width,
+                height,
+            };
+            builder.render(move |cb, _tr| {
+                let device = core.device().inner();
+                unsafe {
+                    device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, denoise_pipeline);
+                    let sets = [dset];
+                    let bind_info = vk::BindDescriptorSetsInfo::default()
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                        .layout(denoise_layout)
+                        .first_set(0)
+                        .descriptor_sets(&sets)
+                        .dynamic_offsets(&[]);
+                    device.cmd_bind_descriptor_sets2(*cb, &bind_info);
+
+                    let push_bytes: [u8; std::mem::size_of::<vulkan_abstraction::DenoisePushConstant>()] =
+                        std::mem::transmute(push);
+                    let push_info = vk::PushConstantsInfo::default()
+                        .layout(denoise_layout)
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                        .offset(0)
+                        .values(&push_bytes);
+                    device.cmd_push_constants2(*cb, &push_info);
+
+                    device.cmd_dispatch(*cb, width.div_ceil(16), height.div_ceil(16), 1);
+                }
+                Ok(())
+            });
+
+            let pass = ComputeRenderPassBuilder::default()
+                .common(builder.build())
+                .shaders(vec![])
+                .entry_point("main".to_string())
+                .build()
+                .map_err(|e| SrError::new_custom(format!("denoise pass builder failed: {e}")))?;
+            rg.add_render_pass(AnyRenderPass::Compute(pass));
+        }
+
+        // === Postprocess ===
+        let final_idx = ((DENOISE_PASSES - 1) % 2) as usize;
+        let denoise_input_handle = if final_idx == 0 { &denoise_a_handle } else { &denoise_b_handle };
+
+        let mut builder = PassCommonDataBuilder::new(rg, "postprocess");
+        builder.read(denoise_input_handle, vk_sync::AccessType::ComputeShaderReadOther)?;
+        builder.write(&postprocess_out_handle, vk_sync::AccessType::ComputeShaderWrite)?;
+
+        let core = Rc::clone(&core_for_closures);
+        let denoise_input_arc = Arc::clone(&denoising_images[final_idx]);
+        let postprocess_out_arc_for_closure = Arc::clone(&postprocess_out_arc);
+        let exposure = EXPOSURE;
+        builder.render(move |cb, _tr| {
+            let push_constants = PostprocessPushConstant {
+                input_idx: denoise_input_arc.storage_slot(),
+                _input_pad: 0,
+                output_idx: postprocess_out_arc_for_closure.storage_slot(),
+                _output_pad: 0,
+                exposure,
+            };
+            let device = core.device().inner();
+            unsafe {
+                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, postprocess_pipeline);
+                core.descriptor_heap().cmd_bind(*cb);
+                let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
+                    address: &push_constants as *const _ as *const std::ffi::c_void,
+                    size: std::mem::size_of::<PostprocessPushConstant>(),
+                    _marker: Default::default(),
+                });
+                core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
+                device.cmd_dispatch(*cb, width.div_ceil(16), height.div_ceil(16), 1);
+            }
+            Ok(())
+        });
+
+        let pass = ComputeRenderPassBuilder::default()
+            .common(builder.build())
+            .shaders(vec![])
+            .entry_point("main".to_string())
+            .build()
+            .map_err(|e| SrError::new_custom(format!("postprocess pass builder failed: {e}")))?;
+        rg.add_render_pass(AnyRenderPass::Compute(pass));
+
+        rg.compile()?;
+        Ok(())
     }
 
     pub fn render_to_host_memory(&mut self) -> SrResult<Vec<u8>> {
@@ -1136,7 +1300,36 @@ impl Renderer {
                 vk::AccessFlags2::SHADER_WRITE,
             );
 
-            let pre_rt_barriers = [b_swap, b_hist, b_accum];
+            // Depth / normal / diffuse get left in SHADER_READ_ONLY after the
+            // previous frame's denoise descriptor binding (the cmd buf doesn't
+            // transition them back any more — `return_to_general_barriers` was
+            // dropped when denoise + postprocess moved into the render graph).
+            // RT writes them fresh every frame, so a discard transition
+            // (UNDEFINED → GENERAL) is sufficient and avoids per-frame
+            // layout-tracking bookkeeping.
+            let b_depth = make_barrier(
+                img_dependent_data.depth_image.inner(),
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::SHADER_WRITE,
+            );
+            let b_normal = make_barrier(
+                img_dependent_data.normal_image.inner(),
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::SHADER_WRITE,
+            );
+            let b_diffuse = make_barrier(
+                img_dependent_data.diffuse_image.inner(),
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::SHADER_WRITE,
+            );
+
+            let pre_rt_barriers = [b_swap, b_hist, b_accum, b_depth, b_normal, b_diffuse];
             let dep_info = vk::DependencyInfo::default().image_memory_barriers(&pre_rt_barriers);
             device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
 
@@ -1217,7 +1410,7 @@ impl Renderer {
         height: u32,
         raw_rt_image: vk::Image,
         motion_vector_image: vk::Image,
-        accumulation_images: &[vulkan_abstraction::image::Image; 2],
+        accumulation_images: &[Arc<vulkan_abstraction::image::Image>; 2],
     ) -> SrResult<()> {
         let device = self.core.device().inner();
 
@@ -1347,18 +1540,15 @@ impl Renderer {
         Ok(())
     }
 
-    ///This function takes 2 arrays of 2 images: the first are the temporal accumulation results, from which it only takes the image the first time
-    /// (accumulated_image -> first denoise pass on denoise_pingpong_images\[0])
-    /// All the next steps are done in the denoise_pingpong_images
-
+    #[allow(dead_code)]
     fn cmd_denoise_image(
         &self,
         cmd_buf: vk::CommandBuffer,
         descriptor_sets: &vulkan_abstraction::DenoiseDescriptorSets,
         width: u32,
         height: u32,
-        input_images: &[vulkan_abstraction::Image; 2], //used in the first pass (getting from TAA to denoise)
-        denoise_pingpong_images: &[vulkan_abstraction::Image; 2],
+        input_images: &[Arc<vulkan_abstraction::Image>; 2], //used in the first pass (getting from TAA to denoise)
+        denoise_pingpong_images: &[Arc<vulkan_abstraction::Image>; 2],
     ) -> SrResult<()> {
         let device = self.core.device().inner();
         let total_passes = DENOISE_PASSES;
@@ -1478,6 +1668,7 @@ impl Renderer {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn cmd_postprocess_image(
         &self,
         cmd_buf: vk::CommandBuffer,

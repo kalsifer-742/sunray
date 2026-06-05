@@ -2,7 +2,7 @@ use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
 use crate::render_graph::graph::{
     AnyRenderPass, Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource,
-    ResourceRef, Setup, TransientResources,
+    ResourceRef, TransientResources,
 };
 use ash::vk;
 use ash::vk::CommandBuffer;
@@ -67,7 +67,7 @@ pub struct PassCommonDataBuilder {
     pass_common_data: PassCommonData,
 }
 impl PassCommonDataBuilder {
-    pub fn new(rg: &mut RenderGraph<Setup>, name: impl Into<String>) -> Self {
+    pub fn new(rg: &mut RenderGraph, name: impl Into<String>) -> Self {
         Self {
             pass_common_data: PassCommonData {
                 read: vec![],

@@ -49,7 +49,7 @@ impl ComputeTypeDef for PostprocessPass {
 /// Step width references the distance between each pixel used as a sample during the a-trous filtering.
 #[allow(dead_code)] // read by the gpu
 #[repr(C, packed)]
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct DenoisePushConstant {
     pub frame_count: u32,
     pub step_width: u32,
