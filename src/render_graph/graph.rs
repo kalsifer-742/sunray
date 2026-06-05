@@ -303,7 +303,8 @@ pub struct RenderGraph {
     /// having to re-thread `Core` through every call.
     core: Rc<Core>,
 }
-
+//TODO Reintroduce the typestate of the render graph,as it is intended to work like this, the setup phase is where you can add stuff and so on, when you want to run it you compile it once done than you can return to the setup phase, this should empty out reset the cmdbuffer and allow to add again resources, this should make sure the resources in use are
+//   not overwritten though while still allowing new resources to be added,also while on a built state it should be able to handle n frames in flight with internal sync to minimize the wait idle time and allow multiple frame to be run concurrently, this
 impl RenderGraph {
     pub fn new(core: Rc<Core>) -> SrResult<Self> {
         let cmd_buffer = CmdBuffer::new(Rc::clone(&core))?;
