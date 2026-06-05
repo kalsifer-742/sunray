@@ -1,14 +1,28 @@
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
-use crate::render_graph::pass_builder::{ComputeRenderPass, DynRenderFn, RasterRenderPass, RaytracingRenderPass};
-use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, Core, Image, RawBuffer, Sampler};
+use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
+use crate::vulkan_abstraction::{AccelerationStructure, CmdBuffer, Core, Image, RawBuffer, Sampler};
 use ash::vk;
 use enum_as_inner::EnumAsInner;
+use petgraph::visit::EdgeRef;
 use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 use vk_sync_fork as vk_sync;
+
+/// Pick the right `vk::ImageAspectFlags` for a given format. Used when building
+/// image subresource ranges for layout transitions in `emit_barriers`.
+fn aspect_for(format: vk::Format) -> vk::ImageAspectFlags {
+    match format {
+        vk::Format::D16_UNORM | vk::Format::D32_SFLOAT | vk::Format::X8_D24_UNORM_PACK32 => vk::ImageAspectFlags::DEPTH,
+        vk::Format::D16_UNORM_S8_UINT | vk::Format::D24_UNORM_S8_UINT | vk::Format::D32_SFLOAT_S8_UINT => {
+            vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+        }
+        vk::Format::S8_UINT => vk::ImageAspectFlags::STENCIL,
+        _ => vk::ImageAspectFlags::COLOR,
+    }
+}
 
 pub trait Resource {
     type Desc: ResourceDesc;
@@ -503,18 +517,68 @@ impl RenderGraph<Setup> {
         let components: Vec<PassComponent> = components_by_root.into_values().collect();
 
         self.transient_resources
-            .populate(core, &self.virtual_resources, &components, &resource_usages)?;
+            .populate(Rc::clone(&core), &self.virtual_resources, &components, &resource_usages)?;
 
-        //TODO topological-order traversal of dep_graph, emit barriers per edge, invoke each pass's DynRenderFn
-        //TODO build the final BuiltRenderGraph (cmd buffer recording) and transition into RenderGraph<Built>
-        todo!("compile: command-buffer recording from dep_graph + components is not implemented yet")
+        // Topological order of passes. petgraph's toposort fails iff there is a
+        // cycle, which would be a logic bug since hazards only ever produce
+        // forward (lower pass_id → higher pass_id) edges by construction.
+        let topo = petgraph::algo::toposort(&dep_graph, None)
+            .map_err(|_| SrError::new_custom("render graph dependency graph contains a cycle".to_string()))?;
+
+        // Pre-group all barriers by the pass that needs them issued *before* it
+        // runs. Each dep edge contributes its barriers to the destination pass.
+        let mut incoming: HashMap<usize, Vec<ResourceBarrier>> = HashMap::new();
+        for edge in dep_graph.edge_references() {
+            let dst = dep_graph[edge.target()];
+            incoming
+                .entry(dst)
+                .or_default()
+                .extend(edge.weight().barriers.iter().cloned());
+        }
+
+        let device = core.device().inner().clone();
+        let cmd_buffer = CmdBuffer::new(Rc::clone(&core))?;
+        let raw_cb = cmd_buffer.inner();
+        unsafe {
+            device.begin_command_buffer(
+                raw_cb,
+                &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+        }
+
+        // Drive each pass in topological order. We borrow `self.passes` mutably
+        // (closures are FnMut) but only `self.transient_resources` immutably, so
+        // the disjoint-field split borrow is fine.
+        for node in &topo {
+            let pass_id = dep_graph[*node];
+
+            if let Some(barriers) = incoming.remove(&pass_id) {
+                self.transient_resources.emit_barriers(&device, raw_cb, &barriers);
+            }
+
+            let common = match &mut self.passes[pass_id] {
+                AnyRenderPass::Rt(rt) => &mut rt.common,
+                AnyRenderPass::Raster(raster) => &mut raster.common,
+                AnyRenderPass::Compute(compute) => &mut compute.common,
+            };
+            if let Some(render) = common.render.as_mut() {
+                let mut cb_handle = raw_cb;
+                render(&mut cb_handle, &self.transient_resources)?;
+            }
+        }
+
+        unsafe { device.end_command_buffer(raw_cb)? };
+
+        Ok(RenderGraph {
+            next_pass_id: self.next_pass_id,
+            next_resource_id: self.next_resource_id,
+            virtual_resources: self.virtual_resources,
+            passes: Vec::new(),
+            transient_resources: self.transient_resources,
+            swapchain_resource_id: self.swapchain_resource_id,
+            state_data: Built { cmd_buffer },
+        })
     }
-}
-
-pub(super) struct CompiledPass {
-    render: Box<DynRenderFn>,
-    pub(crate) name: String,
-    id: u32,
 }
 
 #[derive(Default)]
@@ -865,10 +929,115 @@ impl Drop for TransientResources {
     }
 }
 
+impl TransientResources {
+    /// Issue a `vkCmdPipelineBarrier` covering every `ResourceBarrier` in
+    /// `barriers`. Each barrier is dispatched as an image barrier, buffer
+    /// barrier, or global barrier depending on what kind of resource its
+    /// `resource_id` resolves to here. Resources unknown to this struct (e.g.
+    /// non-aliased samplers or AS-only ids that slipped through) collapse to a
+    /// `GlobalBarrier` carrying just the access transition.
+    ///
+    /// Layouts: we use `vk_sync::ImageLayout::Optimal` for both sides, which
+    /// tells vk_sync to pick the right `VK_IMAGE_LAYOUT_*` from the access
+    /// types. Subresource range covers all mips / array layers — per-mip /
+    /// per-layer barriers are a future optimization once passes can express
+    /// subresource access.
+    ///
+    /// Queue family transfer is `IGNORED` on both sides — we're single-queue.
+    ///
+    /// TODO this is currently doing a 1 resource barriers to 1 actual barrier, this can be reduced to 1 barrier per image layout transition and a global barrier for the other stuff, this doesn't add any involuntary sync since I have already built the dependencies graph
+    pub(crate) fn emit_barriers(&self, device: &ash::Device, cmd_buffer: vk::CommandBuffer, barriers: &[ResourceBarrier]) {
+        if barriers.is_empty() {
+            return;
+        }
+        let mut image_barriers: Vec<vk_sync::ImageBarrier> = Vec::new();
+        let mut buffer_barriers: Vec<vk_sync::BufferBarrier> = Vec::new();
+        let mut global_prev: Vec<vk_sync::AccessType> = Vec::new();
+        let mut global_next: Vec<vk_sync::AccessType> = Vec::new();
+
+        for b in barriers {
+            let prev_slice = std::slice::from_ref(&b.prev_access);
+            let next_slice = std::slice::from_ref(&b.next_access);
+
+            // Image? (transient first, then imported — same resource id can never
+            // appear in both maps so the order doesn't matter for correctness).
+            let image_info = self
+                .transient_images
+                .get(&b.resource_id)
+                .map(|img| (img.inner(), img.format()))
+                .or_else(|| {
+                    self.external_images
+                        .get(&b.resource_id)
+                        .map(|img| (img.inner(), img.format()))
+                });
+
+            if let Some((handle, format)) = image_info {
+                image_barriers.push(vk_sync::ImageBarrier {
+                    previous_accesses: prev_slice,
+                    next_accesses: next_slice,
+                    previous_layout: vk_sync::ImageLayout::Optimal,
+                    next_layout: vk_sync::ImageLayout::Optimal,
+                    discard_contents: false,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    image: handle,
+                    range: vk::ImageSubresourceRange {
+                        aspect_mask: aspect_for(format),
+                        base_mip_level: 0,
+                        level_count: vk::REMAINING_MIP_LEVELS,
+                        base_array_layer: 0,
+                        layer_count: vk::REMAINING_ARRAY_LAYERS,
+                    },
+                });
+                continue;
+            }
+
+            let buffer_info = self
+                .transient_buffers
+                .get(&b.resource_id)
+                .map(|buf| (buf.inner(), buf.byte_size()))
+                .or_else(|| {
+                    self.external_buffers
+                        .get(&b.resource_id)
+                        .map(|buf| (buf.inner(), buf.byte_size()))
+                });
+
+            if let Some((handle, size)) = buffer_info {
+                buffer_barriers.push(vk_sync::BufferBarrier {
+                    previous_accesses: prev_slice,
+                    next_accesses: next_slice,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    buffer: handle,
+                    offset: 0,
+                    size: size as usize,
+                });
+                continue;
+            }
+
+            // Fallback: AS / sampler / anything else — collapse into a global
+            // barrier so the access ordering is still expressed.
+            global_prev.push(b.prev_access);
+            global_next.push(b.next_access);
+        }
+
+        let global = if !global_prev.is_empty() {
+            Some(vk_sync::GlobalBarrier {
+                previous_accesses: &global_prev,
+                next_accesses: &global_next,
+            })
+        } else {
+            None
+        };
+
+        vk_sync::cmd::pipeline_barrier(device, cmd_buffer, global, &buffer_barriers, &image_barriers);
+    }
+}
+
 impl std::fmt::Debug for TransientResources {
     /// Renders the aliasing decisions in the same "report" layout used by the
-    /// transient_aliasing_debug test: header, per-slot allocation table, per-
-    /// resource slot assignment, and grouped aliasing sets. Lifetimes aren't
+    /// transient_aliasing_debug test: header, per-slot allocation table, per-resource
+    /// slot assignment, and grouped aliasing sets. Lifetimes aren't
     /// stored on `self`, so they're omitted here — only what `populate` left
     /// behind is printed.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -962,12 +1131,14 @@ pub trait RgImportable<ResDesc: ResourceDesc> {
 
 pub(crate) struct Render {}
 
-pub(crate) struct Built {}
-impl RenderGraphState for Built {}
-
-pub struct BuiltRenderGraph {
-    cmd_buffer: CmdBuffer, //ready to execute
+/// Type-state payload for a compiled `RenderGraph<Built>`: holds the recorded
+/// command buffer that was emitted during `compile`. Submission/execution is a
+/// follow-up step; this just represents "ready to submit".
+pub struct Built {
+    #[allow(dead_code)]
+    pub(crate) cmd_buffer: CmdBuffer,
 }
+impl RenderGraphState for Built {}
 
 pub trait TypeEquals {
     type Other;
@@ -1092,5 +1263,85 @@ mod tests {
         // Sampler must have been materialized but not slot-aliased.
         assert_eq!(transient.transient_samplers.len(), 1);
         assert!(!transient.resource_slots.contains_key(&5));
+    }
+
+    /// End-to-end compile test: two compute passes with a producer→consumer
+    /// dependency. Verifies that (a) the topological traversal invokes the
+    /// passes in dependency order, (b) the render closure receives a non-null
+    /// command buffer that's been begin-recorded, and (c) compile returns a
+    /// `RenderGraph<Built>` carrying a real `CmdBuffer`.
+    #[test]
+    fn compile_runs_passes_in_topo_order() {
+        use crate::render_graph::pass_builder::{
+            ComputeRenderPassBuilder, PassCommonDataBuilder,
+        };
+        use std::cell::RefCell;
+
+        let core = Rc::new(Core::new(false, false, vk::Format::R8G8B8A8_UNORM).expect("Core::new failed"));
+        let mut rg = RenderGraph::<Setup>::new();
+
+        let img_a = rg.create(image(64, "img_a"));
+        let img_b = rg.create(image(64, "img_b"));
+
+        // Shared trace: each render closure pushes its name.
+        let trace: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+        // Pass 0: write img_a.
+        let mut common0 = PassCommonDataBuilder::new(&mut rg, "producer");
+        common0
+            .write(&img_a, vk_sync::AccessType::ComputeShaderWrite)
+            .expect("producer write");
+        {
+            let trace = Rc::clone(&trace);
+            common0.render(move |cb, _tr| {
+                assert_ne!(*cb, vk::CommandBuffer::null(), "producer got null cmd buffer");
+                trace.borrow_mut().push("producer");
+                Ok(())
+            });
+        }
+        let producer = ComputeRenderPassBuilder::default()
+            .common(common0.build())
+            .shaders(vec![])
+            .entry_point("main".to_string())
+            .build()
+            .expect("build producer pass");
+        rg.add_render_pass(AnyRenderPass::Compute(producer));
+
+        // Pass 1: read img_a, write img_b → depends on pass 0.
+        let mut common1 = PassCommonDataBuilder::new(&mut rg, "consumer");
+        common1
+            .read(&img_a, vk_sync::AccessType::ComputeShaderReadOther)
+            .expect("consumer read");
+        common1
+            .write(&img_b, vk_sync::AccessType::ComputeShaderWrite)
+            .expect("consumer write");
+        {
+            let trace = Rc::clone(&trace);
+            common1.render(move |cb, tr| {
+                assert_ne!(*cb, vk::CommandBuffer::null(), "consumer got null cmd buffer");
+                // img_a must be bound to a transient slot at this point.
+                assert!(tr.resource_slots.contains_key(&0), "img_a not bound after populate");
+                trace.borrow_mut().push("consumer");
+                Ok(())
+            });
+        }
+        let consumer = ComputeRenderPassBuilder::default()
+            .common(common1.build())
+            .shaders(vec![])
+            .entry_point("main".to_string())
+            .build()
+            .expect("build consumer pass");
+        rg.add_render_pass(AnyRenderPass::Compute(consumer));
+
+        let built = rg.compile(Rc::clone(&core)).expect("compile failed");
+
+        // Both render closures must have fired, producer before consumer.
+        let trace = trace.borrow();
+        assert_eq!(*trace, vec!["producer", "consumer"], "topo order violated");
+        // Built state must carry the recorded cmd buffer.
+        assert_ne!(
+            built.state_data.cmd_buffer.inner(),
+            vk::CommandBuffer::null()
+        );
     }
 }

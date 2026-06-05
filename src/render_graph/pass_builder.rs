@@ -53,7 +53,14 @@ pub(crate) struct PassCommonData {
     pub(crate) write: Vec<ResourceRef>,
 
     pub(crate) name: String,
+    #[allow(dead_code)]
     id: u32,
+    /// The user-supplied recording function for this pass. Invoked by
+    /// `RenderGraph::compile` once per pass in topological order, after the
+    /// barriers required by that pass's incoming edges have already been issued
+    /// into the command buffer. `None` means "nothing to record" (e.g.
+    /// pass kept only to anchor an external resource transition).
+    pub(crate) render: Option<Box<DynRenderFn>>,
 }
 
 pub struct PassCommonDataBuilder {
@@ -67,8 +74,24 @@ impl PassCommonDataBuilder {
                 write: vec![],
                 name: name.into(),
                 id: rg.next_pass_id(),
+                render: None,
             },
         }
+    }
+
+    /// Attach the recording closure to this pass. Replaces any previous one.
+    pub fn render<F>(&mut self, f: F) -> &mut Self
+    where
+        F: FnMut(&mut CommandBuffer, &TransientResources) -> SrResult<()> + 'static,
+    {
+        self.pass_common_data.render = Some(Box::new(f));
+        self
+    }
+
+    /// Finalize the builder and consume it into the `PassCommonData` that the
+    /// concrete pass builders embed.
+    pub fn build(self) -> PassCommonData {
+        self.pass_common_data
     }
     pub fn read<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
         if !access_type.is_write_access() {

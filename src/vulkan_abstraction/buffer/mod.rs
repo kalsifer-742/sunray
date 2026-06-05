@@ -223,6 +223,14 @@ impl RawBuffer {
         self.byte_size
     }
 
+    pub fn inner(&self) -> vk::Buffer {
+        self.buffer
+    }
+
+    pub fn usage(&self) -> vk::BufferUsageFlags {
+        self.usage
+    }
+
     /// Heap slot for `UNIFORM_BUFFER`. Lazily allocates on first call.
     pub fn uniform_slot(&self) -> u32 {
         self.descriptor_slot(&self.uniform_slot, ResourceDescriptorKind::UniformBuffer)
