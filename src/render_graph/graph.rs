@@ -554,6 +554,9 @@ impl RenderGraph<Setup> {
 
             if let Some(barriers) = incoming.remove(&pass_id) {
                 self.transient_resources.emit_barriers(&device, raw_cb, &barriers);
+                self.transient_resources
+                    .recorded_barriers
+                    .push((pass_id, barriers));
             }
 
             let common = match &mut self.passes[pass_id] {
@@ -601,6 +604,12 @@ pub struct TransientResources {
     /// Maps each aliased transient resource id (images + buffers) to its slot id
     /// in `slot_allocations`. Samplers and AS are absent (they're not aliased).
     resource_slots: HashMap<u32, u32>,
+    /// Trace of the barriers that `compile` issued, in topological order, one
+    /// entry per pass that needed at least one barrier. Populated by `compile`
+    /// after `populate` has wired resources, cleared on `free_internal_state`.
+    /// Purely informational — used by the `Debug` impl; the actual barrier
+    /// commands are already recorded into the command buffer at this point.
+    pub(crate) recorded_barriers: Vec<(usize, Vec<ResourceBarrier>)>,
     /// Cached for `Drop`. Set on first `populate`.
     core: Option<Rc<Core>>,
 }
@@ -908,6 +917,7 @@ impl TransientResources {
         self.transient_buffers.clear();
         self.transient_samplers.clear();
         self.resource_slots.clear();
+        self.recorded_barriers.clear();
 
         if let Some(core) = self.core.as_ref() {
             let mut allocator = core.allocator_mut();
@@ -1118,6 +1128,47 @@ impl std::fmt::Debug for TransientResources {
             writeln!(f, "Imported resources:")?;
             for (id, kind) in imports {
                 writeln!(f, "  res {id} {kind}")?;
+            }
+        }
+
+        // ---- Barriers recorded during compile ----
+        writeln!(f)?;
+        let total_barriers: usize = self.recorded_barriers.iter().map(|(_, b)| b.len()).sum();
+        if self.recorded_barriers.is_empty() {
+            writeln!(f, "Barriers recorded: none (graph not compiled or single-pass)")?;
+        } else {
+            writeln!(
+                f,
+                "Barriers recorded ({} total across {} pass(es), in topo order):",
+                total_barriers,
+                self.recorded_barriers.len(),
+            )?;
+            for (pass_id, barriers) in &self.recorded_barriers {
+                writeln!(f, "  before pass {pass_id}:")?;
+                for b in barriers {
+                    let kind = if self.transient_images.contains_key(&b.resource_id)
+                        || self.external_images.contains_key(&b.resource_id)
+                    {
+                        "Image"
+                    } else if self.transient_buffers.contains_key(&b.resource_id)
+                        || self.external_buffers.contains_key(&b.resource_id)
+                    {
+                        "Buffer"
+                    } else if self.transient_samplers.contains_key(&b.resource_id)
+                        || self.external_samplers.contains_key(&b.resource_id)
+                    {
+                        "Sampler"
+                    } else if self.external_raytracing_ac.contains_key(&b.resource_id) {
+                        "AccelStruct"
+                    } else {
+                        "Global"
+                    };
+                    writeln!(
+                        f,
+                        "    res {:>3} ({kind:<11}) {:?} -> {:?}",
+                        b.resource_id, b.prev_access, b.next_access
+                    )?;
+                }
             }
         }
         writeln!(f, "==========================================")
@@ -1335,6 +1386,10 @@ mod tests {
 
         let built = rg.compile(Rc::clone(&core)).expect("compile failed");
 
+        // Print the transient state — the report now includes the barrier
+        // trace recorded by compile.
+        println!("{:?}", built.transient_resources);
+
         // Both render closures must have fired, producer before consumer.
         let trace = trace.borrow();
         assert_eq!(*trace, vec!["producer", "consumer"], "topo order violated");
@@ -1342,6 +1397,11 @@ mod tests {
         assert_ne!(
             built.state_data.cmd_buffer.inner(),
             vk::CommandBuffer::null()
+        );
+        // At least one barrier must have been recorded (producer→consumer RAW on img_a).
+        assert!(
+            !built.transient_resources.recorded_barriers.is_empty(),
+            "expected at least one recorded barrier between producer and consumer"
         );
     }
 }
