@@ -175,4 +175,4 @@ pub enum ShaderSource {
     Glsl(PathBuf),
 }
 
-pub(crate) type DynRenderFn = dyn FnOnce(&mut CommandBuffer, &mut TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
+pub(crate) type DynRenderFn = dyn FnMut(&mut CommandBuffer, &TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones

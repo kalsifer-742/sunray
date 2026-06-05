@@ -679,6 +679,7 @@ impl TransientResources {
         // (memory_type_bits, location) is compatible with this resource's
         // (memory_type_bits, location). On reuse, the slot's accumulated requirements
         // grow to the max(size), max(alignment), AND(memory_type_bits).
+        //TODO this conditions can be relaxed especially on the memory type side
         let mut next_slot: u32 = 0;
         let mut slot_reqs: HashMap<u32, SlotMemReqs> = HashMap::new();
         for component in components {
@@ -864,6 +865,96 @@ impl Drop for TransientResources {
     }
 }
 
+impl std::fmt::Debug for TransientResources {
+    /// Renders the aliasing decisions in the same "report" layout used by the
+    /// transient_aliasing_debug test: header, per-slot allocation table, per-
+    /// resource slot assignment, and grouped aliasing sets. Lifetimes aren't
+    /// stored on `self`, so they're omitted here — only what `populate` left
+    /// behind is printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let aliasable = self.resource_slots.len();
+        let imported = self.external_images.len()
+            + self.external_buffers.len()
+            + self.external_samplers.len()
+            + self.external_raytracing_ac.len();
+        let total = self.transient_images.len() + self.transient_buffers.len() + self.transient_samplers.len() + imported;
+
+        writeln!(f)?;
+        writeln!(f, "=== TransientResources aliasing report ===")?;
+        writeln!(f, "resources tracked           : {total}")?;
+        writeln!(f, "  transient images          : {}", self.transient_images.len())?;
+        writeln!(f, "  transient buffers         : {}", self.transient_buffers.len())?;
+        writeln!(f, "  transient samplers        : {}", self.transient_samplers.len())?;
+        writeln!(f, "  imported                  : {imported}")?;
+        writeln!(f, "aliasable resources (img+buf): {aliasable}")?;
+        writeln!(f, "slot allocations            : {}", self.slot_allocations.len())?;
+        writeln!(f)?;
+
+        writeln!(f, "Per-slot allocation:")?;
+        for (i, alloc) in self.slot_allocations.iter().enumerate() {
+            let mem = unsafe { alloc.memory() };
+            writeln!(
+                f,
+                "  slot {i}: size={:>8} offset={:>8} memory={:?}",
+                alloc.size(),
+                alloc.offset(),
+                mem,
+            )?;
+        }
+        writeln!(f)?;
+
+        writeln!(f, "Per-resource slot assignment:")?;
+        let mut assignments: Vec<(u32, u32)> = self.resource_slots.iter().map(|(r, s)| (*r, *s)).collect();
+        assignments.sort();
+        for (res_id, slot_id) in &assignments {
+            let kind = if let Some(img) = self.transient_images.get(res_id) {
+                let e = img.extent();
+                format!("Image {}x{}x{}", e.width, e.height, e.depth)
+            } else if let Some(buf) = self.transient_buffers.get(res_id) {
+                format!("Buffer {} bytes", buf.byte_size())
+            } else {
+                "???".to_string()
+            };
+            writeln!(f, "  res {res_id} {kind:<32} -> slot {slot_id}")?;
+        }
+        writeln!(f)?;
+
+        let mut by_slot: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for (r, s) in &self.resource_slots {
+            by_slot.entry(*s).or_default().push(*r);
+        }
+        writeln!(f, "Aliasing groups (slot -> resources sharing memory):")?;
+        for (slot, members) in &by_slot {
+            let mut m = members.clone();
+            m.sort();
+            let aliased = if m.len() > 1 { " (ALIASED)" } else { "" };
+            writeln!(f, "  slot {slot} <- resources {m:?}{aliased}")?;
+        }
+
+        // Non-aliased extras
+        if !self.transient_samplers.is_empty() {
+            writeln!(f)?;
+            let mut samplers: Vec<u32> = self.transient_samplers.keys().copied().collect();
+            samplers.sort();
+            writeln!(f, "Transient samplers (not slot-aliased): {samplers:?}")?;
+        }
+        if imported > 0 {
+            writeln!(f)?;
+            let mut imports: Vec<(u32, &'static str)> = Vec::new();
+            imports.extend(self.external_images.keys().map(|k| (*k, "Image")));
+            imports.extend(self.external_buffers.keys().map(|k| (*k, "Buffer")));
+            imports.extend(self.external_samplers.keys().map(|k| (*k, "Sampler")));
+            imports.extend(self.external_raytracing_ac.keys().map(|k| (*k, "AccelStruct")));
+            imports.sort();
+            writeln!(f, "Imported resources:")?;
+            for (id, kind) in imports {
+                writeln!(f, "  res {id} {kind}")?;
+            }
+        }
+        writeln!(f, "==========================================")
+    }
+}
+
 pub trait RgImportable<ResDesc: ResourceDesc> {
     //TODO do I want to take ownership of the data?
     fn import(&self) -> ResDesc;
@@ -887,5 +978,119 @@ impl<T: Sized> TypeEquals for T {
     type Other = Self;
     fn same(value: Self) -> Self::Other {
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpu_allocator::MemoryLocation;
+
+    fn image(size: u32, name: &'static str) -> ImageDesc {
+        ImageDesc {
+            extent: vk::Extent3D {
+                width: size,
+                height: size,
+                depth: 1,
+            },
+            format: vk::Format::R8G8B8A8_UNORM,
+            tiling: vk::ImageTiling::OPTIMAL,
+            location: MemoryLocation::GpuOnly,
+            usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
+            name,
+        }
+    }
+
+    fn buffer(bytes: u64, name: &'static str) -> BufferDesc {
+        BufferDesc {
+            byte_size: bytes,
+            alignment: 16,
+            memory_location: MemoryLocation::GpuOnly,
+            usage: vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
+            name,
+        }
+    }
+
+    fn lifetime(first: usize, last: usize) -> ResourceLifetimeUsage {
+        ResourceLifetimeUsage {
+            first_pass: first,
+            last_pass: last,
+            usages: vec![],
+        }
+    }
+
+    /// Exercises `TransientResources::populate` on a hand-built set of virtual
+    /// resources whose lifetimes deliberately allow reuse. Prints the slot
+    /// assignment + aliasing groups so the allocator decisions are inspectable
+    /// with `cargo test transient_aliasing -- --nocapture`.
+    ///
+    /// Resource layout:
+    ///   res 0: 256x256 image,   lifetime [0,1]  ┐ overlap → distinct slots
+    ///   res 1: 512x512 image,   lifetime [0,1]  ┘
+    ///   res 2: 128x128 image,   lifetime [2,3]  ┐ overlap, both 0/1 dead → reuse
+    ///   res 3: 4096-byte buffer,lifetime [2,3]  ┘
+    ///   res 4: 1024-byte buffer,lifetime [4,5]  → reuses earliest free slot
+    ///   res 5: sampler                          (not aliased)
+    #[test]
+    fn transient_aliasing_debug() {
+        let core = Rc::new(Core::new(false, false, vk::Format::R8G8B8A8_UNORM).expect("Core::new failed"));
+
+        let virtual_resources = vec![
+            GraphResourceInfo::Created(GraphResourceDesc::Image(image(256, "img_256"))),
+            GraphResourceInfo::Created(GraphResourceDesc::Image(image(512, "img_512"))),
+            GraphResourceInfo::Created(GraphResourceDesc::Image(image(128, "img_128"))),
+            GraphResourceInfo::Created(GraphResourceDesc::Buffer(buffer(4096, "buf_4k"))),
+            GraphResourceInfo::Created(GraphResourceDesc::Buffer(buffer(1024, "buf_1k"))),
+            GraphResourceInfo::Created(GraphResourceDesc::Sampler(SamplerDesc {
+                min_filter: vk::Filter::LINEAR,
+                mag_filter: vk::Filter::LINEAR,
+                address_mode_u: vk::SamplerAddressMode::REPEAT,
+                address_mode_v: vk::SamplerAddressMode::REPEAT,
+                address_mode_w: vk::SamplerAddressMode::REPEAT,
+                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+            })),
+        ];
+
+        let mut usages: BTreeMap<u32, ResourceLifetimeUsage> = BTreeMap::new();
+        usages.insert(0, lifetime(0, 1));
+        usages.insert(1, lifetime(0, 1));
+        usages.insert(2, lifetime(2, 3));
+        usages.insert(3, lifetime(2, 3));
+        usages.insert(4, lifetime(4, 5));
+        // sampler: lifetime doesn't matter for slot assignment, but populate uses
+        // `usages` only via `pending` keys, so we still record one.
+        usages.insert(5, lifetime(0, 5));
+
+        let components = vec![PassComponent {
+            passes: (0..6).collect(),
+            resources: vec![0, 1, 2, 3, 4, 5],
+        }];
+
+        let mut transient = TransientResources::default();
+        transient
+            .populate(Rc::clone(&core), &virtual_resources, &components, &usages)
+            .expect("populate failed");
+
+        println!("{transient:?}");
+
+        // Sanity: overlapping-lifetime resources must NOT share a slot.
+        assert_ne!(
+            transient.resource_slots[&0], transient.resource_slots[&1],
+            "res 0 and 1 overlap; must be in different slots"
+        );
+        assert_ne!(
+            transient.resource_slots[&2], transient.resource_slots[&3],
+            "res 2 and 3 overlap; must be in different slots"
+        );
+        // Total slot count must be strictly fewer than the number of aliasable
+        // resources — otherwise no aliasing happened at all.
+        assert!(
+            transient.slot_allocations.len() < 5,
+            "expected aliasing to reduce 5 resources to fewer slots; got {} slots",
+            transient.slot_allocations.len()
+        );
+        // Sampler must have been materialized but not slot-aliased.
+        assert_eq!(transient.transient_samplers.len(), 1);
+        assert!(!transient.resource_slots.contains_key(&5));
     }
 }

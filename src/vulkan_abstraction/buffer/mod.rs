@@ -219,6 +219,10 @@ impl RawBuffer {
         })
     }
 
+    pub fn byte_size(&self) -> u64 {
+        self.byte_size
+    }
+
     /// Heap slot for `UNIFORM_BUFFER`. Lazily allocates on first call.
     pub fn uniform_slot(&self) -> u32 {
         self.descriptor_slot(&self.uniform_slot, ResourceDescriptorKind::UniformBuffer)
