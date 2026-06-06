@@ -161,44 +161,39 @@ fn compile_slang_shader(module_name: &str, entry_point: &str, out_file_name: &st
 fn main() {
     println!("cargo::rerun-if-changed=shaders/");
 
-    compile_shader(
-        "shaders/ray_gen_ris.glsl",
-        shaderc::ShaderKind::RayGeneration,
-        false,
-        "ray_gen_ris.spirv",
-    );
-    compile_shader(
-        "shaders/ray_gen_final.glsl",
-        shaderc::ShaderKind::RayGeneration,
-        false,
-        "ray_gen_final.spirv",
-    );
-    compile_shader(
-        "shaders/closest_hit.glsl",
-        shaderc::ShaderKind::ClosestHit,
-        false,
-        "closest_hit.spirv",
-    );
-    compile_shader("shaders/any_hit.glsl", shaderc::ShaderKind::AnyHit, false, "any_hit.spirv");
-    compile_shader("shaders/ray_miss.glsl", shaderc::ShaderKind::Miss, false, "ray_miss.spirv");
-    compile_shader("shaders/denoise.glsl", shaderc::ShaderKind::Compute, false, "denoise.spirv");
-    compile_shader(
-        "shaders/temporal_accumulation.glsl",
-        shaderc::ShaderKind::Compute,
-        false,
-        "temporal_accumulation.spirv",
-    );
-    compile_shader(
-        "shaders/postprocess.glsl",
-        shaderc::ShaderKind::Compute,
-        false,
-        "postprocess.spirv",
-    );
-
-    // Slang shaders. The runtime path in src/shader_compiler still compiles
-    // postprocess.slang as well — we keep the build-time artifact so callers
-    // can choose to skip the runtime hop.
-    compile_slang_shader("postprocess", "main", "postprocess_slang.spirv");
+    // compile_shader(
+    //     "shaders/ray_gen_ris.glsl",
+    //     shaderc::ShaderKind::RayGeneration,
+    //     false,
+    //     "ray_gen_ris.spirv",
+    // );
+    // compile_shader(
+    //     "shaders/ray_gen_final.glsl",
+    //     shaderc::ShaderKind::RayGeneration,
+    //     false,
+    //     "ray_gen_final.spirv",
+    // );
+    // compile_shader(
+    //     "shaders/closest_hit.glsl",
+    //     shaderc::ShaderKind::ClosestHit,
+    //     false,
+    //     "closest_hit.spirv",
+    // );
+    // compile_shader("shaders/any_hit.glsl", shaderc::ShaderKind::AnyHit, false, "any_hit.spirv");
+    // compile_shader("shaders/ray_miss.glsl", shaderc::ShaderKind::Miss, false, "ray_miss.spirv");
+    // compile_shader("shaders/denoise.glsl", shaderc::ShaderKind::Compute, false, "denoise.spirv");
+    // compile_shader(
+    //     "shaders/temporal_accumulation.glsl",
+    //     shaderc::ShaderKind::Compute,
+    //     false,
+    //     "temporal_accumulation.spirv",
+    // );
+    // compile_shader(
+    //     "shaders/postprocess.glsl",
+    //     shaderc::ShaderKind::Compute,
+    //     false,
+    //     "postprocess.spirv",
+    // );
 
     // Raytracing pipeline (heap mode). One Slang module per stage; the entry
     // point matches the [shader("…")] attribute inside each file.
@@ -207,4 +202,6 @@ fn main() {
     compile_slang_shader("closest_hit", "closest_hit", "closest_hit_slang.spirv");
     compile_slang_shader("ray_gen_ris", "ray_gen_ris", "ray_gen_ris_slang.spirv");
     compile_slang_shader("ray_gen_final", "ray_gen_final", "ray_gen_final_slang.spirv");
+    compile_slang_shader("postprocess", "main", "postprocess_slang.spirv");
+
 }
