@@ -145,7 +145,8 @@
       "Bash(ls examples/)",
       "Bash(grep -rln \"render_to_host_memory\\\\|render_to_image\" examples/)",
       "Bash(echo \"=== EXIT: $? ===\")",
-      "Bash(echo \"cargo exit: $?\")"
+      "Bash(echo \"cargo exit: $?\")",
+      "Bash(rm -f examples/png/render.png)"
     ]
   }
 }

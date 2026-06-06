@@ -118,9 +118,11 @@ impl Device {
                         .queue_priorities(&transfer_priorities),
                 );
             }
-            // Bisecting: maintenance9 was a recent addition that changes queue-ownership
-            // and image-access semantics. Temporarily disabled while debugging the denoise
-            // descriptor read returning zero.
+            // maintenance9 would let the staging upload skip the transfer->graphics queue
+            // ownership transfer (BestPractices-PipelineBarrier-unneeded-QFOT hint), but
+            // enabling it crashes during init on this driver/loader stack (host
+            // STATUS_ACCESS_VIOLATION right after descriptor-heap creation). Left disabled;
+            // the QFOT in staging_buffer is therefore still required and correct.
             let mut maintenance9_features = vk::PhysicalDeviceMaintenance9FeaturesKHR::default().maintenance9(false);
             let mut vk14_features = vk::PhysicalDeviceVulkan14Features::default().maintenance5(true);
             let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
@@ -168,7 +170,11 @@ impl Device {
                     .shader_sampled_image_array_dynamic_indexing(true)
                     .shader_storage_buffer_array_dynamic_indexing(true)
                     .shader_storage_image_array_dynamic_indexing(true)
-                    .shader_int16(true),
+                    .shader_int16(true)
+                    // RT shaders use 64-bit buffer-device-addresses (tlas / matrices /
+                    // reservoirs in RaytracingPC), so their SPIR-V declares the Int64
+                    // capability; enabling shaderInt64 satisfies VUID-VkShaderModuleCreateInfo-pCode-08740.
+                    .shader_int64(true),
             );
 
             // Optional diagnostics p_next (currently only NVIDIA Aftermath). The struct

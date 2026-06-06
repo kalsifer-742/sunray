@@ -173,6 +173,8 @@ impl<T> StagingBuffer<T> {
         if dedicated_transfer {
             // Release ownership: dstStageMask must be NONE (only TRANSFER stages are valid here).
             // The acquire on the graphics queue will carry the real dst stage/access masks.
+            // (A queue-family ownership transfer is required because maintenance9 is disabled
+            // — see device.rs. This is the BestPractices-unneeded-QFOT hint's subject.)
             let release_barrier = vk::BufferMemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
                 .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)

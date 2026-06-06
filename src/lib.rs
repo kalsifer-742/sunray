@@ -859,13 +859,28 @@ impl Renderer {
         let accum_target_h = if accum_idx == 0 { accum0_h.clone() } else { accum1_h.clone() };
         let accum_history_h = if history_idx == 0 { accum0_h.clone() } else { accum1_h.clone() };
 
-        // 1. Ray tracing (RIS + final, with the reservoir hand-off between them).
-        Self::add_raytracing_pass(
+        // 1. Ray tracing as two passes, each with its own pipeline + SBT: RIS
+        // audition then final shading. They're ordered by the shared G-buffer
+        // write-after-write hazard; the reservoir hand-off (RIS writes, final
+        // reads — via device address, not a graph resource) is a manual barrier
+        // at the end of the RIS pass.
+        Self::add_raytracing_ris_pass(
             rg,
             Rc::clone(&core),
             ris_pipeline,
-            final_pipeline,
             sbt_ris,
+            rt_pc_base,
+            raw_color_h.clone(),
+            depth_h.clone(),
+            normal_h.clone(),
+            diffuse_h.clone(),
+            motion_h.clone(),
+            extent,
+        )?;
+        Self::add_raytracing_final_pass(
+            rg,
+            Rc::clone(&core),
+            final_pipeline,
             sbt_final,
             rt_pc_base,
             raw_color_h.clone(),
@@ -924,24 +939,44 @@ impl Renderer {
         Ok(())
     }
 
-    /// Single graph node performing both ray-tracing dispatches (RIS audition +
-    /// final shading) with the reservoir A->B hand-off barrier between them. Uses
-    /// the renderer's persistent RT pipelines + SBTs; writes the five internal
-    /// G-buffer / RT-output images, whose heap slots are resolved from `tr`.
+    /// Builds the heap-mode raytracing push constant for a frame: the non-image
+    /// fields come from `pc_base`, the five G-buffer / RT-output image slots are
+    /// resolved from the graph's transient resources. Shared by both RT passes so
+    /// they push identical bindings.
+    fn rt_push_constant(
+        pc_base: &vulkan_abstraction::RaytracingHeapPushConstant,
+        tr: &crate::render_graph::graph::TransientResources,
+        raw_color_h: &Handle<vulkan_abstraction::Image>,
+        depth_h: &Handle<vulkan_abstraction::Image>,
+        normal_h: &Handle<vulkan_abstraction::Image>,
+        diffuse_h: &Handle<vulkan_abstraction::Image>,
+        motion_h: &Handle<vulkan_abstraction::Image>,
+    ) -> SrResult<vulkan_abstraction::RaytracingHeapPushConstant> {
+        let pack = |i: u32| -> [u32; 2] { [i, 0] };
+        let mut pc = *pc_base;
+        pc.raw_color = pack(tr.image(raw_color_h)?.storage_slot());
+        pc.depth_img = pack(tr.image(depth_h)?.storage_slot());
+        pc.normal_img = pack(tr.image(normal_h)?.storage_slot());
+        pc.diffuse_img = pack(tr.image(diffuse_h)?.storage_slot());
+        pc.motion_vec_img = pack(tr.image(motion_h)?.storage_slot());
+        Ok(pc)
+    }
+
+    /// RIS audition ray-tracing pass (heap mode), with its own pipeline + SBT.
+    /// Writes the G-buffer / RT-output images and the ReSTIR reservoirs, then
+    /// issues the reservoir hand-off barrier so the final-shading pass sees the
+    /// audition's reservoir writes.
     ///
-    /// Modeled as a single node (rather than the builder's single-pipeline
-    /// `generate_render`) because RT here is two pipelines sharing one
-    /// push-constant, with an internal reservoir barrier the graph can't express
-    /// (the reservoir buffers are accessed by device address, not as graph
-    /// resources).
+    /// The reservoir buffers are accessed by device address (not graph
+    /// resources), so the RIS->final reservoir dependency can't be a graph edge;
+    /// it's this manual barrier. Ordering of the two passes themselves comes from
+    /// the shared G-buffer write-after-write hazard.
     #[allow(clippy::too_many_arguments)]
-    fn add_raytracing_pass(
+    fn add_raytracing_ris_pass(
         rg: &mut RenderGraph,
         core: Rc<vulkan_abstraction::Core>,
-        ris_pipeline: vk::Pipeline,
-        final_pipeline: vk::Pipeline,
-        sbt_ris: SbtRegions,
-        sbt_final: SbtRegions,
+        pipeline: vk::Pipeline,
+        sbt: SbtRegions,
         pc_base: vulkan_abstraction::RaytracingHeapPushConstant,
         raw_color_h: Handle<vulkan_abstraction::Image>,
         depth_h: Handle<vulkan_abstraction::Image>,
@@ -950,9 +985,9 @@ impl Renderer {
         motion_h: Handle<vulkan_abstraction::Image>,
         extent: vk::Extent3D,
     ) -> SrResult<()> {
-        let mut common = PassCommonDataBuilder::new(rg, "raytracing");
-        // RT writes all five outputs via storage descriptors (GENERAL). `General`
-        // is used because vk_sync has no ray-tracing-specific write access type.
+        let mut common = PassCommonDataBuilder::new(rg, "raytracing_ris");
+        // Writes all five outputs via storage descriptors (GENERAL). `General` is
+        // used because vk_sync has no ray-tracing-specific write access type.
         common.write(&raw_color_h, vk_sync::AccessType::General)?;
         common.write(&depth_h, vk_sync::AccessType::General)?;
         common.write(&normal_h, vk_sync::AccessType::General)?;
@@ -960,38 +995,30 @@ impl Renderer {
         common.write(&motion_h, vk_sync::AccessType::General)?;
 
         common.render(move |cb, tr| {
-            let pack = |i: u32| -> [u32; 2] { [i, 0] };
-            let mut pc = pc_base;
-            pc.raw_color = pack(tr.image(&raw_color_h)?.storage_slot());
-            pc.depth_img = pack(tr.image(&depth_h)?.storage_slot());
-            pc.normal_img = pack(tr.image(&normal_h)?.storage_slot());
-            pc.diffuse_img = pack(tr.image(&diffuse_h)?.storage_slot());
-            pc.motion_vec_img = pack(tr.image(&motion_h)?.storage_slot());
-
+            let pc = Self::rt_push_constant(&pc_base, tr, &raw_color_h, &depth_h, &normal_h, &diffuse_h, &motion_h)?;
             let device = core.device().inner();
             unsafe {
                 core.descriptor_heap().cmd_bind(*cb);
+                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline);
                 let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
                     address: &pc as *const _ as *const std::ffi::c_void,
                     size: std::mem::size_of::<vulkan_abstraction::RaytracingHeapPushConstant>(),
                     _marker: Default::default(),
                 });
-
-                // PASS 1: RIS audition.
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, ris_pipeline);
                 core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
                 core.rt_pipeline_device().cmd_trace_rays(
                     *cb,
-                    &sbt_ris.raygen,
-                    &sbt_ris.miss,
-                    &sbt_ris.hit,
-                    &sbt_ris.callable,
+                    &sbt.raygen,
+                    &sbt.miss,
+                    &sbt.hit,
+                    &sbt.callable,
                     extent.width,
                     extent.height,
                     extent.depth,
                 );
 
-                // Reservoir A->B hand-off between the two dispatches.
+                // Reservoir A->B hand-off to the final pass (reservoirs aren't
+                // graph resources, so this isn't covered by the graph's barriers).
                 let reservoir_barrier = vk::MemoryBarrier2::default()
                     .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
                     .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
@@ -999,16 +1026,66 @@ impl Renderer {
                     .dst_access_mask(vk::AccessFlags2::SHADER_READ);
                 let dep_info = vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&reservoir_barrier));
                 device.cmd_pipeline_barrier2(*cb, &dep_info);
+            }
+            Ok(())
+        });
 
-                // PASS 2: final shading.
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, final_pipeline);
+        let pass = ComputeRenderPassBuilder::default()
+            .common(common.build())
+            .shaders(vec![])
+            .entry_point(String::new())
+            .build()
+            .map_err(|e| SrError::new_custom(format!("raytracing RIS pass builder failed: {e}")))?;
+        rg.add_render_pass(AnyRenderPass::Compute(pass));
+        Ok(())
+    }
+
+    /// Final shading ray-tracing pass (heap mode), with its own pipeline + SBT.
+    /// Reads the reservoirs the RIS pass produced (visibility established by the
+    /// reservoir barrier at the end of that pass) and writes the final color into
+    /// the G-buffer outputs. Ordered after the RIS pass by the shared G-buffer
+    /// write-after-write hazard the graph tracks.
+    #[allow(clippy::too_many_arguments)]
+    fn add_raytracing_final_pass(
+        rg: &mut RenderGraph,
+        core: Rc<vulkan_abstraction::Core>,
+        pipeline: vk::Pipeline,
+        sbt: SbtRegions,
+        pc_base: vulkan_abstraction::RaytracingHeapPushConstant,
+        raw_color_h: Handle<vulkan_abstraction::Image>,
+        depth_h: Handle<vulkan_abstraction::Image>,
+        normal_h: Handle<vulkan_abstraction::Image>,
+        diffuse_h: Handle<vulkan_abstraction::Image>,
+        motion_h: Handle<vulkan_abstraction::Image>,
+        extent: vk::Extent3D,
+    ) -> SrResult<()> {
+        let mut common = PassCommonDataBuilder::new(rg, "raytracing_final");
+        // Re-declares the same writes as the RIS pass: this is what creates the
+        // write-after-write hazard edge that orders this pass after RIS.
+        common.write(&raw_color_h, vk_sync::AccessType::General)?;
+        common.write(&depth_h, vk_sync::AccessType::General)?;
+        common.write(&normal_h, vk_sync::AccessType::General)?;
+        common.write(&diffuse_h, vk_sync::AccessType::General)?;
+        common.write(&motion_h, vk_sync::AccessType::General)?;
+
+        common.render(move |cb, tr| {
+            let pc = Self::rt_push_constant(&pc_base, tr, &raw_color_h, &depth_h, &normal_h, &diffuse_h, &motion_h)?;
+            let device = core.device().inner();
+            unsafe {
+                core.descriptor_heap().cmd_bind(*cb);
+                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline);
+                let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
+                    address: &pc as *const _ as *const std::ffi::c_void,
+                    size: std::mem::size_of::<vulkan_abstraction::RaytracingHeapPushConstant>(),
+                    _marker: Default::default(),
+                });
                 core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
                 core.rt_pipeline_device().cmd_trace_rays(
                     *cb,
-                    &sbt_final.raygen,
-                    &sbt_final.miss,
-                    &sbt_final.hit,
-                    &sbt_final.callable,
+                    &sbt.raygen,
+                    &sbt.miss,
+                    &sbt.hit,
+                    &sbt.callable,
                     extent.width,
                     extent.height,
                     extent.depth,
@@ -1022,7 +1099,7 @@ impl Renderer {
             .shaders(vec![])
             .entry_point(String::new())
             .build()
-            .map_err(|e| SrError::new_custom(format!("raytracing pass builder failed: {e}")))?;
+            .map_err(|e| SrError::new_custom(format!("raytracing final pass builder failed: {e}")))?;
         rg.add_render_pass(AnyRenderPass::Compute(pass));
         Ok(())
     }
@@ -1369,104 +1446,7 @@ impl Renderer {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn cmd_postprocess_image(
-        &self,
-        cmd_buf: vk::CommandBuffer,
-        width: u32,
-        height: u32,
-        input_image: &vulkan_abstraction::Image,
-        output_image: &vulkan_abstraction::Image,
-    ) -> SrResult<()> {
-        let device = self.core.device().inner();
 
-        let push_constants = vulkan_abstraction::PostprocessPushConstant {
-            input_idx: input_image.storage_slot(),
-            _input_pad: 0,
-            output_idx: output_image.storage_slot(),
-            _output_pad: 0,
-            exposure: EXPOSURE,
-        };
-
-        let input_barrier = vk::ImageMemoryBarrier2::default()
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(input_image.inner())
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-
-        let output_barrier = vk::ImageMemoryBarrier2::default()
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_access_mask(vk::AccessFlags2::empty())
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(output_image.inner())
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-
-        unsafe {
-            let postprocess_pre_barriers = [input_barrier, output_barrier];
-            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&postprocess_pre_barriers);
-            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
-
-            device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::COMPUTE, self.postprocess_pipeline.inner());
-
-            // Bind the descriptor heaps (resource + sampler) for this dispatch.
-            self.core.descriptor_heap().cmd_bind(cmd_buf);
-
-            // Heap-mode pipelines have no VkPipelineLayout, so push constants go through
-            // vkCmdPushDataEXT — the descriptor-heap replacement for vkCmdPushConstants.
-            let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
-                address: &push_constants as *const _ as *const std::ffi::c_void,
-                size: size_of::<PostprocessPushConstant>(),
-                _marker: Default::default(),
-            });
-
-            self.core.descriptor_heap_device().cmd_push_data(cmd_buf, &push_info);
-
-            let group_x = width.div_ceil(16);
-            let group_y = height.div_ceil(16);
-            device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
-
-            // Final barrier: Ensure post-process is done before the Blit/Transfer starts
-            let final_barrier = vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(output_image.inner())
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
-
-            let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&final_barrier));
-            device.cmd_pipeline_barrier2(cmd_buf, &dep_info);
-        }
-
-        Ok(())
-    }
     fn cmd_blit_image(
         core: &vulkan_abstraction::Core,
         cmd_buf: vk::CommandBuffer,
