@@ -296,7 +296,7 @@ impl Renderer {
             vk::SamplerMipmapMode::NEAREST,
         )?;
 
-        let render_graph = crate::render_graph::graph::RenderGraph::new(Rc::clone(&core))?;
+        let render_graph = RenderGraph::new(Rc::clone(&core))?;
         let render_graph_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(core.device()))?;
 
         // Discard-init accumulation + denoising images to GENERAL once at startup.
