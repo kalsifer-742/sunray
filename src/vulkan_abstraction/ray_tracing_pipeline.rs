@@ -66,6 +66,7 @@ pub struct RayTracingPipeline {
 }
 
 impl RayTracingPipeline {
+    #[deprecated(note = "This method is legacy, new_heap should be used ")]
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         descriptor_set_layout: &vulkan_abstraction::RaytracingDescriptorSetLayout,

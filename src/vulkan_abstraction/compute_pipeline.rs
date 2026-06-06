@@ -153,7 +153,7 @@ impl<T: ComputeTypeDef> ComputePipeline<T> {
             _marker: PhantomData,
         })
     }
-
+    #[deprecated(note = "This method is legacy, new_heap should be used ")]
     pub fn new(core: Rc<Core>, descriptor_set_layout: vk::DescriptorSetLayout) -> SrResult<Self> {
         let device = core.device().inner();
 

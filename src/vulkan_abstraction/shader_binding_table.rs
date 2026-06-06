@@ -21,8 +21,9 @@ pub struct ShaderBindingTable {
 
 impl ShaderBindingTable {
     pub fn new(core: &Rc<vulkan_abstraction::Core>, rt_pipeline: &vulkan_abstraction::RayTracingPipeline) -> SrResult<Self> {
+        // TODO: be more flexible and allow the user to provide more than 1 hit/miss shader
         const RAYGEN_COUNT: u32 = 1; //There is always one and only one raygen
-        let miss_count = 1; // TODO: be more flexible and allow the user to provide more than 1 hit/miss shader
+        let miss_count = 1;
         let hit_count = 1;
         let handle_count = RAYGEN_COUNT + miss_count + hit_count;
 
