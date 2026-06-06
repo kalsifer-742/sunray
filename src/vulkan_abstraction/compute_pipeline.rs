@@ -57,6 +57,25 @@ pub struct DenoisePushConstant {
     pub height: u32,
 }
 
+/// Heap-mode push constant for `shaders/denoise.slang`. Layout mirrors the
+/// shader's `DenoisePC` struct: five 8-byte `DescriptorHandle<>` slots followed
+/// by the same scalar tail as `DenoisePushConstant`. Each `[u32; 2]` is
+/// (slot_index, 0) — the high word is reserved by Slang.
+#[allow(dead_code)] // read by the gpu
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct DenoiseHeapPushConstant {
+    pub temporal_result: [u32; 2],
+    pub depth: [u32; 2],
+    pub normal: [u32; 2],
+    pub diffuse: [u32; 2],
+    pub spatial_output: [u32; 2],
+    pub frame_count: u32,
+    pub step_width: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[allow(dead_code)] // read by the gpu
 #[repr(C, packed)]
 #[derive(Debug)]

@@ -18,8 +18,7 @@ use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
 use crate::vulkan_abstraction::{
-    DenoiseDescriptorSetLayout, DenoisePass, PostProcessDescriptorSets, PostprocessPass, PostprocessPushConstant, Reservoir,
-    ReservoirGI, TemporalPass,
+    DenoisePass, PostProcessDescriptorSets, PostprocessPass, PostprocessPushConstant, Reservoir, ReservoirGI, TemporalPass,
 };
 use ash::vk;
 use vk_sync_fork as vk_sync;
@@ -46,11 +45,11 @@ struct ImageDependentData {
     #[allow(unused)]
     postprocess_result_image: Arc<vulkan_abstraction::Image>,
     #[allow(unused)]
-    depth_image: vulkan_abstraction::Image,
+    depth_image: Arc<vulkan_abstraction::Image>,
     #[allow(unused)]
-    normal_image: vulkan_abstraction::Image,
+    normal_image: Arc<vulkan_abstraction::Image>,
     #[allow(unused)]
-    diffuse_image: vulkan_abstraction::Image,
+    diffuse_image: Arc<vulkan_abstraction::Image>,
     #[allow(unused)]
     motion_vector_image: vulkan_abstraction::Image,
 
@@ -61,8 +60,6 @@ struct ImageDependentData {
     #[allow(unused)]
     pub temporal_accumulation_descriptor_sets:
         vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSets,
-    #[allow(unused)]
-    pub denoise_descriptor_sets: vulkan_abstraction::DenoiseDescriptorSets,
     #[allow(unused)]
     pub postprocess_descriptor_sets: PostProcessDescriptorSets,
 }
@@ -86,7 +83,6 @@ pub struct Renderer {
 
     ray_tracing_descriptor_set_layout: vulkan_abstraction::RaytracingDescriptorSetLayout,
     temporal_accumulation_descriptor_set_layout: TemporalAccumulationDescriptorSetLayout,
-    denoise_descriptor_set_layout: DenoiseDescriptorSetLayout,
     postprocess_descriptor_set_layout: PostprocessDescriptorSetLayout,
 
     image_extent: vk::Extent3D,
@@ -186,7 +182,6 @@ impl Renderer {
         let ray_tracing_descriptor_set_layout = vulkan_abstraction::RaytracingDescriptorSetLayout::new(Rc::clone(&core))?;
         let temporal_accumulation_descriptor_set_layout =
             vulkan_abstraction::TemporalAccumulationDescriptorSetLayout::new(Rc::clone(&core))?;
-        let denoise_descriptor_set_layout = vulkan_abstraction::DenoiseDescriptorSetLayout::new(Rc::clone(&core))?;
         let postprocess_descriptor_set_layout = PostprocessDescriptorSetLayout::new(Rc::clone(&core))?;
 
         // Heap-mode RT pipelines built from the Slang-compiled SPIR-V. Both
@@ -221,11 +216,12 @@ impl Renderer {
             temporal_accumulation_descriptor_set_layout.inner(),
         )?;
 
-        let denoise_pipeline =
-            vulkan_abstraction::ComputePipeline::<DenoisePass>::new(Rc::clone(&core), denoise_descriptor_set_layout.inner())?;
-
         let shaders_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
         let shader_compiler = shader_compiler::ShaderCompiler::new(shaders_dir)?;
+
+        let denoise_spirv = shader_compiler.compile("denoise", "main")?;
+        let denoise_pipeline =
+            vulkan_abstraction::ComputePipeline::<DenoisePass>::new_heap(Rc::clone(&core), &denoise_spirv)?;
 
         let postprocess_spirv = shader_compiler.compile("postprocess", "main")?;
         let postprocess_pipeline =
@@ -377,7 +373,6 @@ impl Renderer {
 
                 ray_tracing_descriptor_set_layout,
                 temporal_accumulation_descriptor_set_layout,
-                denoise_descriptor_set_layout,
                 postprocess_descriptor_set_layout,
 
                 prev_view_proj: nalgebra::zero(),
@@ -556,7 +551,7 @@ impl Renderer {
                 "sunray (internal, pre-blit) postprocess result image",
             )?);
 
-            let depth_image = vulkan_abstraction::Image::new(
+            let depth_image = Arc::new(vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
                 vk::Format::R16_SFLOAT,
@@ -564,9 +559,9 @@ impl Renderer {
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 "sunray depth image",
-            )?;
+            )?);
 
-            let normal_image = vulkan_abstraction::Image::new(
+            let normal_image = Arc::new(vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
                 vk::Format::R8G8B8A8_SNORM,
@@ -574,9 +569,9 @@ impl Renderer {
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 "sunray normal image",
-            )?;
+            )?);
 
-            let diffuse_image = vulkan_abstraction::Image::new(
+            let diffuse_image = Arc::new(vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
                 vk::Format::B10G11R11_UFLOAT_PACK32,
@@ -584,7 +579,7 @@ impl Renderer {
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 "sunray diffuse image",
-            )?;
+            )?);
 
             let motion_vector_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
@@ -685,17 +680,6 @@ impl Renderer {
                 self.resource_manager.default_sampler().inner(),
             )?;
 
-            let denoise_descriptor_sets = vulkan_abstraction::DenoiseDescriptorSets::new(
-                Rc::clone(&self.core),
-                &self.denoise_descriptor_set_layout,
-                accum_refs,
-                &depth_image,
-                &normal_image,
-                &diffuse_image,
-                denoise_refs,
-                self.resource_manager.default_sampler().inner(),
-            )?;
-
             let postprocess_descriptor_sets = vulkan_abstraction::PostProcessDescriptorSets::new(
                 Rc::clone(&self.core),
                 &self.postprocess_descriptor_set_layout,
@@ -744,7 +728,6 @@ impl Renderer {
                     blit_cmd_buf,
                     raytracing_descriptor_sets,
                     temporal_accumulation_descriptor_sets,
-                    denoise_descriptor_sets,
                     postprocess_descriptor_sets,
                     raytracing_finished_semaphore,
                 },
@@ -950,11 +933,6 @@ impl Renderer {
         // denoise code used.
         let temporal_accum_idx = ((self.relative_frame_count + 1) % 2) as usize;
 
-        // Re-aim the denoise descriptor set's pass-0 input at this frame's accum slot.
-        img_dependent_data
-            .denoise_descriptor_sets
-            .update_initial_input(&self.accumulation_images[temporal_accum_idx]);
-
         unsafe {
             (*this_ptr).build_denoise_postprocess_graph(temporal_accum_idx, &*img_dependent_data_ptr, result_extent)?;
         }
@@ -1021,16 +999,17 @@ impl Renderer {
         // Capture-by-value snapshot for the 'static closures.
         let core_for_closures = Rc::clone(&self.core);
         let denoise_pipeline = self.denoise_pipeline.inner();
-        let denoise_layout = self.denoise_pipeline.layout();
         let postprocess_pipeline = self.postprocess_pipeline.inner();
         let frame_count = self.relative_frame_count;
         let width = result_extent.width;
         let height = result_extent.height;
-        let dset_handles = [
-            img_dependent_data.denoise_descriptor_sets.inner()[0],
-            img_dependent_data.denoise_descriptor_sets.inner()[1],
-            img_dependent_data.denoise_descriptor_sets.inner()[2],
-        ];
+
+        // G-buffer slots (sampled). Cached once per frame — they're stable across
+        // every denoise pass since depth/normal/diffuse don't ping-pong.
+        let depth_arc = Arc::clone(&img_dependent_data.depth_image);
+        let normal_arc = Arc::clone(&img_dependent_data.normal_image);
+        let diffuse_arc = Arc::clone(&img_dependent_data.diffuse_image);
+
         let denoising_images = [
             Arc::clone(&self.denoising_images[0]),
             Arc::clone(&self.denoising_images[1]),
@@ -1041,26 +1020,34 @@ impl Renderer {
         let rg = &mut self.render_graph;
         rg.reset();
 
-        let accum_handle = rg.import::<crate::render_graph::graph::ImageDesc>(accum_input_arc);
+        let accum_handle = rg.import::<crate::render_graph::graph::ImageDesc>(Arc::clone(&accum_input_arc));
         let denoise_a_handle = rg.import::<crate::render_graph::graph::ImageDesc>(Arc::clone(&denoising_images[0]));
         let denoise_b_handle = rg.import::<crate::render_graph::graph::ImageDesc>(Arc::clone(&denoising_images[1]));
         let postprocess_out_handle = rg.import::<crate::render_graph::graph::ImageDesc>(Arc::clone(&postprocess_out_arc));
 
         for pass_index in 0..DENOISE_PASSES {
-            let step_width = 1u32 << pass_index;
-            let descriptor_idx = if pass_index == 0 {
-                0usize
+            let step_width = 1i32 << pass_index;
+            let (read_handle, write_handle, read_arc, write_arc) = if pass_index == 0 {
+                (
+                    &accum_handle,
+                    &denoise_a_handle,
+                    Arc::clone(&accum_input_arc),
+                    Arc::clone(&denoising_images[0]),
+                )
             } else if pass_index % 2 == 1 {
-                1
+                (
+                    &denoise_a_handle,
+                    &denoise_b_handle,
+                    Arc::clone(&denoising_images[0]),
+                    Arc::clone(&denoising_images[1]),
+                )
             } else {
-                2
-            };
-            let (read_handle, write_handle) = if pass_index == 0 {
-                (&accum_handle, &denoise_a_handle)
-            } else if pass_index % 2 == 1 {
-                (&denoise_a_handle, &denoise_b_handle)
-            } else {
-                (&denoise_b_handle, &denoise_a_handle)
+                (
+                    &denoise_b_handle,
+                    &denoise_a_handle,
+                    Arc::clone(&denoising_images[1]),
+                    Arc::clone(&denoising_images[0]),
+                )
             };
 
             let mut builder = PassCommonDataBuilder::new(rg, format!("denoise_{pass_index}"));
@@ -1068,35 +1055,32 @@ impl Renderer {
             builder.write(write_handle, vk_sync::AccessType::ComputeShaderWrite)?;
 
             let core = Rc::clone(&core_for_closures);
-            let dset = dset_handles[descriptor_idx];
-            let push = vulkan_abstraction::DenoisePushConstant {
-                frame_count,
-                step_width,
-                width,
-                height,
-            };
+            let depth = Arc::clone(&depth_arc);
+            let normal = Arc::clone(&normal_arc);
+            let diffuse = Arc::clone(&diffuse_arc);
             builder.render(move |cb, _tr| {
+                let pack = |i: u32| -> [u32; 2] { [i, 0] };
+                let push = vulkan_abstraction::DenoiseHeapPushConstant {
+                    temporal_result: pack(read_arc.storage_slot()),
+                    depth: pack(depth.sampled_slot()),
+                    normal: pack(normal.sampled_slot()),
+                    diffuse: pack(diffuse.sampled_slot()),
+                    spatial_output: pack(write_arc.storage_slot()),
+                    frame_count,
+                    step_width,
+                    width,
+                    height,
+                };
                 let device = core.device().inner();
                 unsafe {
                     device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, denoise_pipeline);
-                    let sets = [dset];
-                    let bind_info = vk::BindDescriptorSetsInfo::default()
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                        .layout(denoise_layout)
-                        .first_set(0)
-                        .descriptor_sets(&sets)
-                        .dynamic_offsets(&[]);
-                    device.cmd_bind_descriptor_sets2(*cb, &bind_info);
-
-                    let push_bytes: [u8; std::mem::size_of::<vulkan_abstraction::DenoisePushConstant>()] =
-                        std::mem::transmute(push);
-                    let push_info = vk::PushConstantsInfo::default()
-                        .layout(denoise_layout)
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                        .offset(0)
-                        .values(&push_bytes);
-                    device.cmd_push_constants2(*cb, &push_info);
-
+                    core.descriptor_heap().cmd_bind(*cb);
+                    let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
+                        address: &push as *const _ as *const std::ffi::c_void,
+                        size: std::mem::size_of::<vulkan_abstraction::DenoiseHeapPushConstant>(),
+                        _marker: Default::default(),
+                    });
+                    core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
                     device.cmd_dispatch(*cb, width.div_ceil(16), height.div_ceil(16), 1);
                 }
                 Ok(())
