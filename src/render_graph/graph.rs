@@ -38,11 +38,24 @@ pub(crate) struct RawResourceHandle {
     pub(crate) version: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Handle<ResourceType: Resource> {
     pub(crate) raw: RawResourceHandle,
     pub(crate) desc: <ResourceType as Resource>::Desc,
     pub(crate) marker: PhantomData<ResourceType>,
+}
+
+// Manual `Clone` so a `Handle` is cloneable regardless of whether the resource
+// type itself is `Clone` (it never needs to be — only the `Desc` is stored).
+// `#[derive(Clone)]` would add a spurious `ResourceType: Clone` bound.
+impl<ResourceType: Resource> Clone for Handle<ResourceType> {
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw,
+            desc: self.desc.clone(),
+            marker: PhantomData,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -562,6 +575,36 @@ impl RenderGraph {
             device.begin_command_buffer(raw_cb, &vk::CommandBufferBeginInfo::default())?;
         }
 
+        // Initial layout transitions for created (transient) images. Their memory
+        // is freshly bound this frame, so the image is in UNDEFINED; the first
+        // pass that touches one accesses it through a storage/sampled descriptor
+        // that requires GENERAL / SHADER_READ_ONLY. The hazard graph only emits
+        // producer->consumer barriers, so a created image that is *written first*
+        // (the common case: an RT/compute pass producing it) would otherwise be
+        // accessed while still UNDEFINED. Discard-transition each one up front to
+        // the layout implied by its first access. Imported resources are excluded:
+        // they carry a layout from outside the graph (or across frames).
+        let mut init_barriers: Vec<ResourceBarrier> = Vec::new();
+        for (res_id, usage) in &resource_usages {
+            let is_created_image = matches!(
+                self.virtual_resources.get(*res_id as usize),
+                Some(GraphResourceInfo::Created(GraphResourceDesc::Image(_)))
+            );
+            if !is_created_image {
+                continue;
+            }
+            if let Some((_, first_access)) = usage.usages.first() {
+                init_barriers.push(ResourceBarrier {
+                    resource_id: *res_id,
+                    prev_access: vk_sync::AccessType::Nothing,
+                    next_access: first_access.access_type,
+                });
+            }
+        }
+        if !init_barriers.is_empty() {
+            self.transient_resources.emit_barriers(&device, raw_cb, &init_barriers);
+        }
+
         // Drive each pass in topological order. We borrow `self.passes` mutably
         // (closures are FnMut) but only `self.transient_resources` immutably, so
         // the disjoint-field split borrow is fine.
@@ -593,11 +636,20 @@ impl RenderGraph {
     /// `signal_fence` when GPU execution completes. The caller owns the fence
     /// and is responsible for waiting on it before the next `compile`
     /// re-records into the same command buffer.
-    pub fn run(&mut self, signal_fence: &mut Fence) -> SrResult<()> {
+    pub fn run(
+        &mut self,
+        signal_fence: &mut Fence,
+        wait_semaphores: &[vk::Semaphore],
+        wait_stages: &[vk::PipelineStageFlags],
+    ) -> SrResult<()> {
         let fence_handle = signal_fence.submit()?;
-        self.core
-            .graphics_queue()
-            .submit_async(self.cmd_buffer.inner(), &[], &[], &[], fence_handle)?;
+        self.core.graphics_queue().submit_async(
+            self.cmd_buffer.inner(),
+            wait_semaphores,
+            wait_stages,
+            &[],
+            fence_handle,
+        )?;
         Ok(())
     }
 }
@@ -954,6 +1006,26 @@ impl TransientResources {
 impl Drop for TransientResources {
     fn drop(&mut self) {
         self.free_internal_state();
+    }
+}
+
+impl TransientResources {
+    /// Resolve a graph image handle to the concrete `Image` bound for this frame,
+    /// whether it's a transient (created) resource or an imported one. Render
+    /// closures call this to read an image's heap descriptor slots
+    /// (`storage_slot()` / `sampled_slot()`) when the image is graph-managed
+    /// rather than captured directly.
+    pub fn image(&self, handle: &Handle<Image>) -> SrResult<&Image> {
+        let id = handle.raw.id;
+        if let Some(img) = self.transient_images.get(&id) {
+            return Ok(img);
+        }
+        if let Some(img) = self.external_images.get(&id) {
+            return Ok(img.as_ref());
+        }
+        Err(SrError::new_custom(format!(
+            "render graph: no image bound for resource id {id} (not created or imported as an image)"
+        )))
     }
 }
 
@@ -1411,7 +1483,7 @@ mod tests {
 
         // Submit + wait. The graph stays usable for re-compile after run.
         let mut fence = Fence::new_unsignaled(Rc::clone(core.device())).expect("Fence::new");
-        rg.run(&mut fence).expect("run failed");
+        rg.run(&mut fence, &[], &[]).expect("run failed");
         fence.wait().expect("fence wait failed");
 
         // The same primary command buffer persists; not reallocated by run().

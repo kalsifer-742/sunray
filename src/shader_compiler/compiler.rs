@@ -96,3 +96,25 @@ impl ShaderCompiler {
         Ok(spirv_blob.as_slice().to_vec())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Compiles every heap-mode Slang compute shader the renderer loads at
+    /// runtime and asserts each yields non-empty, u32-aligned SPIR-V. This is a
+    /// GPU-free smoke test of shader *syntax* (the Slang runtime DLL must be on
+    /// PATH; if it isn't, `ShaderCompiler::new` fails with a clear message).
+    #[test]
+    fn heap_slang_shaders_compile() {
+        let shaders_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let compiler = ShaderCompiler::new(shaders_dir).expect("ShaderCompiler::new failed");
+        for module in ["temporal_accumulation", "denoise", "postprocess"] {
+            let spirv = compiler
+                .compile(module, "main")
+                .unwrap_or_else(|e| panic!("compiling shaders/{module}.slang failed: {e}"));
+            assert!(!spirv.is_empty(), "{module} produced empty SPIR-V");
+            assert_eq!(spirv.len() % 4, 0, "{module} SPIR-V byte length not u32-aligned");
+        }
+    }
+}

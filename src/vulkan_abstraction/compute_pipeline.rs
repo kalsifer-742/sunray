@@ -19,6 +19,22 @@ pub struct DenoisePass;
 pub struct TemporalPass;
 pub struct PostprocessPass;
 
+/// Neutral marker for heap-mode compute pipelines built directly from Slang
+/// SPIR-V where no legacy descriptor-set layout or fixed push-constant type
+/// applies — e.g. render-graph passes constructed via
+/// `ComputeRenderPassBuilder::generate_render`. Only valid with `new_heap`
+/// (which ignores `PushConstant` / `spirv_bytes`); the legacy `new` path is
+/// meaningless for it.
+pub struct HeapComputePass;
+
+impl ComputeTypeDef for HeapComputePass {
+    type PushConstant = ();
+    type DescriptorsLayout = ();
+    fn spirv_bytes() -> &'static [u8] {
+        &[]
+    }
+}
+
 impl ComputeTypeDef for DenoisePass {
     type PushConstant = DenoisePushConstant;
     type DescriptorsLayout = DenoiseDescriptorSetLayout;
@@ -80,6 +96,24 @@ pub struct DenoiseHeapPushConstant {
 #[repr(C, packed)]
 #[derive(Debug)]
 pub struct TemporalAccumulationPushConstant {
+    pub frame_count: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Heap-mode push constant for `shaders/temporal_accumulation.slang`. Layout
+/// mirrors the shader's `TemporalPC`: four 8-byte `DescriptorHandle<>` slots
+/// (each `[u32; 2]` = (slot_index, 0); the high word is reserved by Slang)
+/// followed by the scalar tail. All four images are bound as STORAGE, so the
+/// accumulation ping-pong stays in GENERAL the whole time.
+#[allow(dead_code)] // read by the gpu
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TemporalAccumulationHeapPushConstant {
+    pub raw_rt_color: [u32; 2],
+    pub motion_vector: [u32; 2],
+    pub history: [u32; 2],
+    pub accum_output: [u32; 2],
     pub frame_count: u32,
     pub width: u32,
     pub height: u32,

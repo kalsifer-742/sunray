@@ -4,7 +4,7 @@ use crate::render_graph::graph::{
     AnyRenderPass, Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource,
     ResourceRef, TransientResources,
 };
-use crate::vulkan_abstraction::{Core, RayTracingPipeline, ShaderBindingTable};
+use crate::vulkan_abstraction::{ComputePipeline, Core, HeapComputePass, RayTracingPipeline, ShaderBindingTable};
 use ash::vk;
 use ash::vk::CommandBuffer;
 use derive_builder::Builder;
@@ -181,11 +181,24 @@ impl RaytracingRenderPassBuilder {
     /// helper; callers compile them externally (e.g. via the Slang
     /// `ShaderCompiler`) and hand the bytes in.
     ///
-    /// Push constants are not pushed by the generated closure: per-frame
-    /// scalar data is pass-specific and lives outside the builder's knowledge.
-    /// Wire it up by composing an extra render step on top, or by extending
-    /// this helper with a typed push-constant callback.
-    pub fn generate_render(mut self, core: Rc<Core>) -> SrResult<Self> {
+    /// `push` is invoked at graph record time with the populated
+    /// `TransientResources`, returning the raw push-constant bytes (e.g. a
+    /// `RaytracingHeapPushConstant`). It can resolve graph image handles to heap
+    /// slots via `tr.image(&h)?.storage_slot()` before assembling the bytes. If
+    /// it returns an empty `Vec`, no `cmd_push_data` is issued.
+    ///
+    /// Note: this builds a single ray-tracing pipeline. The app's two-pass RIS +
+    /// final pipeline (with the reservoir hand-off barrier between them) is wired
+    /// directly in the renderer instead, since one builder pass maps to one
+    /// pipeline.
+    // Builder-level API: builds the pipeline per call. The renderer's per-frame
+    // hot path instead registers RT via a persistent-pipeline closure (see
+    // `Renderer::add_raytracing_pass`), so this is currently unused there.
+    #[allow(dead_code)]
+    pub fn generate_render<F>(mut self, core: Rc<Core>, push: F) -> SrResult<Self>
+    where
+        F: Fn(&TransientResources) -> SrResult<Vec<u8>> + 'static,
+    {
         fn extract_spirv(src: &ShaderSource) -> SrResult<&[u8]> {
             match src {
                 ShaderSource::Spirv(bytes) => Ok(bytes.as_slice()),
@@ -242,11 +255,20 @@ impl RaytracingRenderPassBuilder {
         let pipeline_c = Rc::clone(&pipeline);
         let sbt_c = Rc::clone(&sbt);
         let core_c = Rc::clone(&core);
-        common.render = Some(Box::new(move |cb, _tr| {
+        common.render = Some(Box::new(move |cb, tr| {
+            let push_bytes = push(tr)?;
             let device = core_c.device().inner();
             unsafe {
                 core_c.descriptor_heap().cmd_bind(*cb);
                 device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline_c.inner());
+                if !push_bytes.is_empty() {
+                    let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
+                        address: push_bytes.as_ptr() as *const std::ffi::c_void,
+                        size: push_bytes.len(),
+                        _marker: Default::default(),
+                    });
+                    core_c.descriptor_heap_device().cmd_push_data(*cb, &push_info);
+                }
                 core_c.rt_pipeline_device().cmd_trace_rays(
                     *cb,
                     sbt_c.raygen_region(),
@@ -281,6 +303,77 @@ pub(crate) struct ComputeRenderPass {
     #[builder(setter(each = "add_shader"))]
     pub(super) shaders: Vec<ShaderSource>,
     pub(super) entry_point: String,
+}
+
+impl ComputeRenderPassBuilder {
+    /// Build a heap-mode compute pipeline from this pass's single Slang SPIR-V
+    /// shader and install a render closure that, when the graph records this
+    /// pass, binds the descriptor heap, binds the pipeline, pushes the
+    /// caller-provided bytes via `cmd_push_data`, and dispatches `dispatch`
+    /// workgroups.
+    ///
+    /// `push` is invoked at record time with the populated `TransientResources`,
+    /// so it can resolve graph image handles to heap slots
+    /// (`tr.image(&h)?.storage_slot()`) before assembling the push-constant
+    /// bytes. An empty `Vec` skips `cmd_push_data`.
+    ///
+    /// Requires exactly one shader, set as `ShaderSource::Spirv` (heap shaders
+    /// are compiled by the caller, e.g. via the Slang `ShaderCompiler`).
+    // Builder-level API: builds the pipeline per call. The renderer's per-frame
+    // hot path instead registers compute passes via persistent-pipeline closures
+    // (e.g. `Renderer::add_denoise_passes`), so this is currently unused there.
+    #[allow(dead_code)]
+    pub fn generate_render<F>(mut self, core: Rc<Core>, dispatch: [u32; 3], push: F) -> SrResult<Self>
+    where
+        F: Fn(&TransientResources) -> SrResult<Vec<u8>> + 'static,
+    {
+        let spirv = match self.shaders.as_ref().and_then(|v| v.first()) {
+            Some(ShaderSource::Spirv(bytes)) => bytes.clone(),
+            Some(ShaderSource::Glsl(path)) => {
+                return Err(SrError::new_custom(format!(
+                    "ComputeRenderPassBuilder::generate_render only accepts ShaderSource::Spirv; got Glsl({path:?})"
+                )));
+            }
+            None => {
+                return Err(SrError::new_custom(
+                    "ComputeRenderPassBuilder::generate_render: no shader set".into(),
+                ));
+            }
+        };
+
+        let pipeline = Rc::new(ComputePipeline::<HeapComputePass>::new_heap(Rc::clone(&core), &spirv)?);
+
+        let mut common = self
+            .common
+            .take()
+            .ok_or_else(|| SrError::new_custom("ComputeRenderPassBuilder::generate_render: common not set".into()))?;
+
+        let pipeline_c = Rc::clone(&pipeline);
+        let core_c = Rc::clone(&core);
+        common.render = Some(Box::new(move |cb, tr| {
+            let push_bytes = push(tr)?;
+            let device = core_c.device().inner();
+            unsafe {
+                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, pipeline_c.inner());
+                core_c.descriptor_heap().cmd_bind(*cb);
+                if !push_bytes.is_empty() {
+                    let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
+                        address: push_bytes.as_ptr() as *const std::ffi::c_void,
+                        size: push_bytes.len(),
+                        _marker: Default::default(),
+                    });
+                    core_c.descriptor_heap_device().cmd_push_data(*cb, &push_info);
+                }
+                device.cmd_dispatch(*cb, dispatch[0], dispatch[1], dispatch[2]);
+            }
+            Ok(())
+        }));
+        self.common = Some(common);
+
+        // Keep the pipeline alive for the graph's lifetime via the closure's Rc.
+        let _ = pipeline;
+        Ok(self)
+    }
 }
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
