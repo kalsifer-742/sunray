@@ -499,7 +499,7 @@ impl Renderer {
     }
 
     pub fn clear_image_dependent_data(&mut self) {
-        self.image_dependant_data = HashMap::new();
+        self.image_dependant_data.clear();
     }
 
     pub fn build_image_dependent_data(&mut self, images: &[vk::Image]) -> SrResult<()> {
