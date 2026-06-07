@@ -73,3 +73,9 @@ impl GpuOnlyBuffer {
         Ok(gpu_buffer)
     }
 }
+
+impl From<GpuOnlyBuffer> for RawBuffer {
+    fn from(value: GpuOnlyBuffer) -> Self {
+        value.raw
+    }
+}

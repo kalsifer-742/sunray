@@ -30,5 +30,3 @@ pub(crate) use resource_manager::*;
 pub use resources::*;
 pub(crate) use shader_binding_table::*;
 pub use synchronization::*;
-
-

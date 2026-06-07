@@ -16,7 +16,7 @@ use crate::render_graph::graph::{AnyRenderPass, Handle, ImageDesc, RenderGraph};
 use crate::render_graph::pass_builder::{ComputeRenderPassBuilder, PassCommonDataBuilder};
 use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
 use crate::vulkan_abstraction::{
-    DenoisePass, PostprocessPass, PostprocessPushConstant, Reservoir, ReservoirGI, TemporalPass,
+    Buffer, DenoisePass, GpuOnlyBuffer, PostprocessPass, PostprocessPushConstant, RawBuffer, Reservoir, ReservoirGI, TemporalPass,
 };
 use ash::vk;
 use vk_sync_fork as vk_sync;
@@ -199,8 +199,7 @@ impl Renderer {
         let shader_compiler = shader_compiler::ShaderCompiler::new(shaders_dir)?;
 
         let denoise_spirv = shader_compiler.compile("denoise", "main")?;
-        let denoise_pipeline =
-            vulkan_abstraction::ComputePipeline::<DenoisePass>::new_heap(Rc::clone(&core), &denoise_spirv)?;
+        let denoise_pipeline = vulkan_abstraction::ComputePipeline::<DenoisePass>::new_heap(Rc::clone(&core), &denoise_spirv)?;
 
         let postprocess_spirv = shader_compiler.compile("postprocess", "main")?;
         let postprocess_pipeline =
@@ -209,10 +208,8 @@ impl Renderer {
         // Heap-mode temporal accumulation pipeline (Slang port of the GLSL pass).
         // Built once and reused; the render graph captures its handle each frame.
         let temporal_accumulation_spirv = shader_compiler.compile("temporal_accumulation", "main")?;
-        let temporal_accumulation_pipeline = vulkan_abstraction::ComputePipeline::<TemporalPass>::new_heap(
-            Rc::clone(&core),
-            &temporal_accumulation_spirv,
-        )?;
+        let temporal_accumulation_pipeline =
+            vulkan_abstraction::ComputePipeline::<TemporalPass>::new_heap(Rc::clone(&core), &temporal_accumulation_spirv)?;
 
         let image_dependant_data = HashMap::new();
 
@@ -718,12 +715,11 @@ impl Renderer {
 
         // === Blit postprocess result -> caller's target (outside the graph) ===
         let single_stage = [vk::PipelineStageFlags::ALL_GRAPHICS];
-        let (wait_sems, wait_dst_stages): (&[vk::Semaphore], &[vk::PipelineStageFlags]) =
-            if wait_sem == vk::Semaphore::null() {
-                (&[], &[])
-            } else {
-                (std::slice::from_ref(&wait_sem), &single_stage)
-            };
+        let (wait_sems, wait_dst_stages): (&[vk::Semaphore], &[vk::PipelineStageFlags]) = if wait_sem == vk::Semaphore::null() {
+            (&[], &[])
+        } else {
+            (std::slice::from_ref(&wait_sem), &single_stage)
+        };
 
         let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
         let signal_fence = idd.blit_cmd_buf.fence_mut().submit()?;
@@ -777,7 +773,11 @@ impl Renderer {
             ],
             textures_lookup: pack(self.resource_manager.textures_lookup_slot()),
             frame_count,
-            use_srgb: if self.image_format == vk::Format::R8G8B8A8_SRGB { 1 } else { 0 },
+            use_srgb: if self.image_format == vk::Format::R8G8B8A8_SRGB {
+                1
+            } else {
+                0
+            },
             ..Default::default()
         };
 
@@ -857,7 +857,11 @@ impl Renderer {
         let postprocess_out_h = rg.import::<ImageDesc>(postprocess_out_arc);
 
         let accum_target_h = if accum_idx == 0 { accum0_h.clone() } else { accum1_h.clone() };
-        let accum_history_h = if history_idx == 0 { accum0_h.clone() } else { accum1_h.clone() };
+        let accum_history_h = if history_idx == 0 {
+            accum0_h.clone()
+        } else {
+            accum1_h.clone()
+        };
 
         // 1. Ray tracing as two passes, each with its own pipeline + SBT: RIS
         // audition then final shading. They're ordered by the shared G-buffer
@@ -1194,9 +1198,18 @@ impl Renderer {
             common.read(&read_h, vk_sync::AccessType::ComputeShaderReadOther)?;
             common.write(&write_h, vk_sync::AccessType::ComputeShaderWrite)?;
             if pass_index == 0 {
-                common.read(&depth_h, vk_sync::AccessType::ComputeShaderReadSampledImageOrUniformTexelBuffer)?;
-                common.read(&normal_h, vk_sync::AccessType::ComputeShaderReadSampledImageOrUniformTexelBuffer)?;
-                common.read(&diffuse_h, vk_sync::AccessType::ComputeShaderReadSampledImageOrUniformTexelBuffer)?;
+                common.read(
+                    &depth_h,
+                    vk_sync::AccessType::ComputeShaderReadSampledImageOrUniformTexelBuffer,
+                )?;
+                common.read(
+                    &normal_h,
+                    vk_sync::AccessType::ComputeShaderReadSampledImageOrUniformTexelBuffer,
+                )?;
+                common.read(
+                    &diffuse_h,
+                    vk_sync::AccessType::ComputeShaderReadSampledImageOrUniformTexelBuffer,
+                )?;
             }
 
             let core = Rc::clone(&core);

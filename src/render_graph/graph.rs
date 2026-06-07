@@ -643,13 +643,9 @@ impl RenderGraph {
         wait_stages: &[vk::PipelineStageFlags],
     ) -> SrResult<()> {
         let fence_handle = signal_fence.submit()?;
-        self.core.graphics_queue().submit_async(
-            self.cmd_buffer.inner(),
-            wait_semaphores,
-            wait_stages,
-            &[],
-            fence_handle,
-        )?;
+        self.core
+            .graphics_queue()
+            .submit_async(self.cmd_buffer.inner(), wait_semaphores, wait_stages, &[], fence_handle)?;
         Ok(())
     }
 }
@@ -1487,10 +1483,6 @@ mod tests {
         fence.wait().expect("fence wait failed");
 
         // The same primary command buffer persists; not reallocated by run().
-        assert_eq!(
-            rg.cmd_buffer.inner(),
-            recorded_cb,
-            "cmd_buffer was reallocated across run()"
-        );
+        assert_eq!(rg.cmd_buffer.inner(), recorded_cb, "cmd_buffer was reallocated across run()");
     }
 }

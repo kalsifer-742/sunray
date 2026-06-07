@@ -205,7 +205,4 @@ fn main() {
     compile_slang_shader("postprocess", "main", "postprocess.spirv");
     compile_slang_shader("denoise", "main", "denoise.spirv");
     compile_slang_shader("temporal_accumulation", "main", "temporal_accumulation.spirv");
-
-
-
 }

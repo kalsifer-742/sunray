@@ -205,7 +205,7 @@ impl RaytracingRenderPassBuilder {
                 ShaderSource::Glsl(path) => Err(SrError::new_custom(format!(
                     "generate_render only accepts ShaderSource::Spirv; got Glsl({path:?})"
                 ))),
-                ShaderSource::Slang(path) =>Err(SrError::new_custom(format!(
+                ShaderSource::Slang(path) => Err(SrError::new_custom(format!(
                     "generate_render only accepts ShaderSource::Spirv; got Slang({path:?})"
                 ))),
             }

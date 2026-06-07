@@ -66,7 +66,6 @@ pub struct RayTracingPipeline {
 }
 
 impl RayTracingPipeline {
-
     /// Heap-mode constructor: pipeline layout is `VK_NULL_HANDLE` and the
     /// pipeline is flagged `DESCRIPTOR_HEAP_EXT`. All descriptors and the
     /// push-constant block come from the Slang shaders' SPIR-V interface,

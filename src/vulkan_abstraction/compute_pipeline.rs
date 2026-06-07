@@ -1,5 +1,5 @@
 use crate::error::SrResult;
-use crate::vulkan_abstraction::{Core};
+use crate::vulkan_abstraction::Core;
 use ash::vk;
 use ash::vk::TaggedStructure;
 use std::marker::PhantomData;
