@@ -205,6 +205,9 @@ impl RaytracingRenderPassBuilder {
                 ShaderSource::Glsl(path) => Err(SrError::new_custom(format!(
                     "generate_render only accepts ShaderSource::Spirv; got Glsl({path:?})"
                 ))),
+                ShaderSource::Slang(path) =>Err(SrError::new_custom(format!(
+                    "generate_render only accepts ShaderSource::Spirv; got Slang({path:?})"
+                ))),
             }
         }
 
@@ -282,6 +285,7 @@ impl RaytracingRenderPassBuilder {
             }
             Ok(())
         }));
+
         self.common = Some(common);
 
         // Keep the built pipeline + SBT alive by stashing the Rc clones in the
@@ -332,6 +336,11 @@ impl ComputeRenderPassBuilder {
             Some(ShaderSource::Glsl(path)) => {
                 return Err(SrError::new_custom(format!(
                     "ComputeRenderPassBuilder::generate_render only accepts ShaderSource::Spirv; got Glsl({path:?})"
+                )));
+            }
+            Some(ShaderSource::Slang(path)) => {
+                return Err(SrError::new_custom(format!(
+                    "ComputeRenderPassBuilder::generate_render only accepts ShaderSource::Spirv; got Slang({path:?})"
                 )));
             }
             None => {
@@ -394,8 +403,9 @@ pub trait ShaderDesc {}
 
 #[derive(Clone, Debug)]
 pub enum ShaderSource {
-    //TODO supported shaders, for now glsl + pre-compiled SPIR-V
+    //TODO supported shaders, for now pre-compiled SPIR-V is the only one supported
     Glsl(PathBuf),
+    Slang(PathBuf),
     /// Pre-compiled SPIR-V bytes — produced upstream (e.g. by the Slang
     /// `ShaderCompiler`) and consumed verbatim by heap-mode pipeline helpers
     /// like `RaytracingRenderPassBuilder::generate_render`.

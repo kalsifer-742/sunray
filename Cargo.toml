@@ -12,7 +12,7 @@ exclude = ["examples/assets/Lantern.glb", "examples/.gitignore", ".gitignore"]
 
 [dependencies]
 ash = { git = "https://github.com/ash-rs/ash.git" , features = ["linked"] }
-nalgebra = "0.34"
+nalgebra = "0.35.0"
 gltf = { version = "1.4.1", features = ["KHR_lights_punctual", "KHR_materials_emissive_strength", "KHR_materials_transmission", "KHR_materials_ior"] }
 log = { version = "0.4.28", features = ["release_max_level_warn"] }
 gpu-allocator = {  git = "https://github.com/MatteoBallardin/gpu-allocator.git" }

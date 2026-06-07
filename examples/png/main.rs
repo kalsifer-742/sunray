@@ -46,7 +46,7 @@ fn render_and_save() -> SrResult<()> {
     let image_format = get_vk_format(ExtendedColorType::Rgba8);
     let mut renderer = Renderer::new(image_extent, image_format)?;
 
-    renderer.load_gltf("examples/assets/Lantern.glb")?;
+    renderer.load_gltf("examples/assets/ReflectionRoom.glb")?;
 
     let camera = Camera::default()
         .set_position(na::Point3::new(13.0, 30.0, 25.0))

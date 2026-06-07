@@ -19,8 +19,10 @@ use std::rc::Rc;
 
 #[rustfmt::skip]
 #[allow(unused)]
-pub struct Core { //TODO core is completely single thread
+pub struct Core { 
+    //TODO core is completely single thread
     //TODO core gets distributed way too often when only the device is needed most of the time
+    
     // Note: do not reorder the fields in this struct: they will be dropped in the same order they are declared
     pub absolute_frame_count: RefCell<usize>,
 

@@ -197,11 +197,15 @@ fn main() {
 
     // Raytracing pipeline (heap mode). One Slang module per stage; the entry
     // point matches the [shader("…")] attribute inside each file.
-    compile_slang_shader("ray_miss", "ray_miss", "ray_miss_slang.spirv");
-    compile_slang_shader("any_hit", "any_hit", "any_hit_slang.spirv");
-    compile_slang_shader("closest_hit", "closest_hit", "closest_hit_slang.spirv");
-    compile_slang_shader("ray_gen_ris", "ray_gen_ris", "ray_gen_ris_slang.spirv");
-    compile_slang_shader("ray_gen_final", "ray_gen_final", "ray_gen_final_slang.spirv");
-    compile_slang_shader("postprocess", "main", "postprocess_slang.spirv");
+    compile_slang_shader("ray_miss", "ray_miss", "ray_miss.spirv");
+    compile_slang_shader("any_hit", "any_hit", "any_hit.spirv");
+    compile_slang_shader("closest_hit", "closest_hit", "closest_hit.spirv");
+    compile_slang_shader("ray_gen_ris", "ray_gen_ris", "ray_gen_ris.spirv");
+    compile_slang_shader("ray_gen_final", "ray_gen_final", "ray_gen_final.spirv");
+    compile_slang_shader("postprocess", "main", "postprocess.spirv");
+    compile_slang_shader("denoise", "main", "denoise.spirv");
+    compile_slang_shader("temporal_accumulation", "main", "temporal_accumulation.spirv");
+
+
 
 }

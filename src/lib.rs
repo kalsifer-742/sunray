@@ -171,13 +171,13 @@ impl Renderer {
         // Heap-mode RT pipelines built from the Slang-compiled SPIR-V. Both
         // pipelines share the same miss / closest-hit / any-hit stages — only
         // the ray-gen stage differs (RIS audition vs. final shading pass).
-        let ray_miss_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss_slang.spirv"));
-        let closest_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/closest_hit_slang.spirv"));
-        let any_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit_slang.spirv"));
+        let ray_miss_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss.spirv"));
+        let closest_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/closest_hit.spirv"));
+        let any_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit.spirv"));
 
         let ray_tracing_pipeline_ris = vulkan_abstraction::RayTracingPipeline::new_heap(
             Rc::clone(&core),
-            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_ris_slang.spirv")),
+            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_ris.spirv")),
             ray_miss_spirv,
             closest_hit_spirv,
             any_hit_spirv,
@@ -187,7 +187,7 @@ impl Renderer {
 
         let ray_tracing_pipeline_final = vulkan_abstraction::RayTracingPipeline::new_heap(
             Rc::clone(&core),
-            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final_slang.spirv")),
+            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final.spirv")),
             ray_miss_spirv,
             closest_hit_spirv,
             any_hit_spirv,
@@ -1446,7 +1446,6 @@ impl Renderer {
 const ENABLE_VALIDATION_LAYER_ENV_VAR: &str = "ENABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
 const ENABLE_GPUAV_ENV_VAR_NAME: &str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled, defaults to 0
 const ENABLE_NVIDIA_AFTERMATH_VAR_NAME: &str = "ENABLE_NVIDIA_AFTERMATH"; // does nothing unless validation layer is enabled, defaults to 0
-
 const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
 const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 
