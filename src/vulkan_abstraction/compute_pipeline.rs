@@ -4,6 +4,7 @@ use ash::vk;
 use ash::vk::TaggedStructure;
 use std::marker::PhantomData;
 use std::{ffi::CStr, rc::Rc};
+use crate::render_graph::graph::TransientResources;
 
 const SHADER_ENTRY_POINT: &CStr = c"main";
 
@@ -33,6 +34,7 @@ impl ComputeTypeDef for HeapComputePass {
 
 impl ComputeTypeDef for DenoisePass {
     type PushConstant = DenoisePushConstant;
+
     fn spirv_bytes() -> &'static [u8] {
         include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/denoise.spirv"))
     }
@@ -85,6 +87,9 @@ pub struct DenoiseHeapPushConstant {
     pub height: u32,
 }
 
+
+
+
 #[allow(dead_code)] // read by the gpu
 #[repr(C, packed)]
 #[derive(Debug)]
@@ -125,22 +130,32 @@ pub struct PostprocessPushConstant {
     pub exposure: f32,
 }
 
-pub struct ComputePipeline<T: ComputeTypeDef> {
-    core: Rc<Core>,
+pub struct ComputePipeline<PushConstType> {
+    device : ash::Device,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    _marker: PhantomData<T>,
+    _marker : PhantomData<PushConstType>,
 }
 
-impl<T: ComputeTypeDef> ComputePipeline<T> {
+pub trait Pipeline{
+    type Shaders;
+
+    fn new(device: ash::Device, shaders_spirv_bytes: &Self::Shaders) -> SrResult<Self> where Self: Sized;
+     fn inner(&self) -> vk::Pipeline;
+
+     fn layout(&self) -> vk::PipelineLayout;
+}
+
+
+
+impl<PushConstType > ComputePipeline<PushConstType> {
     /// Heap-mode constructor: pipeline layout has no descriptor sets, only push constants;
     /// the pipeline itself is flagged `DESCRIPTOR_HEAP_EXT`. Caller supplies the SPIR-V
     /// directly (e.g. from the Slang `ShaderCompiler`) since heap-mode shaders are not
     /// the build-time-baked GLSL ones referenced by `T::spirv_bytes`.
-    pub fn new_heap(core: Rc<Core>, spirv_bytes: &[u8]) -> SrResult<Self> {
-        let device = core.device().inner();
+    pub fn new_heap(device: ash::Device, spirv_bytes: &[u8]) -> SrResult<Self> {
         let spirv_u32 = bytemuck::cast_slice(spirv_bytes);
+
 
         let module_create_info = vk::ShaderModuleCreateInfo::default().code(spirv_u32);
         let shader_module = unsafe { device.create_shader_module(&module_create_info, None) }?;
@@ -173,10 +188,9 @@ impl<T: ComputeTypeDef> ComputePipeline<T> {
         unsafe { device.destroy_shader_module(shader_module, None) };
 
         Ok(Self {
-            core,
+            device,
             pipeline,
             pipeline_layout: vk::PipelineLayout::null(),
-            descriptor_set_layout: vk::DescriptorSetLayout::null(),
             _marker: PhantomData,
         })
     }
@@ -190,20 +204,16 @@ impl<T: ComputeTypeDef> ComputePipeline<T> {
         self.pipeline_layout
     }
 
-    pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
-        self.descriptor_set_layout
-    }
 }
 
-impl<T: ComputeTypeDef> Drop for ComputePipeline<T> {
+impl<PushConstType> Drop for ComputePipeline<PushConstType> {
     fn drop(&mut self) {
-        let device = self.core.device().inner();
         unsafe {
-            device.destroy_pipeline(self.pipeline, None);
+            self.device.destroy_pipeline(self.pipeline, None);
             // Heap-mode pipelines are constructed with a null layout; only legacy
             // descriptor-set pipelines own one.
             if self.pipeline_layout != vk::PipelineLayout::null() {
-                device.destroy_pipeline_layout(self.pipeline_layout, None);
+                self.device.destroy_pipeline_layout(self.pipeline_layout, None);
             }
         }
     }

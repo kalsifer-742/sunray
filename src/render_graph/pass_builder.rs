@@ -4,13 +4,15 @@ use crate::render_graph::graph::{
     AnyRenderPass, Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource,
     ResourceRef, TransientResources,
 };
-use crate::vulkan_abstraction::{ComputePipeline, Core, HeapComputePass, RayTracingPipeline, ShaderBindingTable};
+use crate::vulkan_abstraction::{ComputePipeline, ComputeTypeDef, Core, HeapComputePass, RayTracingPipeline, ShaderBindingTable};
 use ash::vk;
 use ash::vk::CommandBuffer;
 use derive_builder::Builder;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::rc::Rc;
+use bytemuck::{Pod, Zeroable};
 
 pub(crate) enum BindingElement {
     //TODO maybe compile time check the value corresponds to the inserted one
@@ -135,6 +137,7 @@ impl PassCommonDataBuilder {
     }
 }
 
+
 impl From<RaytracingRenderPass> for AnyRenderPass {
     fn from(val: RaytracingRenderPass) -> Self {
         AnyRenderPass::Rt(val)
@@ -147,8 +150,8 @@ impl From<RasterRenderPass> for AnyRenderPass {
     }
 }
 
-impl From<ComputeRenderPass> for AnyRenderPass {
-    fn from(val: ComputeRenderPass) -> Self {
+impl<PushConstType: Pod + Zeroable> From<ComputeRenderPass<PushConstType>> for AnyRenderPass {
+    fn from(val: ComputeRenderPass<PushConstType>) -> Self {
         AnyRenderPass::Compute(val)
     }
 }
@@ -302,14 +305,24 @@ pub(crate) struct RasterRenderPass {
 }
 #[derive(Builder)]
 #[builder(pattern = "owned")]
-pub(crate) struct ComputeRenderPass {
+/// Remember [`PushConstType`] must be `#[repr(C)]` or the gpu will get garbage data caused by rust reordering the fields or a struct
+pub(crate) struct ComputeRenderPass<PushConstType: Pod + Zeroable > {
     pub(super) common: PassCommonData,
     #[builder(setter(each = "add_shader"))]
     pub(super) shaders: Vec<ShaderSource>,
+    ///This is the name of a method with a unique name between the shaders
     pub(super) entry_point: String,
+
+    get_push_const : Box<dyn Fn(&TransientResources)  -> PushConstType > ,
 }
 
-impl ComputeRenderPassBuilder {
+pub struct ComputerShaders{
+    pub(super) shaders: Vec<ShaderSource>,
+    ///This is the index of the vec with the shader containing the method and its name
+    pub(super) entry_point: (usize,String),
+}
+
+impl<PushConstType :  Pod + Zeroable> ComputeRenderPassBuilder<PushConstType> {
     /// Build a heap-mode compute pipeline from this pass's single Slang SPIR-V
     /// shader and install a render closure that, when the graph records this
     /// pass, binds the descriptor heap, binds the pipeline, pushes the
@@ -327,12 +340,11 @@ impl ComputeRenderPassBuilder {
     // hot path instead registers compute passes via persistent-pipeline closures
     // (e.g. `Renderer::add_denoise_passes`), so this is currently unused there.
     #[allow(dead_code)]
-    pub fn generate_render<F>(mut self, core: Rc<Core>, dispatch: [u32; 3], push: F) -> SrResult<Self>
-    where
-        F: Fn(&TransientResources) -> SrResult<Vec<u8>> + 'static,
+    pub fn generate_render(mut self, core : Rc<Core>, dispatch: [u32; 3]) -> SrResult<ComputeRenderPass<PushConstType>>
     {
+        //TODO this is currently duplicating the shader on the gpu if it already exists in the render graph cache and is being used by someone else
         let spirv = match self.shaders.as_ref().and_then(|v| v.first()) {
-            Some(ShaderSource::Spirv(bytes)) => bytes.clone(),
+            Some(ShaderSource::Spirv(bytes)) => bytes,
             Some(ShaderSource::Glsl(path)) => {
                 return Err(SrError::new_custom(format!(
                     "ComputeRenderPassBuilder::generate_render only accepts ShaderSource::Spirv; got Glsl({path:?})"
@@ -350,38 +362,57 @@ impl ComputeRenderPassBuilder {
             }
         };
 
-        let pipeline = Rc::new(ComputePipeline::<HeapComputePass>::new_heap(Rc::clone(&core), &spirv)?);
+        let pipeline = ComputePipeline::<PushConstType>::new_heap(core.device().inner().clone(), &spirv)?;
 
         let mut common = self
             .common
             .take()
             .ok_or_else(|| SrError::new_custom("ComputeRenderPassBuilder::generate_render: common not set".into()))?;
 
-        let pipeline_c = Rc::clone(&pipeline);
-        let core_c = Rc::clone(&core);
+        let get_push_const = self
+            .get_push_const
+            .take()
+            .ok_or_else(|| SrError::new_custom("ComputeRenderPassBuilder::generate_render: get_push_const not set".into()))?;
+
+
         common.render = Some(Box::new(move |cb, tr| {
-            let push_bytes = push(tr)?;
-            let device = core_c.device().inner();
+            let device = core.device().inner();
+
+            let push_data: PushConstType = get_push_const(tr);
+
+            let push_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    &push_data as *const PushConstType as *const u8,
+                    size_of::<PushConstType>(),
+                )
+            };
+
             unsafe {
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, pipeline_c.inner());
-                core_c.descriptor_heap().cmd_bind(*cb);
+                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, pipeline.inner());
+                core.descriptor_heap().cmd_bind(*cb);
                 if !push_bytes.is_empty() {
                     let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
                         address: push_bytes.as_ptr() as *const std::ffi::c_void,
                         size: push_bytes.len(),
                         _marker: Default::default(),
                     });
-                    core_c.descriptor_heap_device().cmd_push_data(*cb, &push_info);
+                    core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
                 }
                 device.cmd_dispatch(*cb, dispatch[0], dispatch[1], dispatch[2]);
             }
             Ok(())
         }));
-        self.common = Some(common);
 
         // Keep the pipeline alive for the graph's lifetime via the closure's Rc.
         let _ = pipeline;
-        Ok(self)
+        Ok(  ComputeRenderPass{
+            common,
+            shaders: self.shaders,
+            entry_point: "".to_string(),
+            get_push_const: Box::new(()),
+        })
+
+
     }
 }
 

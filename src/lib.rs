@@ -23,9 +23,7 @@ use std::{collections::HashMap, rc::Rc, sync::Arc};
 use crate::render_graph::graph::{AnyRenderPass, Handle, ImageDesc, RenderGraph};
 use crate::render_graph::pass_builder::{ComputeRenderPassBuilder, PassCommonDataBuilder};
 use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
-use crate::vulkan_abstraction::{
-    Buffer, DenoisePass, GpuOnlyBuffer, PostprocessPass, PostprocessPushConstant, RawBuffer, Reservoir, ReservoirGI, TemporalPass,
-};
+use crate::vulkan_abstraction::{Buffer, ComputePipeline, ComputeTypeDef, DenoisePass, GpuOnlyBuffer, PostprocessPass, PostprocessPushConstant, RawBuffer, Reservoir, ReservoirGI, TemporalPass};
 use ash::vk;
 use vk_sync_fork as vk_sync;
 
@@ -116,7 +114,7 @@ pub struct Renderer {
     /// Re-populated each frame (passes / imports change because the ping-pong
     /// indices and per-frame descriptor sets do), but the underlying command
     /// buffer is reused across `compile` calls.
-    render_graph: crate::render_graph::graph::RenderGraph,
+    pub render_graph: crate::render_graph::graph::RenderGraph,
     /// Fence signaled when the render graph's submission completes.
     render_graph_fence: vulkan_abstraction::Fence,
 
@@ -207,17 +205,19 @@ impl Renderer {
         let shader_compiler = shader_compiler::ShaderCompiler::new(shaders_dir)?;
 
         let denoise_spirv = shader_compiler.compile("denoise", "main")?;
-        let denoise_pipeline = vulkan_abstraction::ComputePipeline::<DenoisePass>::new_heap(Rc::clone(&core), &denoise_spirv)?;
-
+        let denoise_pipeline = vulkan_abstraction::ComputePipeline::<DenoisePass>::new_heap(core.device().inner().clone(), &denoise_spirv)?;
+        
+        
+        
         let postprocess_spirv = shader_compiler.compile("postprocess", "main")?;
         let postprocess_pipeline =
-            vulkan_abstraction::ComputePipeline::<PostprocessPass>::new_heap(Rc::clone(&core), &postprocess_spirv)?;
+            vulkan_abstraction::ComputePipeline::<PostprocessPass>::new_heap(core.device().inner().clone(), &postprocess_spirv)?;
 
         // Heap-mode temporal accumulation pipeline (Slang port of the GLSL pass).
         // Built once and reused; the render graph captures its handle each frame.
         let temporal_accumulation_spirv = shader_compiler.compile("temporal_accumulation", "main")?;
         let temporal_accumulation_pipeline =
-            vulkan_abstraction::ComputePipeline::<TemporalPass>::new_heap(Rc::clone(&core), &temporal_accumulation_spirv)?;
+            vulkan_abstraction::ComputePipeline::<TemporalPass>::new_heap(core.device().inner().clone(), &temporal_accumulation_spirv)?;
 
         let image_dependant_data = HashMap::new();
 
@@ -1281,6 +1281,14 @@ impl Renderer {
         let mut common = PassCommonDataBuilder::new(rg, "postprocess");
         common.read(&denoise_in_h, vk_sync::AccessType::ComputeShaderReadOther)?;
         common.write(&postprocess_out_h, vk_sync::AccessType::ComputeShaderWrite)?;
+
+        
+        
+                        
+        fn binder<PipelineType: ComputeTypeDef>( pipeline : ComputePipeline<PipelineType>  )  {
+            
+        }
+        
 
         common.render(move |cb, tr| {
             let push_constants = PostprocessPushConstant {

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
+use bytemuck::{Pod, Zeroable};
 use vk_sync_fork as vk_sync;
 
 /// Pick the right `vk::ImageAspectFlags` for a given format. Used when building
@@ -216,7 +217,7 @@ pub struct PassResourceAccessType {
 pub enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
-    Compute(ComputeRenderPass),
+    Compute(ComputeRenderPass> ),
 }
 
 /// A single transition required before a destination pass can run, derived from
