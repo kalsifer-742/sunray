@@ -68,10 +68,7 @@ pub(crate) fn extract_windows(
 }
 
 /// Copy the first `(&Transform, &SunrayCamera)` entity into the render world.
-pub(crate) fn extract_camera(
-    mut out: ResMut<ExtractedCamera>,
-    query: Extract<Query<(&Transform, &SunrayCamera)>>,
-) {
+pub(crate) fn extract_camera(mut out: ResMut<ExtractedCamera>, query: Extract<Query<(&Transform, &SunrayCamera)>>) {
     if let Some((transform, cam)) = query.iter().next() {
         let (eye, target, fov_y_degrees) = eye_target_fov(transform, cam);
         *out = ExtractedCamera {
@@ -100,21 +97,13 @@ pub(crate) fn extract_scene(mut out: ResMut<ExtractedScene>, src: Extract<Res<Su
 /// Create the renderer/surface/swapchain on the first window that has a handle,
 /// handle resizes, and (re)load the requested scene. Lazy because the window
 /// handle only exists after the winit event loop starts.
-pub(crate) fn ensure_renderer(
-    mut state: NonSendMut<SunrayRenderState>,
-    windows: Res<SunrayWindows>,
-    scene: Res<ExtractedScene>,
-) {
+pub(crate) fn ensure_renderer(mut state: NonSendMut<SunrayRenderState>, windows: Res<SunrayWindows>, scene: Res<ExtractedScene>) {
     if let Err(e) = ensure_renderer_impl(&mut state, &windows, &scene) {
         log::error!("sunray ensure_renderer: {e}");
     }
 }
 
-fn ensure_renderer_impl(
-    state: &mut SunrayRenderState,
-    windows: &SunrayWindows,
-    scene: &ExtractedScene,
-) -> SrResult<()> {
+fn ensure_renderer_impl(state: &mut SunrayRenderState, windows: &SunrayWindows, scene: &ExtractedScene) -> SrResult<()> {
     if state.renderer.is_none() {
         // Pick the primary window, else any window with a handle.
         let chosen = windows
@@ -217,7 +206,8 @@ fn resize_impl(state: &mut SunrayRenderState, size: (u32, u32)) -> SrResult<()> 
     // Refresh cached surface caps, then decide if the swapchain extent changed.
     {
         let surface = state.surface.as_ref().unwrap();
-        core.device().update_surface_support_details(surface.inner(), surface.instance());
+        core.device()
+            .update_surface_support_details(surface.inner(), surface.instance());
     }
     let new_extent = Swapchain::get_extent(size, &core.device().surface_support_details());
     if state.swapchain.as_ref().unwrap().extent() == new_extent {

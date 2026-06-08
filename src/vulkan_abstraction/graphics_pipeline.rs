@@ -74,10 +74,11 @@ impl GraphicsPipeline {
             .vertex_binding_descriptions(&bindings)
             .vertex_attribute_descriptions(vertex_attributes);
 
-        let input_assembly =
-            vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
 
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
 
         let raster = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
@@ -85,8 +86,7 @@ impl GraphicsPipeline {
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .line_width(1.0);
 
-        let multisample =
-            vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
         // Premultiplied-alpha blending (egui convention).
         let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
@@ -108,8 +108,7 @@ impl GraphicsPipeline {
         let mut rendering = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
 
         // Heap mode: null layout + DESCRIPTOR_HEAP_EXT (same as the compute path).
-        let mut flags2 =
-            vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
+        let mut flags2 = vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)

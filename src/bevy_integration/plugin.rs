@@ -63,10 +63,7 @@ impl Plugin for SunrayRenderPlugin {
         render_app.add_systems(ExtractSchedule, (extract_windows, extract_camera, extract_scene));
 
         // Per-frame render work, NonSend → pinned to the main thread, chained.
-        render_app.add_systems(
-            Render,
-            (ensure_renderer, render_frame).chain().in_set(RenderSystems::Render),
-        );
+        render_app.add_systems(Render, (ensure_renderer, render_frame).chain().in_set(RenderSystems::Render));
     }
 }
 

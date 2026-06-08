@@ -105,7 +105,11 @@ pub fn create_surface(
             unsafe { surface_fn.create_xcb_surface(&surface_desc, None) }
         }
 
-        _ => return Err(SrError::new_custom("unsupported window/display handle for surface creation".to_string())),
+        _ => {
+            return Err(SrError::new_custom(
+                "unsupported window/display handle for surface creation".to_string(),
+            ));
+        }
     };
 
     result.map_err(SrError::from)

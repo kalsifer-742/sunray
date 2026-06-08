@@ -134,7 +134,6 @@ impl PassCommonDataBuilder {
     }
 }
 
-
 /// Borrow the pre-compiled SPIR-V out of a `ShaderSource`. The heap-mode
 /// pipeline helpers (`*RenderPassBuilder::generate_render`) only accept
 /// already-compiled `Spirv`; `Glsl`/`Slang` sources must be compiled upstream
@@ -556,10 +555,7 @@ impl ComputeRenderPassBuilder {
             let push_data: PushConstType = get_push_data(tr)?;
 
             let push_bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    &push_data as *const PushConstType as *const u8,
-                    size_of::<PushConstType>(),
-                )
+                std::slice::from_raw_parts(&push_data as *const PushConstType as *const u8, size_of::<PushConstType>())
             };
 
             unsafe {

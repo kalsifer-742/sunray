@@ -1,7 +1,10 @@
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
 use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
-use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, ComputePipeline, ComputePipelineShaders, Core, Fence, GraphicsPipeline, GraphicsPipelineShaders, HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders, Sampler, ShaderBindingTable};
+use crate::vulkan_abstraction::{
+    AccelerationStructure, Buffer, CmdBuffer, ComputePipeline, Core, Fence, GraphicsPipeline, GraphicsPipelineShaders,
+    HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders, Sampler, ShaderBindingTable,
+};
 use ash::vk;
 use enum_as_inner::EnumAsInner;
 use petgraph::visit::EdgeRef;
@@ -490,20 +493,14 @@ impl RenderGraph {
         let key = pipeline_cache_key(0, &[spirv]);
         let core = Rc::clone(&self.core);
         self.transient_resources.pipeline_cache.intern(key, &core, || {
-            let pipeline = ComputePipeline::<HeapComputePass>::new(
-                core.clone_device(),
-                spirv,
-            )?;
+            let pipeline = ComputePipeline::<HeapComputePass>::new(core.clone_device(), spirv)?;
             Ok(CachedPipeline::Compute(Rc::new(pipeline)))
         })
     }
 
     /// Intern a heap-mode ray-tracing pipeline + its shader binding table.
     pub(crate) fn cache_raytracing_pipeline(&mut self, shaders: &RayTracingPipelineShaders) -> SrResult<PipelineHandle> {
-        let key = pipeline_cache_key(
-            1,
-            &[&shaders.ray_gen, &shaders.miss, &shaders.closest_hit, &shaders.any_hit],
-        );
+        let key = pipeline_cache_key(1, &[&shaders.ray_gen, &shaders.miss, &shaders.closest_hit, &shaders.any_hit]);
         let core = Rc::clone(&self.core);
         self.transient_resources.pipeline_cache.intern(key, &core, || {
             let pipeline = Rc::new(RayTracingPipeline::new(Rc::clone(&core), shaders)?);
@@ -518,7 +515,11 @@ impl RenderGraph {
     pub(crate) fn cache_graphics_pipeline(&mut self, shaders: &GraphicsPipelineShaders) -> SrResult<PipelineHandle> {
         let key = pipeline_cache_key(
             2,
-            &[&shaders.vertex, &shaders.fragment, &shaders.color_format.as_raw().to_ne_bytes()],
+            &[
+                &shaders.vertex,
+                &shaders.fragment,
+                &shaders.color_format.as_raw().to_ne_bytes(),
+            ],
         );
         let core = Rc::clone(&self.core);
         self.transient_resources.pipeline_cache.intern(key, &core, || {

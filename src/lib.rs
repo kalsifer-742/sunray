@@ -188,8 +188,7 @@ impl Renderer {
         // pipeline and SBT in the graph's persistent cache. RIS and final share
         // miss / closest-hit / any-hit and differ only in the ray-gen stage.
         let ray_gen_ris_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_ris.spirv"));
-        let ray_gen_final_spirv: &'static [u8] =
-            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final.spirv"));
+        let ray_gen_final_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final.spirv"));
         let ray_miss_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss.spirv"));
         let closest_hit_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/closest_hit.spirv"));
         let any_hit_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit.spirv"));

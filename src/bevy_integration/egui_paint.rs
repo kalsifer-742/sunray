@@ -175,13 +175,25 @@ impl EguiPaint {
         // Upload geometry (grow-only host-visible buffers).
         if !vertices.is_empty() {
             let bytes = (vertices.len() * std::mem::size_of::<GpuVertex>()) as u64;
-            Self::ensure_buffer(&mut self.vtx, &self.core, bytes, vk::BufferUsageFlags::VERTEX_BUFFER, "egui vtx")?;
+            Self::ensure_buffer(
+                &mut self.vtx,
+                &self.core,
+                bytes,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                "egui vtx",
+            )?;
             let dst = self.vtx.as_mut().unwrap().map_mut::<GpuVertex>()?;
             dst[..vertices.len()].copy_from_slice(&vertices);
         }
         if !indices.is_empty() {
             let bytes = (indices.len() * std::mem::size_of::<u32>()) as u64;
-            Self::ensure_buffer(&mut self.idx, &self.core, bytes, vk::BufferUsageFlags::INDEX_BUFFER, "egui idx")?;
+            Self::ensure_buffer(
+                &mut self.idx,
+                &self.core,
+                bytes,
+                vk::BufferUsageFlags::INDEX_BUFFER,
+                "egui idx",
+            )?;
             let dst = self.idx.as_mut().unwrap().map_mut::<u32>()?;
             dst[..indices.len()].copy_from_slice(&indices);
         }
@@ -290,9 +302,7 @@ impl EguiPaint {
         }
 
         let fence = self.cmd_bufs[img_index].fence_mut().submit()?;
-        self.core
-            .graphics_queue()
-            .submit_async(cmd, &[], &[], &[ready_sem], fence)?;
+        self.core.graphics_queue().submit_async(cmd, &[], &[], &[ready_sem], fence)?;
 
         Ok(())
     }

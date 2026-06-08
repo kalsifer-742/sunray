@@ -176,13 +176,7 @@ impl Pipeline for RayTracingPipeline {
     type Shaders = RayTracingPipelineShaders;
 
     fn new(core: Rc<Core>, shaders: &Self::Shaders) -> SrResult<Self> {
-        Self::new_heap(
-            core,
-            &shaders.ray_gen,
-            &shaders.miss,
-            &shaders.closest_hit,
-            &shaders.any_hit,
-        )
+        Self::new_heap(core, &shaders.ray_gen, &shaders.miss, &shaders.closest_hit, &shaders.any_hit)
     }
 
     fn inner(&self) -> vk::Pipeline {
