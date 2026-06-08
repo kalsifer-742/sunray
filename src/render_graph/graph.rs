@@ -1,11 +1,7 @@
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
 use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
-use crate::vulkan_abstraction::{
-    AccelerationStructure, CmdBuffer, ComputePipeline, ComputePipelineShaders, Core, Fence, GraphicsPipeline,
-    GraphicsPipelineShaders, HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders,
-    Sampler, ShaderBindingTable,
-};
+use crate::vulkan_abstraction::{AccelerationStructure, Buffer, CmdBuffer, ComputePipeline, ComputePipelineShaders, Core, Fence, GraphicsPipeline, GraphicsPipelineShaders, HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders, Sampler, ShaderBindingTable};
 use ash::vk;
 use enum_as_inner::EnumAsInner;
 use petgraph::visit::EdgeRef;
@@ -72,7 +68,7 @@ pub enum AnyRenderResource {
     OwnedImage(Image),
     ImportedImage(Arc<Image>),
     OwnedBuffer(RawBuffer),
-    ImportedBuffer(Arc<RawBuffer>),
+    ImportedBuffer(Arc<dyn Buffer>),
     OwnedSampler(Sampler),
     ImportedSampler(Arc<Sampler>),
     ImportedRayTracingAcceleration(Arc<AccelerationStructure>),

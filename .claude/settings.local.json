@@ -151,7 +151,9 @@
       "Read(//c/Users/MatGa/Documents/GitHub/**)",
       "Bash(grep -E \"bevy_integration|examples\\\\\\\\\\\\\\\\bevy_app|error\")",
       "Bash(echo \"---exit:$?---\")",
-      "Bash(echo \"exit:$?  \\(no lines above = no errors\\)\")"
+      "Bash(echo \"exit:$?  \\(no lines above = no errors\\)\")",
+      "Read(//c/Users/MatGa/.cargo/registry/src/**)",
+      "Read(//c/Users/MatGa/.cargo/git/**)"
     ]
   }
 }

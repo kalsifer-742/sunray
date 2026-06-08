@@ -20,8 +20,10 @@ pub use scene::*;
 
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
-use crate::render_graph::graph::{AnyRenderPass, Handle, ImageDesc, RenderGraph};
-use crate::render_graph::pass_builder::{ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, ShaderSource};
+use crate::render_graph::graph::{AnyRenderPass, BufferDesc, Handle, ImageDesc, RenderGraph};
+use crate::render_graph::pass_builder::{
+    ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
+};
 use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
 use crate::vulkan_abstraction::{PostprocessPushConstant, Reservoir, ReservoirGI};
 use ash::vk;
@@ -42,18 +44,6 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //TODO add a list of callbacks to call at the end of frames for cleanup or at start for setup
 //TODO deferred deallocation for buffers and acceleration structures
 
-/// The four shader-binding-table regions for one ray-tracing pipeline, copied by
-/// value so the render-graph closure (which is `'static`) can own them. The
-/// underlying SBT buffers live for the renderer's lifetime, so the device
-/// addresses inside stay valid.
-#[derive(Clone, Copy)]
-struct SbtRegions {
-    raygen: vk::StridedDeviceAddressRegionKHR,
-    miss: vk::StridedDeviceAddressRegionKHR,
-    hit: vk::StridedDeviceAddressRegionKHR,
-    callable: vk::StridedDeviceAddressRegionKHR,
-}
-
 /// Per-output-image data. The render graph now owns the intermediate G-buffer /
 /// RT-output images as internal (transient) resources, so the only image that
 /// still lives here is the post-process result, which the external blit copies
@@ -72,13 +62,20 @@ pub struct Renderer {
 
     resource_manager: vulkan_abstraction::ResourceManager,
 
-    ///The first pipeline finds the best candidates for each pixel but doesn't trace many rays
-    ray_tracing_pipeline_ris: vulkan_abstraction::RayTracingPipeline,
-    shader_binding_table_ris: vulkan_abstraction::ShaderBindingTable,
-
-    ///The second raytacing pipeline traces the rays based on the reservoirs created during the first pass
-    ray_tracing_pipeline_final: vulkan_abstraction::RayTracingPipeline,
-    shader_binding_table_final: vulkan_abstraction::ShaderBindingTable,
+    // Heap-mode ray-tracing SPIR-V (one blob per stage). Like the compute passes,
+    // the RT pipelines + shader binding tables are no longer built here: each
+    // per-frame graph pass hands these blobs to
+    // `RaytracingRenderPassBuilder::generate_render`, which interns the pipeline
+    // and SBT in the graph's persistent cache (built once, reused across frame
+    // rebuilds). RIS and final share miss/closest-hit/any-hit and differ only in
+    // the ray-gen stage, so they intern as two distinct cache entries.
+    /// Ray-gen for the RIS pass: finds the best candidates per pixel without tracing many rays.
+    ray_gen_ris_spirv: &'static [u8],
+    /// Ray-gen for the final pass: traces rays based on the reservoirs the RIS pass produced.
+    ray_gen_final_spirv: &'static [u8],
+    ray_miss_spirv: &'static [u8],
+    closest_hit_spirv: &'static [u8],
+    any_hit_spirv: &'static [u8],
 
     image_extent: vk::Extent3D,
     image_format: vk::Format,
@@ -122,10 +119,17 @@ pub struct Renderer {
     /// Fence signaled when the render graph's submission completes.
     render_graph_fence: vulkan_abstraction::Fence,
 
-    reservoir_buffers: [vulkan_abstraction::GpuOnlyBuffer; 2],
+    // Ping-pong reservoir buffers. Stored as `Arc<RawBuffer>` (rather than plain
+    // `GpuOnlyBuffer`) so the same buffer can be imported into the render graph
+    // each frame for hazard tracking — the RIS pass writes them and the final
+    // pass reads them, so the graph emits the reservoir hand-off barrier between
+    // the two RT passes automatically. The shader still addresses them by
+    // device-address (see `RaytracingHeapPushConstant::reservoirs`); the graph
+    // import only governs synchronization.
+    reservoir_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
     // Ping-pong pair of GI reservoir buffers for ReSTIR GI (Ouyang 2021); same lifetime/layout
     // contract as reservoir_buffers above, but storing surface samples (x2) instead of light samples.
-    reservoir_gi_buffers: [vulkan_abstraction::GpuOnlyBuffer; 2],
+    reservoir_gi_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
 }
 
 impl Renderer {
@@ -178,32 +182,17 @@ impl Renderer {
         //must be filled by loading a scene
         let resource_manager = vulkan_abstraction::ResourceManager::new_empty(Rc::clone(&core))?;
 
-        // Heap-mode RT pipelines built from the Slang-compiled SPIR-V. Both
-        // pipelines share the same miss / closest-hit / any-hit stages — only
-        // the ray-gen stage differs (RIS audition vs. final shading pass).
-        let ray_miss_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss.spirv"));
-        let closest_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/closest_hit.spirv"));
-        let any_hit_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit.spirv"));
-
-        let ray_tracing_pipeline_ris = vulkan_abstraction::RayTracingPipeline::new_heap(
-            Rc::clone(&core),
-            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_ris.spirv")),
-            ray_miss_spirv,
-            closest_hit_spirv,
-            any_hit_spirv,
-        )?;
-
-        let shader_binding_table_ris = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline_ris)?;
-
-        let ray_tracing_pipeline_final = vulkan_abstraction::RayTracingPipeline::new_heap(
-            Rc::clone(&core),
-            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final.spirv")),
-            ray_miss_spirv,
-            closest_hit_spirv,
-            any_hit_spirv,
-        )?;
-
-        let shader_binding_table_final = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline_final)?;
+        // Heap-mode RT SPIR-V. The pipelines + SBTs are no longer built here:
+        // each per-frame graph pass hands these blobs to
+        // `RaytracingRenderPassBuilder::generate_render`, which interns the
+        // pipeline and SBT in the graph's persistent cache. RIS and final share
+        // miss / closest-hit / any-hit and differ only in the ray-gen stage.
+        let ray_gen_ris_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_ris.spirv"));
+        let ray_gen_final_spirv: &'static [u8] =
+            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final.spirv"));
+        let ray_miss_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss.spirv"));
+        let closest_hit_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/closest_hit.spirv"));
+        let any_hit_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit.spirv"));
 
         let shaders_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
         let shader_compiler = shader_compiler::ShaderCompiler::new(shaders_dir)?;
@@ -237,35 +226,8 @@ impl Renderer {
         let denoising_images = [create_accum_image("Denoise_Ping")?, create_accum_image("Denoise_Pong")?];
 
         let num_pixels = (image_extent.width * image_extent.height) as usize;
-        let reservoir_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<Reservoir>(
-            Rc::clone(&core),
-            num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "ReSTIR Reservoir Buffer A",
-        )?;
-
-        let reservoir_buffer_b = vulkan_abstraction::GpuOnlyBuffer::new::<Reservoir>(
-            Rc::clone(&core),
-            num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "ReSTIR Reservoir Buffer B",
-        )?;
-        let reservoir_buffers = [reservoir_buffer_a, reservoir_buffer_b];
-
-        let reservoir_gi_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
-            Rc::clone(&core),
-            num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "ReSTIR GI Reservoir Buffer A",
-        )?;
-
-        let reservoir_gi_buffer_b = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
-            Rc::clone(&core),
-            num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "ReSTIR GI Reservoir Buffer B",
-        )?;
-        let reservoir_gi_buffers = [reservoir_gi_buffer_a, reservoir_gi_buffer_b];
+        let reservoir_buffers = Self::create_reservoir_buffers(&core, num_pixels)?;
+        let reservoir_gi_buffers = Self::create_reservoir_gi_buffers(&core, num_pixels)?;
 
         let blue_noise_bytes = include_bytes!("../src/util_files/noise.png");
         let blue_noise_img = image::load_from_memory(blue_noise_bytes).unwrap().to_rgba8();
@@ -354,10 +316,11 @@ impl Renderer {
 
                 reservoir_buffers,
 
-                shader_binding_table_ris,
-                ray_tracing_pipeline_ris,
-                shader_binding_table_final,
-                ray_tracing_pipeline_final,
+                ray_gen_ris_spirv,
+                ray_gen_final_spirv,
+                ray_miss_spirv,
+                closest_hit_spirv,
+                any_hit_spirv,
 
                 prev_view_proj: nalgebra::zero(),
 
@@ -386,6 +349,51 @@ impl Renderer {
         ))
     }
 
+    /// Allocate a ping-pong pair of GPU-only buffers holding `num_pixels`
+    /// elements of `T`, usable as SSBOs addressed by device-address and importable
+    /// into the render graph (`Arc<RawBuffer>`).
+    fn create_reservoir_pair<T>(
+        core: &Rc<vulkan_abstraction::Core>,
+        num_pixels: usize,
+        name_a: &'static str,
+        name_b: &'static str,
+    ) -> SrResult<[Arc<vulkan_abstraction::RawBuffer>; 2]> {
+        let byte_size = (num_pixels * std::mem::size_of::<T>()) as vk::DeviceSize;
+        let usage = vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::TRANSFER_DST;
+        let make = |name: &'static str| -> SrResult<Arc<vulkan_abstraction::RawBuffer>> {
+            Ok(Arc::new(vulkan_abstraction::RawBuffer::new_aligned(
+                Rc::clone(core),
+                byte_size,
+                1,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                usage,
+                name,
+            )?))
+        };
+        Ok([make(name_a)?, make(name_b)?])
+    }
+
+    fn create_reservoir_buffers(
+        core: &Rc<vulkan_abstraction::Core>,
+        num_pixels: usize,
+    ) -> SrResult<[Arc<vulkan_abstraction::RawBuffer>; 2]> {
+        Self::create_reservoir_pair::<Reservoir>(core, num_pixels, "ReSTIR Reservoir Buffer A", "ReSTIR Reservoir Buffer B")
+    }
+
+    fn create_reservoir_gi_buffers(
+        core: &Rc<vulkan_abstraction::Core>,
+        num_pixels: usize,
+    ) -> SrResult<[Arc<vulkan_abstraction::RawBuffer>; 2]> {
+        Self::create_reservoir_pair::<ReservoirGI>(
+            core,
+            num_pixels,
+            "ReSTIR GI Reservoir Buffer A",
+            "ReSTIR GI Reservoir Buffer B",
+        )
+    }
+
     pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
         let new_extent = utils::tuple_to_extent3d(image_extent);
         if new_extent == self.image_extent {
@@ -398,37 +406,8 @@ impl Renderer {
         self.clear_image_dependent_data();
 
         let num_pixels = (new_extent.width * new_extent.height) as usize;
-        let reservoir_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<Reservoir>(
-            self.core.clone(),
-            num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "ReSTIR Reservoir Buffer A",
-        )?;
-
-        let reservoir_buffer_b = vulkan_abstraction::GpuOnlyBuffer::new::<Reservoir>(
-            self.core.clone(),
-            num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "ReSTIR Reservoir Buffer B",
-        )?;
-
-        self.reservoir_buffers = [reservoir_buffer_a, reservoir_buffer_b];
-
-        let reservoir_gi_buffer_a = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
-            self.core.clone(),
-            num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "ReSTIR GI Reservoir Buffer A",
-        )?;
-
-        let reservoir_gi_buffer_b = vulkan_abstraction::GpuOnlyBuffer::new::<ReservoirGI>(
-            self.core.clone(),
-            num_pixels as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "ReSTIR GI Reservoir Buffer B",
-        )?;
-
-        self.reservoir_gi_buffers = [reservoir_gi_buffer_a, reservoir_gi_buffer_b];
+        self.reservoir_buffers = Self::create_reservoir_buffers(&self.core, num_pixels)?;
+        self.reservoir_gi_buffers = Self::create_reservoir_gi_buffers(&self.core, num_pixels)?;
 
         self.image_extent = new_extent;
 
@@ -742,9 +721,6 @@ impl Renderer {
     /// cross-frame accumulation ping-pong, the denoise ping-pong, and the
     /// post-process output are imported.
     fn build_unified_graph(&mut self, postprocess_out: &Arc<vulkan_abstraction::Image>, extent: vk::Extent3D) -> SrResult<()> {
-        use vulkan_abstraction::Buffer;
-
-        let core = Rc::clone(&self.core);
         let frame_count = self.relative_frame_count;
         let width = extent.width;
         let height = extent.height;
@@ -768,12 +744,12 @@ impl Renderer {
             blue_noise_tex: pack(self.blue_noise_image.sampled_slot()),
             blue_noise_sampler: pack(self.blue_noise_sampler.slot()),
             reservoirs: [
-                self.reservoir_buffers[0].get_device_address(),
-                self.reservoir_buffers[1].get_device_address(),
+                self.reservoir_buffers[0].device_address(),
+                self.reservoir_buffers[1].device_address(),
             ],
             reservoirs_gi: [
-                self.reservoir_gi_buffers[0].get_device_address(),
-                self.reservoir_gi_buffers[1].get_device_address(),
+                self.reservoir_gi_buffers[0].device_address(),
+                self.reservoir_gi_buffers[1].device_address(),
             ],
             textures_lookup: pack(self.resource_manager.textures_lookup_slot()),
             frame_count,
@@ -785,20 +761,29 @@ impl Renderer {
             ..Default::default()
         };
 
-        let sbt_ris = SbtRegions {
-            raygen: *self.shader_binding_table_ris.raygen_region(),
-            miss: *self.shader_binding_table_ris.miss_region(),
-            hit: *self.shader_binding_table_ris.hit_region(),
-            callable: *self.shader_binding_table_ris.callable_region(),
+        // RT passes now describe themselves with their per-stage SPIR-V; the
+        // graph's pipeline cache builds/reuses the pipeline + SBT (RIS and final
+        // share miss/closest-hit/any-hit and differ only in the ray-gen blob, so
+        // they intern as two distinct entries). The shader list is ordered
+        // [ray_gen, miss, closest_hit, any_hit] and each stage's entry point is
+        // selected by its index — see `RayTracingShaders`.
+        let make_rt_shaders = |ray_gen: &'static [u8]| -> RayTracingShaders {
+            RayTracingShaders::new(
+                vec![
+                    ShaderSource::Spirv(ray_gen.to_vec()),
+                    ShaderSource::Spirv(self.ray_miss_spirv.to_vec()),
+                    ShaderSource::Spirv(self.closest_hit_spirv.to_vec()),
+                    ShaderSource::Spirv(self.any_hit_spirv.to_vec()),
+                ],
+                (0, "main"),
+                (1, "main"),
+                (2, "main"),
+                (3, "main"),
+            )
         };
-        let sbt_final = SbtRegions {
-            raygen: *self.shader_binding_table_final.raygen_region(),
-            miss: *self.shader_binding_table_final.miss_region(),
-            hit: *self.shader_binding_table_final.hit_region(),
-            callable: *self.shader_binding_table_final.callable_region(),
-        };
-        let ris_pipeline = self.ray_tracing_pipeline_ris.inner();
-        let final_pipeline = self.ray_tracing_pipeline_final.inner();
+        let ris_shaders = make_rt_shaders(self.ray_gen_ris_spirv);
+        let final_shaders = make_rt_shaders(self.ray_gen_final_spirv);
+
         // Compute passes now describe themselves with their SPIR-V; the graph's
         // pipeline cache builds/reuses the pipeline. Snapshot the bytes into
         // locals so the `&mut self.render_graph` borrow below stays disjoint.
@@ -811,6 +796,15 @@ impl Renderer {
         let denoise_arc0 = Arc::clone(&self.denoising_images[0]);
         let denoise_arc1 = Arc::clone(&self.denoising_images[1]);
         let postprocess_out_arc = Arc::clone(postprocess_out);
+
+        // Ping-pong reservoir buffers, cloned so they can be imported into the
+        // graph for hazard tracking (RIS writes → final reads). The shader still
+        // reaches them by device-address (already baked into `rt_pc_base`); the
+        // import only governs the RIS→final hand-off barrier.
+        let reservoir_arc0 = Arc::clone(&self.reservoir_buffers[0]);
+        let reservoir_arc1 = Arc::clone(&self.reservoir_buffers[1]);
+        let reservoir_gi_arc0 = Arc::clone(&self.reservoir_gi_buffers[0]);
+        let reservoir_gi_arc1 = Arc::clone(&self.reservoir_gi_buffers[1]);
 
         // Advance the frame counters for the next frame (after snapshotting
         // `frame_count` for this one).
@@ -863,6 +857,14 @@ impl Renderer {
         let denoise_b_h = rg.import::<ImageDesc>(denoise_arc1);
         let postprocess_out_h = rg.import::<ImageDesc>(postprocess_out_arc);
 
+        // Reservoir ping-pong buffers, imported so the graph tracks the RIS→final
+        // hand-off and emits the barrier between the two RT passes itself.
+        let reservoir0_h = rg.import::<BufferDesc>(reservoir_arc0);
+        let reservoir1_h = rg.import::<BufferDesc>(reservoir_arc1);
+        let reservoir_gi0_h = rg.import::<BufferDesc>(reservoir_gi_arc0);
+        let reservoir_gi1_h = rg.import::<BufferDesc>(reservoir_gi_arc1);
+        let reservoir_handles = [reservoir0_h, reservoir1_h, reservoir_gi0_h, reservoir_gi1_h];
+
         let accum_target_h = if accum_idx == 0 { accum0_h.clone() } else { accum1_h.clone() };
         let accum_history_h = if history_idx == 0 {
             accum0_h.clone()
@@ -870,35 +872,34 @@ impl Renderer {
             accum1_h.clone()
         };
 
-        // 1. Ray tracing as two passes, each with its own pipeline + SBT: RIS
-        // audition then final shading. They're ordered by the shared G-buffer
-        // write-after-write hazard; the reservoir hand-off (RIS writes, final
-        // reads — via device address, not a graph resource) is a manual barrier
-        // at the end of the RIS pass.
+        // 1. Ray tracing as two heap-mode passes built through the standard
+        // `RaytracingRenderPassBuilder::generate_render` path: RIS audition then
+        // final shading, each interning its own pipeline + SBT in the graph cache.
+        // They're ordered by the shared G-buffer write-after-write hazard; the
+        // reservoir hand-off (RIS writes, final reads) is now a real graph edge on
+        // the imported reservoir buffers — no manual barrier.
         Self::add_raytracing_ris_pass(
             rg,
-            Rc::clone(&core),
-            ris_pipeline,
-            sbt_ris,
+            ris_shaders,
             rt_pc_base,
             raw_color_h.clone(),
             depth_h.clone(),
             normal_h.clone(),
             diffuse_h.clone(),
             motion_h.clone(),
+            reservoir_handles.clone(),
             extent,
         )?;
         Self::add_raytracing_final_pass(
             rg,
-            Rc::clone(&core),
-            final_pipeline,
-            sbt_final,
+            final_shaders,
             rt_pc_base,
             raw_color_h.clone(),
             depth_h.clone(),
             normal_h.clone(),
             diffuse_h.clone(),
             motion_h.clone(),
+            reservoir_handles,
             extent,
         )?;
 
@@ -949,17 +950,18 @@ impl Renderer {
 
     /// Builds the heap-mode raytracing push constant for a frame: the non-image
     /// fields come from `pc_base`, the five G-buffer / RT-output image slots are
-    /// resolved from the graph's transient resources. Shared by both RT passes so
-    /// they push identical bindings.
-    fn rt_push_constant(
+    /// resolved from the graph's transient resources, then the whole struct is
+    /// serialized to the raw bytes `generate_render` pushes via `cmd_push_data`.
+    /// Shared by both RT passes so they push identical bindings.
+    fn rt_push_constant_bytes(
         pc_base: &vulkan_abstraction::RaytracingHeapPushConstant,
-        tr: &crate::render_graph::graph::TransientResources,
+        tr: &render_graph::graph::TransientResources,
         raw_color_h: &Handle<vulkan_abstraction::Image>,
         depth_h: &Handle<vulkan_abstraction::Image>,
         normal_h: &Handle<vulkan_abstraction::Image>,
         diffuse_h: &Handle<vulkan_abstraction::Image>,
         motion_h: &Handle<vulkan_abstraction::Image>,
-    ) -> SrResult<vulkan_abstraction::RaytracingHeapPushConstant> {
+    ) -> SrResult<Vec<u8>> {
         let pack = |i: u32| -> [u32; 2] { [i, 0] };
         let mut pc = *pc_base;
         pc.raw_color = pack(tr.image(raw_color_h)?.storage_slot());
@@ -967,30 +969,36 @@ impl Renderer {
         pc.normal_img = pack(tr.image(normal_h)?.storage_slot());
         pc.diffuse_img = pack(tr.image(diffuse_h)?.storage_slot());
         pc.motion_vec_img = pack(tr.image(motion_h)?.storage_slot());
-        Ok(pc)
+        // `RaytracingHeapPushConstant` is `#[repr(C)]` plain data, so a verbatim
+        // byte copy matches the shader's push-constant layout.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                &pc as *const vulkan_abstraction::RaytracingHeapPushConstant as *const u8,
+                size_of::<vulkan_abstraction::RaytracingHeapPushConstant>(),
+            )
+        }
+        .to_vec();
+        Ok(bytes)
     }
 
-    /// RIS audition ray-tracing pass (heap mode), with its own pipeline + SBT.
-    /// Writes the G-buffer / RT-output images and the ReSTIR reservoirs, then
-    /// issues the reservoir hand-off barrier so the final-shading pass sees the
-    /// audition's reservoir writes.
-    ///
-    /// The reservoir buffers are accessed by device address (not graph
-    /// resources), so the RIS->final reservoir dependency can't be a graph edge;
-    /// it's this manual barrier. Ordering of the two passes themselves comes from
-    /// the shared G-buffer write-after-write hazard.
+    /// RIS audition ray-tracing pass, built through the standard
+    /// `RaytracingRenderPassBuilder::generate_render` path (pipeline + SBT interned
+    /// in the graph's cache). Writes the G-buffer / RT-output images and the ReSTIR
+    /// reservoirs; the reservoir writes are declared on the imported reservoir
+    /// buffers so the graph emits the RIS→final hand-off barrier itself. Ordering
+    /// against the final pass also comes from the shared G-buffer write-after-write
+    /// hazard.
     #[allow(clippy::too_many_arguments)]
     fn add_raytracing_ris_pass(
         rg: &mut RenderGraph,
-        core: Rc<vulkan_abstraction::Core>,
-        pipeline: vk::Pipeline,
-        sbt: SbtRegions,
+        shaders: RayTracingShaders,
         pc_base: vulkan_abstraction::RaytracingHeapPushConstant,
         raw_color_h: Handle<vulkan_abstraction::Image>,
         depth_h: Handle<vulkan_abstraction::Image>,
         normal_h: Handle<vulkan_abstraction::Image>,
         diffuse_h: Handle<vulkan_abstraction::Image>,
         motion_h: Handle<vulkan_abstraction::Image>,
+        reservoir_handles: [Handle<vulkan_abstraction::RawBuffer>; 4],
         extent: vk::Extent3D,
     ) -> SrResult<()> {
         let mut common = PassCommonDataBuilder::new(rg, "raytracing_ris");
@@ -1001,68 +1009,42 @@ impl Renderer {
         common.write(&normal_h, vk_sync::AccessType::General)?;
         common.write(&diffuse_h, vk_sync::AccessType::General)?;
         common.write(&motion_h, vk_sync::AccessType::General)?;
+        // Declare the reservoir SSBO writes so the graph orders the final pass's
+        // reservoir reads after this pass (the RIS→final hand-off barrier).
+        for h in &reservoir_handles {
+            common.write(h, vk_sync::AccessType::AnyShaderWrite)?;
+        }
 
-        common.render(move |cb, tr| {
-            let pc = Self::rt_push_constant(&pc_base, tr, &raw_color_h, &depth_h, &normal_h, &diffuse_h, &motion_h)?;
-            let device = core.device().inner();
-            unsafe {
-                core.descriptor_heap().cmd_bind(*cb);
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline);
-                let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
-                    address: &pc as *const _ as *const std::ffi::c_void,
-                    size: std::mem::size_of::<vulkan_abstraction::RaytracingHeapPushConstant>(),
-                    _marker: Default::default(),
-                });
-                core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
-                core.rt_pipeline_device().cmd_trace_rays(
-                    *cb,
-                    &sbt.raygen,
-                    &sbt.miss,
-                    &sbt.hit,
-                    &sbt.callable,
-                    extent.width,
-                    extent.height,
-                    extent.depth,
-                );
-
-                // Reservoir A->B hand-off to the final pass (reservoirs aren't
-                // graph resources, so this isn't covered by the graph's barriers).
-                let reservoir_barrier = vk::MemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                    .dst_access_mask(vk::AccessFlags2::SHADER_READ);
-                let dep_info = vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&reservoir_barrier));
-                device.cmd_pipeline_barrier2(*cb, &dep_info);
-            }
-            Ok(())
-        });
-
-        let pass = ComputeRenderPassBuilder::default()
+        let pass = RaytracingRenderPassBuilder::default()
             .common(common.build())
+            .shaders(shaders)
+            .trace_extent([extent.width, extent.height, extent.depth])
+            .generate_render(rg, move |tr| {
+                Self::rt_push_constant_bytes(&pc_base, tr, &raw_color_h, &depth_h, &normal_h, &diffuse_h, &motion_h)
+            })?
             .build()
             .map_err(|e| SrError::new_custom(format!("raytracing RIS pass builder failed: {e}")))?;
-        rg.add_render_pass(AnyRenderPass::Compute(pass));
+        rg.add_render_pass(AnyRenderPass::Rt(pass));
         Ok(())
     }
 
-    /// Final shading ray-tracing pass (heap mode), with its own pipeline + SBT.
-    /// Reads the reservoirs the RIS pass produced (visibility established by the
-    /// reservoir barrier at the end of that pass) and writes the final color into
-    /// the G-buffer outputs. Ordered after the RIS pass by the shared G-buffer
-    /// write-after-write hazard the graph tracks.
+    /// Final shading ray-tracing pass, built through the standard
+    /// `RaytracingRenderPassBuilder::generate_render` path (pipeline + SBT interned
+    /// in the graph's cache). Reads the reservoirs the RIS pass produced
+    /// (visibility established by the graph-emitted reservoir barrier) and writes
+    /// the final color into the G-buffer outputs. Ordered after the RIS pass by the
+    /// shared G-buffer write-after-write hazard the graph tracks.
     #[allow(clippy::too_many_arguments)]
     fn add_raytracing_final_pass(
         rg: &mut RenderGraph,
-        core: Rc<vulkan_abstraction::Core>,
-        pipeline: vk::Pipeline,
-        sbt: SbtRegions,
+        shaders: RayTracingShaders,
         pc_base: vulkan_abstraction::RaytracingHeapPushConstant,
         raw_color_h: Handle<vulkan_abstraction::Image>,
         depth_h: Handle<vulkan_abstraction::Image>,
         normal_h: Handle<vulkan_abstraction::Image>,
         diffuse_h: Handle<vulkan_abstraction::Image>,
         motion_h: Handle<vulkan_abstraction::Image>,
+        reservoir_handles: [Handle<vulkan_abstraction::RawBuffer>; 4],
         extent: vk::Extent3D,
     ) -> SrResult<()> {
         let mut common = PassCommonDataBuilder::new(rg, "raytracing_final");
@@ -1073,38 +1055,22 @@ impl Renderer {
         common.write(&normal_h, vk_sync::AccessType::General)?;
         common.write(&diffuse_h, vk_sync::AccessType::General)?;
         common.write(&motion_h, vk_sync::AccessType::General)?;
+        // Read the reservoirs the RIS pass wrote — this read against the RIS pass's
+        // declared writes is the graph edge that becomes the hand-off barrier.
+        for h in &reservoir_handles {
+            common.read(h, vk_sync::AccessType::RayTracingShaderReadOther)?;
+        }
 
-        common.render(move |cb, tr| {
-            let pc = Self::rt_push_constant(&pc_base, tr, &raw_color_h, &depth_h, &normal_h, &diffuse_h, &motion_h)?;
-            let device = core.device().inner();
-            unsafe {
-                core.descriptor_heap().cmd_bind(*cb);
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline);
-                let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
-                    address: &pc as *const _ as *const std::ffi::c_void,
-                    size: std::mem::size_of::<vulkan_abstraction::RaytracingHeapPushConstant>(),
-                    _marker: Default::default(),
-                });
-                core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
-                core.rt_pipeline_device().cmd_trace_rays(
-                    *cb,
-                    &sbt.raygen,
-                    &sbt.miss,
-                    &sbt.hit,
-                    &sbt.callable,
-                    extent.width,
-                    extent.height,
-                    extent.depth,
-                );
-            }
-            Ok(())
-        });
-
-        let pass = ComputeRenderPassBuilder::default()
+        let pass = RaytracingRenderPassBuilder::default()
             .common(common.build())
+            .shaders(shaders)
+            .trace_extent([extent.width, extent.height, extent.depth])
+            .generate_render(rg, move |tr| {
+                Self::rt_push_constant_bytes(&pc_base, tr, &raw_color_h, &depth_h, &normal_h, &diffuse_h, &motion_h)
+            })?
             .build()
             .map_err(|e| SrError::new_custom(format!("raytracing final pass builder failed: {e}")))?;
-        rg.add_render_pass(AnyRenderPass::Compute(pass));
+        rg.add_render_pass(AnyRenderPass::Rt(pass));
         Ok(())
     }
 
@@ -1241,7 +1207,6 @@ impl Renderer {
         let mut common = PassCommonDataBuilder::new(rg, "postprocess");
         common.read(&denoise_in_h, vk_sync::AccessType::ComputeShaderReadOther)?;
         common.write(&postprocess_out_h, vk_sync::AccessType::ComputeShaderWrite)?;
-        
 
         let pass = ComputeRenderPassBuilder::default()
             .common(common.build())

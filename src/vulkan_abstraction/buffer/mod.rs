@@ -232,6 +232,19 @@ impl RawBuffer {
         self.usage
     }
 
+    /// GPU device address of this buffer. Requires the buffer to have been
+    /// created with `SHADER_DEVICE_ADDRESS` usage; returns 0 for a null buffer.
+    /// Used to feed buffer-device-address fields of heap-mode push constants
+    /// (e.g. the ReSTIR reservoir buffers) when the buffer is also imported into
+    /// the render graph as an `Arc<RawBuffer>` for hazard tracking.
+    pub fn device_address(&self) -> vk::DeviceAddress {
+        if self.buffer == vk::Buffer::null() {
+            return 0;
+        }
+        let info = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
+        unsafe { self.core.device().inner().get_buffer_device_address(&info) }
+    }
+
     /// Heap slot for `UNIFORM_BUFFER`. Lazily allocates on first call.
     pub fn uniform_slot(&self) -> u32 {
         self.descriptor_slot(&self.uniform_slot, ResourceDescriptorKind::UniformBuffer)
@@ -454,7 +467,6 @@ impl crate::render_graph::graph::Resource for RawBuffer {
     fn borrow_resource(res: &crate::render_graph::graph::AnyRenderResource) -> &Self {
         match res {
             crate::render_graph::graph::AnyRenderResource::OwnedBuffer(buf) => buf,
-            crate::render_graph::graph::AnyRenderResource::ImportedBuffer(arc) => arc.as_ref(),
             _ => panic!("borrow_resource::<RawBuffer> called on non-buffer AnyRenderResource variant"),
         }
     }

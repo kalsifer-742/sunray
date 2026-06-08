@@ -239,14 +239,12 @@ impl RaytracingRenderPassBuilder {
     /// here so the caller never constructs a `RayTracingPipeline`/`ShaderBindingTable`
     /// itself.
     ///
-    /// Note: this builds a single ray-tracing pipeline per pass. The app's
-    /// two-pass RIS + final pipeline (which shares one pipeline and inserts a
-    /// reservoir hand-off barrier between the passes) is still wired directly in
-    /// the renderer; converting it onto this path means accepting a second
-    /// pipeline + folding the barrier into the push closure (or a follow-up pass).
-    // Not yet used from `lib.rs` (see note above); kept building per call until
-    // the renderer's RT passes are migrated onto it.
-    #[allow(dead_code)]
+    /// Note: this builds (interns) a single ray-tracing pipeline per pass. The
+    /// app's two-pass RIS + final pipeline runs as two passes on this path, each
+    /// interning its own pipeline + SBT in the cache; the RIS→final reservoir
+    /// hand-off is expressed as a graph edge on the imported reservoir buffers
+    /// (the RIS pass declares the reservoir writes, the final pass the reads), so
+    /// the graph emits the barrier — no manual barrier in the closure.
     pub fn generate_render<F>(mut self, rg: &mut RenderGraph, push: F) -> SrResult<Self>
     where
         F: Fn(&TransientResources) -> SrResult<Vec<u8>> + 'static,
