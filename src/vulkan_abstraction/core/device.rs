@@ -125,7 +125,11 @@ impl Device {
             // the QFOT in staging_buffer is therefore still required and correct.
             let mut maintenance9_features = vk::PhysicalDeviceMaintenance9FeaturesKHR::default().maintenance9(false);
             let mut vk14_features = vk::PhysicalDeviceVulkan14Features::default().maintenance5(true);
-            let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
+            // dynamic_rendering: the Bevy egui overlay paints into the swapchain image via
+            // VK_KHR_dynamic_rendering (cmd_begin_rendering, no VkRenderPass/framebuffer).
+            let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default()
+                .synchronization2(true)
+                .dynamic_rendering(true);
             // enable some device features necessary for ray-tracing //TODO I may need some newer feature expecially for the semi-binding?
             let mut vk12_features = vk::PhysicalDeviceVulkan12Features::default()
                 .buffer_device_address(true) // necessary for ray-tracing

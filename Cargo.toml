@@ -39,9 +39,55 @@ petgraph = "0.8.3"
 bimap = "0.6.3"
 #na = "0.32.2"
 
+# --- Bevy integration (optional, gated behind the `bevy` feature) -----------
+# Path deps on the local Bosh/bevy fork (0.19.0-dev). We depend on the
+# individual crates rather than the `bevy` meta-crate so the example can build
+# the minimal plugin set (Option B in docs/bevy_integration.md) and we never
+# pull in `RenderPlugin`/wgpu at *runtime*. `bevy_render` is still a compile
+# dependency because we reuse its `ExtractPlugin` + render-world scaffolding.
+bevy_app = { path = "../bevy/crates/bevy_app", optional = true }
+bevy_ecs = { path = "../bevy/crates/bevy_ecs", optional = true }
+bevy_render = { path = "../bevy/crates/bevy_render", optional = true }
+bevy_window = { path = "../bevy/crates/bevy_window", optional = true }
+bevy_winit = { path = "../bevy/crates/bevy_winit", optional = true }
+bevy_input = { path = "../bevy/crates/bevy_input", optional = true }
+bevy_time = { path = "../bevy/crates/bevy_time", optional = true }
+bevy_transform = { path = "../bevy/crates/bevy_transform", optional = true }
+bevy_math = { path = "../bevy/crates/bevy_math", optional = true }
+bevy_platform = { path = "../bevy/crates/bevy_platform", optional = true }
+bevy_a11y = { path = "../bevy/crates/bevy_a11y", optional = true }
+bevy_diagnostic = { path = "../bevy/crates/bevy_diagnostic", optional = true }
+bevy_log = { path = "../bevy/crates/bevy_log", optional = true }
+# egui core only — NOT bevy_egui and NOT a paint backend. We do input mapping +
+# tessellation ourselves (Option C in docs/bevy_integration.md). `egui-ash-renderer`
+# is intentionally avoided: it bundles a descriptor-set + GLSL/SPIR-V raster
+# pipeline, which violates this project's heap+Slang-only rule, and it pulls a
+# crates.io `ash` that clashes with our git `ash`.
+egui = { version = "0.31", optional = true }
+# Must match the version `bevy_window` re-exports (0.6).
+raw-window-handle = { version = "0.6", optional = true }
+
 [features]
 default = []
 nvidia-aftermath = ["dep:aftermath-rs"]
+# Enables `sunray::bevy_integration` (the Bevy plugin) and the `bevy_app` example.
+bevy = [
+    "dep:bevy_app",
+    "dep:bevy_ecs",
+    "dep:bevy_render",
+    "dep:bevy_window",
+    "dep:bevy_winit",
+    "dep:bevy_input",
+    "dep:bevy_time",
+    "dep:bevy_transform",
+    "dep:bevy_math",
+    "dep:bevy_platform",
+    "dep:bevy_a11y",
+    "dep:bevy_diagnostic",
+    "dep:bevy_log",
+    "dep:egui",
+    "dep:raw-window-handle",
+]
 
 
 [build-dependencies]
@@ -59,3 +105,8 @@ name = "png"
 
 [[example]]
 name = "window"
+
+[[example]]
+name = "bevy_app"
+path = "examples/bevy_app/main.rs"
+required-features = ["bevy"]

@@ -205,4 +205,9 @@ fn main() {
     compile_slang_shader("postprocess", "main", "postprocess.spirv");
     compile_slang_shader("denoise", "main", "denoise.spirv");
     compile_slang_shader("temporal_accumulation", "main", "temporal_accumulation.spirv");
+
+    // egui overlay (Bevy integration). One module, two stages; each entry point is
+    // emitted as a SPIR-V "main" (matches how the RT stages are handled).
+    compile_slang_shader("egui", "vertex_main", "egui_vert.spirv");
+    compile_slang_shader("egui", "fragment_main", "egui_frag.spirv");
 }

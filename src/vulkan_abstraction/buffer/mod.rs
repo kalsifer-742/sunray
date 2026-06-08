@@ -8,7 +8,6 @@ pub mod staging_buffer;
 pub mod uniform_buffer;
 pub mod vertex_buffer;
 
-//why use and not just mod?
 pub use arena_core::*;
 pub use arena_gpu::*;
 pub use arena_host::*;
@@ -25,6 +24,8 @@ use ash::vk;
 use ash::vk::{BufferUsageFlags, Handle};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+
 //TODO revert capacity as vk::device length some methods signatures
 //TODO should gpu only buffer have a generic and some methods can be moved inside the buffer trait like new,new with data ecc.. with a default impl
 pub fn get_memory_type_index(
@@ -459,7 +460,7 @@ impl crate::render_graph::graph::Resource for RawBuffer {
     }
 }
 
-impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::BufferDesc> for std::sync::Arc<RawBuffer> {
+impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::BufferDesc> for Arc<RawBuffer> {
     fn import(&self) -> crate::render_graph::graph::BufferDesc {
         crate::render_graph::graph::BufferDesc {
             byte_size: self.byte_size,
@@ -471,8 +472,8 @@ impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::Buffer
     }
 }
 
-impl From<std::sync::Arc<RawBuffer>> for crate::render_graph::graph::GraphResourceImportInfo {
-    fn from(val: std::sync::Arc<RawBuffer>) -> Self {
+impl From<Arc<RawBuffer>> for crate::render_graph::graph::GraphResourceImportInfo {
+    fn from(val: Arc<RawBuffer>) -> Self {
         crate::render_graph::graph::GraphResourceImportInfo::Buffer {
             resource: val,
             //TODO let the caller supply the initial access state instead of defaulting to Nothing
@@ -480,3 +481,4 @@ impl From<std::sync::Arc<RawBuffer>> for crate::render_graph::graph::GraphResour
         }
     }
 }
+

@@ -3,6 +3,7 @@ pub mod buffer;
 pub mod cmd_pool;
 pub mod compute_pipeline;
 pub mod core;
+pub mod graphics_pipeline;
 pub mod descriptor_heap;
 pub mod diagnostics;
 pub mod gltf;
@@ -20,6 +21,7 @@ pub use buffer::*;
 pub use cmd_pool::*;
 pub(crate) use compute_pipeline::*;
 pub use core::*;
+pub use graphics_pipeline::*;
 pub use descriptor_heap::*;
 
 pub use diagnostics::*;

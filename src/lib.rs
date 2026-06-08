@@ -6,6 +6,14 @@ pub mod shader_compiler;
 pub mod utils;
 pub mod vulkan_abstraction;
 
+/// Bevy 0.19 plugin that drives this renderer from inside a Bevy `App`.
+///
+/// Gated behind the `bevy` feature. See `docs/bevy_integration.md` for the
+/// architecture and `examples/bevy_app` for usage. Declared after `utils` so the
+/// `include_bytes_align_as!` macro is in textual scope.
+#[cfg(feature = "bevy")]
+pub mod bevy_integration;
+
 pub use camera::*;
 use error::*;
 pub use scene::*;
@@ -648,7 +656,7 @@ impl Renderer {
         // per-frame UBOs (double/triple buffering) so we never overwrite bytes
         // a running frame might still read.
         unsafe {
-            self.core.device().inner().device_wait_idle().unwrap();
+            self.core.device().inner().device_wait_idle()?;
         }
 
         let mut matrices = camera.as_matrices(self.image_extent);
