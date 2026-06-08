@@ -218,6 +218,11 @@ impl Core {
     pub fn device(&self) -> &Rc<vulkan_abstraction::Device> {
         &self.device
     }
+
+    pub fn clone_device(&self) -> Rc<vulkan_abstraction::Device> {
+        self.device.clone()
+    }
+
     pub fn acceleration_structure_device(&self) -> &khr::acceleration_structure::Device {
         &self.acceleration_structure_device
     }

@@ -1,7 +1,11 @@
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
 use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
-use crate::vulkan_abstraction::{AccelerationStructure, CmdBuffer, Core, Fence, Image, RawBuffer, Sampler};
+use crate::vulkan_abstraction::{
+    AccelerationStructure, CmdBuffer, ComputePipeline, ComputePipelineShaders, Core, Fence, GraphicsPipeline,
+    GraphicsPipelineShaders, HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders,
+    Sampler, ShaderBindingTable,
+};
 use ash::vk;
 use enum_as_inner::EnumAsInner;
 use petgraph::visit::EdgeRef;
@@ -9,7 +13,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use bytemuck::{Pod, Zeroable};
 use vk_sync_fork as vk_sync;
 
 /// Pick the right `vk::ImageAspectFlags` for a given format. Used when building
@@ -217,7 +220,84 @@ pub struct PassResourceAccessType {
 pub enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
-    Compute(ComputeRenderPass> ),
+    Compute(ComputeRenderPass),
+}
+
+/// Lightweight reference to a pipeline interned in the graph's [`PipelineCache`].
+/// Render closures resolve it to the concrete pipeline at record time via
+/// `TransientResources::{compute,raytracing,graphics}_pipeline`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PipelineHandle(u32);
+
+/// A heap-mode pipeline owned by the cache. RT additionally owns its shader
+/// binding table (built alongside the pipeline).
+enum CachedPipeline {
+    Compute(Rc<ComputePipeline<HeapComputePass>>),
+    RayTracing(Rc<RayTracingPipeline>, Rc<ShaderBindingTable>),
+    Graphics(Rc<GraphicsPipeline>),
+}
+
+/// Content-addressed cache of heap-mode pipelines, owned by the graph and kept
+/// alive across the per-frame `reset()` / rebuild cycle. Passes describe their
+/// shaders every frame, but the underlying `vk::Pipeline` (an expensive object)
+/// is built exactly once per distinct shader set and reused — no per-frame
+/// pipeline churn, and identical shaders shared by several passes are never
+/// duplicated on the GPU.
+///
+/// Entries are addressed by [`PipelineHandle`] (an index into `entries`); the
+/// `by_key` map dedups by a hash of the shader bytes. The cache is never cleared
+/// by `free_internal_state` (that only frees per-frame transient resources), so
+/// it lives for the whole graph; `core` is held so cached pipelines outlive the
+/// device-owning `Core` no matter the surrounding drop order.
+///
+/// TODO: there is no eviction yet — an interned pipeline is kept until the graph
+/// is dropped. Fine while the renderer uses a fixed, small shader set (every
+/// entry is "still needed" every frame); add refcount/GC eviction once shaders
+/// can come and go at runtime.
+#[derive(Default)]
+struct PipelineCache {
+    entries: Vec<CachedPipeline>,
+    by_key: HashMap<u64, PipelineHandle>,
+    core: Option<Rc<Core>>,
+}
+
+impl PipelineCache {
+    fn get(&self, handle: PipelineHandle) -> Option<&CachedPipeline> {
+        self.entries.get(handle.0 as usize)
+    }
+
+    /// Return the handle for `key` if already interned, otherwise build the
+    /// pipeline via `build`, store it, and return its fresh handle.
+    fn intern(
+        &mut self,
+        key: u64,
+        core: &Rc<Core>,
+        build: impl FnOnce() -> SrResult<CachedPipeline>,
+    ) -> SrResult<PipelineHandle> {
+        if let Some(handle) = self.by_key.get(&key) {
+            return Ok(*handle);
+        }
+        let entry = build()?;
+        if self.core.is_none() {
+            self.core = Some(Rc::clone(core));
+        }
+        let handle = PipelineHandle(self.entries.len() as u32);
+        self.entries.push(entry);
+        self.by_key.insert(key, handle);
+        Ok(handle)
+    }
+}
+
+/// Hash a set of byte slices (plus a `kind` discriminant so a compute shader and
+/// a same-bytes graphics shader never collide) into the cache key.
+fn pipeline_cache_key(kind: u8, parts: &[&[u8]]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    kind.hash(&mut hasher);
+    for part in parts {
+        part.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// A single transition required before a destination pass can run, derived from
@@ -399,6 +479,56 @@ impl RenderGraph {
 
     pub fn add_render_pass(&mut self, render_pass: AnyRenderPass) {
         self.passes.push(render_pass)
+    }
+
+    /// The graph's cached `Core`. Pass builders use this so callers no longer
+    /// have to thread `Rc<Core>` into `generate_render` separately.
+    pub(crate) fn core(&self) -> Rc<Core> {
+        Rc::clone(&self.core)
+    }
+
+    /// Intern a heap-mode compute pipeline for `spirv`, returning a handle the
+    /// render closure resolves at record time. Built once per distinct shader and
+    /// reused across frame rebuilds (see [`PipelineCache`]).
+    pub(crate) fn cache_compute_pipeline(&mut self, spirv: &[u8]) -> SrResult<PipelineHandle> {
+        let key = pipeline_cache_key(0, &[spirv]);
+        let core = Rc::clone(&self.core);
+        self.transient_resources.pipeline_cache.intern(key, &core, || {
+            let pipeline = ComputePipeline::<HeapComputePass>::new(
+                core.clone_device(),
+                spirv,
+            )?;
+            Ok(CachedPipeline::Compute(Rc::new(pipeline)))
+        })
+    }
+
+    /// Intern a heap-mode ray-tracing pipeline + its shader binding table.
+    pub(crate) fn cache_raytracing_pipeline(&mut self, shaders: &RayTracingPipelineShaders) -> SrResult<PipelineHandle> {
+        let key = pipeline_cache_key(
+            1,
+            &[&shaders.ray_gen, &shaders.miss, &shaders.closest_hit, &shaders.any_hit],
+        );
+        let core = Rc::clone(&self.core);
+        self.transient_resources.pipeline_cache.intern(key, &core, || {
+            let pipeline = Rc::new(RayTracingPipeline::new(Rc::clone(&core), shaders)?);
+            let sbt = Rc::new(ShaderBindingTable::new(&core, &pipeline)?);
+            Ok(CachedPipeline::RayTracing(pipeline, sbt))
+        })
+    }
+
+    /// Intern a heap-mode graphics pipeline. The vertex layout is currently not
+    /// part of the cache key (only vertex+fragment SPIR-V and color format are) —
+    /// fine while the raster path is experimental and single-layout.
+    pub(crate) fn cache_graphics_pipeline(&mut self, shaders: &GraphicsPipelineShaders) -> SrResult<PipelineHandle> {
+        let key = pipeline_cache_key(
+            2,
+            &[&shaders.vertex, &shaders.fragment, &shaders.color_format.as_raw().to_ne_bytes()],
+        );
+        let core = Rc::clone(&self.core);
+        self.transient_resources.pipeline_cache.intern(key, &core, || {
+            let pipeline = GraphicsPipeline::new(Rc::clone(&core), shaders)?;
+            Ok(CachedPipeline::Graphics(Rc::new(pipeline)))
+        })
     }
 
     /// Import the current frame's swapchain image as the graph's present target.
@@ -679,6 +809,10 @@ pub struct TransientResources {
     pub(crate) recorded_barriers: Vec<(usize, Vec<ResourceBarrier>)>,
     /// Cached for `Drop`. Set on first `populate`.
     core: Option<Rc<Core>>,
+    /// Persistent pipeline cache. Unlike every other field here it is **not**
+    /// cleared by `free_internal_state`: passes are rebuilt each frame but their
+    /// pipelines are interned once and reused (see [`PipelineCache`]).
+    pipeline_cache: PipelineCache,
 }
 
 /// Aggregated memory requirements for a single transient alias slot — built up as
@@ -1023,6 +1157,39 @@ impl TransientResources {
         Err(SrError::new_custom(format!(
             "render graph: no image bound for resource id {id} (not created or imported as an image)"
         )))
+    }
+
+    /// Resolve a [`PipelineHandle`] to its interned compute pipeline. Render
+    /// closures installed by `ComputeRenderPassBuilder::generate_render` call this
+    /// to bind the pipeline at record time.
+    pub fn compute_pipeline(&self, handle: PipelineHandle) -> SrResult<&ComputePipeline<HeapComputePass>> {
+        match self.pipeline_cache.get(handle) {
+            Some(CachedPipeline::Compute(p)) => Ok(p),
+            _ => Err(SrError::new_custom(format!(
+                "render graph: pipeline handle {handle:?} is not a cached compute pipeline"
+            ))),
+        }
+    }
+
+    /// Resolve a [`PipelineHandle`] to its interned ray-tracing pipeline + shader
+    /// binding table.
+    pub fn raytracing_pipeline(&self, handle: PipelineHandle) -> SrResult<(&RayTracingPipeline, &ShaderBindingTable)> {
+        match self.pipeline_cache.get(handle) {
+            Some(CachedPipeline::RayTracing(p, sbt)) => Ok((p, sbt)),
+            _ => Err(SrError::new_custom(format!(
+                "render graph: pipeline handle {handle:?} is not a cached ray-tracing pipeline"
+            ))),
+        }
+    }
+
+    /// Resolve a [`PipelineHandle`] to its interned graphics pipeline.
+    pub fn graphics_pipeline(&self, handle: PipelineHandle) -> SrResult<&GraphicsPipeline> {
+        match self.pipeline_cache.get(handle) {
+            Some(CachedPipeline::Graphics(p)) => Ok(p),
+            _ => Err(SrError::new_custom(format!(
+                "render graph: pipeline handle {handle:?} is not a cached graphics pipeline"
+            ))),
+        }
     }
 }
 
@@ -1426,8 +1593,6 @@ mod tests {
         }
         let producer = ComputeRenderPassBuilder::default()
             .common(common0.build())
-            .shaders(vec![])
-            .entry_point("main".to_string())
             .build()
             .expect("build producer pass");
         rg.add_render_pass(AnyRenderPass::Compute(producer));
@@ -1452,8 +1617,6 @@ mod tests {
         }
         let consumer = ComputeRenderPassBuilder::default()
             .common(common1.build())
-            .shaders(vec![])
-            .entry_point("main".to_string())
             .build()
             .expect("build consumer pass");
         rg.add_render_pass(AnyRenderPass::Compute(consumer));

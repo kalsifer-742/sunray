@@ -2,6 +2,7 @@ use std::{ffi::CStr, rc::Rc};
 
 use crate::error::SrResult;
 use crate::vulkan_abstraction;
+use crate::vulkan_abstraction::{Core, Pipeline};
 
 use ash::vk;
 use ash::vk::TaggedStructure;
@@ -57,6 +58,16 @@ pub struct RaytracingHeapPushConstant {
     pub textures_lookup: [u32; 2],
     pub frame_count: u32,
     pub use_srgb: u32,
+}
+
+/// The four SPIR-V blobs a heap-mode ray-tracing pipeline links together — one
+/// per stage. The SBT/dispatch currently assumes exactly one raygen + one miss +
+/// one hit group (closest-hit + any-hit).
+pub struct RayTracingPipelineShaders {
+    pub ray_gen: Vec<u8>,
+    pub miss: Vec<u8>,
+    pub closest_hit: Vec<u8>,
+    pub any_hit: Vec<u8>,
 }
 
 pub struct RayTracingPipeline {
@@ -157,6 +168,28 @@ impl RayTracingPipeline {
         self.pipeline
     }
     pub fn layout(&self) -> vk::PipelineLayout {
+        self.pipeline_layout
+    }
+}
+
+impl Pipeline for RayTracingPipeline {
+    type Shaders = RayTracingPipelineShaders;
+
+    fn new(core: Rc<Core>, shaders: &Self::Shaders) -> SrResult<Self> {
+        Self::new_heap(
+            core,
+            &shaders.ray_gen,
+            &shaders.miss,
+            &shaders.closest_hit,
+            &shaders.any_hit,
+        )
+    }
+
+    fn inner(&self) -> vk::Pipeline {
+        self.pipeline
+    }
+
+    fn layout(&self) -> vk::PipelineLayout {
         self.pipeline_layout
     }
 }

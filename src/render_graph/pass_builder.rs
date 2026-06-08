@@ -4,15 +4,12 @@ use crate::render_graph::graph::{
     AnyRenderPass, Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource,
     ResourceRef, TransientResources,
 };
-use crate::vulkan_abstraction::{ComputePipeline, ComputeTypeDef, Core, HeapComputePass, RayTracingPipeline, ShaderBindingTable};
+use crate::vulkan_abstraction::{GraphicsPipelineShaders, Pipeline, RayTracingPipelineShaders};
 use ash::vk;
 use ash::vk::CommandBuffer;
 use derive_builder::Builder;
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::rc::Rc;
-use bytemuck::{Pod, Zeroable};
 
 pub(crate) enum BindingElement {
     //TODO maybe compile time check the value corresponds to the inserted one
@@ -138,6 +135,23 @@ impl PassCommonDataBuilder {
 }
 
 
+/// Borrow the pre-compiled SPIR-V out of a `ShaderSource`. The heap-mode
+/// pipeline helpers (`*RenderPassBuilder::generate_render`) only accept
+/// already-compiled `Spirv`; `Glsl`/`Slang` sources must be compiled upstream
+/// (e.g. via the Slang `ShaderCompiler`) before reaching the builder. `context`
+/// is the caller label used in the error message.
+fn extract_spirv<'a>(src: &'a ShaderSource, context: &str) -> SrResult<&'a [u8]> {
+    match src {
+        ShaderSource::Spirv(bytes) => Ok(bytes.as_slice()),
+        ShaderSource::Glsl(path) => Err(SrError::new_custom(format!(
+            "{context} only accepts ShaderSource::Spirv; got Glsl({path:?})"
+        ))),
+        ShaderSource::Slang(path) => Err(SrError::new_custom(format!(
+            "{context} only accepts ShaderSource::Spirv; got Slang({path:?})"
+        ))),
+    }
+}
+
 impl From<RaytracingRenderPass> for AnyRenderPass {
     fn from(val: RaytracingRenderPass) -> Self {
         AnyRenderPass::Rt(val)
@@ -150,8 +164,8 @@ impl From<RasterRenderPass> for AnyRenderPass {
     }
 }
 
-impl<PushConstType: Pod + Zeroable> From<ComputeRenderPass<PushConstType>> for AnyRenderPass {
-    fn from(val: ComputeRenderPass<PushConstType>) -> Self {
+impl From<ComputeRenderPass> for AnyRenderPass {
+    fn from(val: ComputeRenderPass) -> Self {
         AnyRenderPass::Compute(val)
     }
 }
@@ -160,14 +174,44 @@ impl<PushConstType: Pod + Zeroable> From<ComputeRenderPass<PushConstType>> for A
 #[builder(pattern = "owned")]
 pub(crate) struct RaytracingRenderPass {
     pub(super) common: PassCommonData,
-    pub(super) ray_gen: RayTracingShaderDesc,
-    #[builder(setter(each = "add_closest_hit"))]
-    pub(super) closest_hit: Vec<RayTracingShaderDesc>,
-    #[builder(setter(each = "add_miss"))]
-    pub(super) miss: Vec<RayTracingShaderDesc>,
-    #[builder(default = "Vec::new()", setter(each = "add_any_hit"))]
-    pub(super) any_hit: Vec<RayTracingShaderDesc>,
+    /// The Slang/SPIR-V shaders + per-stage entry points this pass compiles into
+    /// its pipeline. `None` for passes whose `common.render` closure binds a
+    /// pre-built (persistent) pipeline directly instead of going through
+    /// `RaytracingRenderPassBuilder::generate_render`.
+    #[builder(setter(strip_option), default)]
+    pub(super) shaders: Option<RayTracingShaders>,
     pub(super) trace_extent: [u32; 3],
+}
+
+/// The shaders backing a single ray-tracing pass. Like [`ComputeShaders`], each
+/// stage's entry point is the `(index, name)` of the owning module in `shaders`
+/// so the builder picks it directly instead of scanning for it. The SBT/dispatch
+/// currently assumes one raygen + one miss + one hit group (closest-hit +
+/// any-hit).
+pub struct RayTracingShaders {
+    pub(super) shaders: Vec<ShaderSource>,
+    pub(super) ray_gen: (usize, String),
+    pub(super) miss: (usize, String),
+    pub(super) closest_hit: (usize, String),
+    pub(super) any_hit: (usize, String),
+}
+
+impl RayTracingShaders {
+    pub fn new(
+        shaders: Vec<ShaderSource>,
+        ray_gen: (usize, impl Into<String>),
+        miss: (usize, impl Into<String>),
+        closest_hit: (usize, impl Into<String>),
+        any_hit: (usize, impl Into<String>),
+    ) -> Self {
+        Self {
+            shaders,
+            ray_gen: (ray_gen.0, ray_gen.1.into()),
+            miss: (miss.0, miss.1.into()),
+            closest_hit: (closest_hit.0, closest_hit.1.into()),
+            any_hit: (any_hit.0, any_hit.1.into()),
+        }
+    }
 }
 
 impl RaytracingRenderPassBuilder {
@@ -177,12 +221,12 @@ impl RaytracingRenderPassBuilder {
     /// the pipeline, and issues `cmd_trace_rays` with the configured
     /// `trace_extent`.
     ///
-    /// Requires `common`, `ray_gen`, exactly one `miss`, exactly one
-    /// `closest_hit`, exactly one `any_hit`, and `trace_extent` to already be
-    /// set on the builder. Every shader stage's `ShaderSource` must be
-    /// `ShaderSource::Spirv` — heap-mode shaders are not compiled by this
-    /// helper; callers compile them externally (e.g. via the Slang
-    /// `ShaderCompiler`) and hand the bytes in.
+    /// Requires `common`, `shaders`, and `trace_extent` to already be set on the
+    /// builder. The per-stage entry points are selected directly by their index
+    /// into `RayTracingShaders::shaders`, and each selected module must be a
+    /// `ShaderSource::Spirv` — heap-mode shaders are not compiled by this helper;
+    /// callers compile them externally (e.g. via the Slang `ShaderCompiler`) and
+    /// hand the bytes in.
     ///
     /// `push` is invoked at graph record time with the populated
     /// `TransientResources`, returning the raw push-constant bytes (e.g. a
@@ -190,97 +234,84 @@ impl RaytracingRenderPassBuilder {
     /// slots via `tr.image(&h)?.storage_slot()` before assembling the bytes. If
     /// it returns an empty `Vec`, no `cmd_push_data` is issued.
     ///
-    /// Note: this builds a single ray-tracing pipeline. The app's two-pass RIS +
-    /// final pipeline (with the reservoir hand-off barrier between them) is wired
-    /// directly in the renderer instead, since one builder pass maps to one
-    /// pipeline.
-    // Builder-level API: builds the pipeline per call. The renderer's per-frame
-    // hot path instead registers RT via a persistent-pipeline closure (see
-    // `Renderer::add_raytracing_pass`), so this is currently unused there.
+    /// Like the compute builder, this lets the caller describe an RT pass with
+    /// **only its shaders + a push-data closure**; the pipeline and SBT are built
+    /// here so the caller never constructs a `RayTracingPipeline`/`ShaderBindingTable`
+    /// itself.
+    ///
+    /// Note: this builds a single ray-tracing pipeline per pass. The app's
+    /// two-pass RIS + final pipeline (which shares one pipeline and inserts a
+    /// reservoir hand-off barrier between the passes) is still wired directly in
+    /// the renderer; converting it onto this path means accepting a second
+    /// pipeline + folding the barrier into the push closure (or a follow-up pass).
+    // Not yet used from `lib.rs` (see note above); kept building per call until
+    // the renderer's RT passes are migrated onto it.
     #[allow(dead_code)]
-    pub fn generate_render<F>(mut self, core: Rc<Core>, push: F) -> SrResult<Self>
+    pub fn generate_render<F>(mut self, rg: &mut RenderGraph, push: F) -> SrResult<Self>
     where
         F: Fn(&TransientResources) -> SrResult<Vec<u8>> + 'static,
     {
-        fn extract_spirv(src: &ShaderSource) -> SrResult<&[u8]> {
-            match src {
-                ShaderSource::Spirv(bytes) => Ok(bytes.as_slice()),
-                ShaderSource::Glsl(path) => Err(SrError::new_custom(format!(
-                    "generate_render only accepts ShaderSource::Spirv; got Glsl({path:?})"
-                ))),
-                ShaderSource::Slang(path) => Err(SrError::new_custom(format!(
-                    "generate_render only accepts ShaderSource::Spirv; got Slang({path:?})"
-                ))),
-            }
-        }
+        const CTX: &str = "RaytracingRenderPassBuilder::generate_render";
 
-        let ray_gen = self
-            .ray_gen
-            .as_ref()
-            .ok_or_else(|| SrError::new_custom("generate_render: ray_gen not set".into()))?;
-        let miss = self
-            .miss
-            .as_ref()
-            .and_then(|v| v.first())
-            .ok_or_else(|| SrError::new_custom("generate_render: at least one miss shader required".into()))?;
-        let closest_hit = self
-            .closest_hit
-            .as_ref()
-            .and_then(|v| v.first())
-            .ok_or_else(|| SrError::new_custom("generate_render: at least one closest_hit shader required".into()))?;
-        let any_hit = self
-            .any_hit
-            .as_ref()
-            .and_then(|v| v.first())
-            .ok_or_else(|| SrError::new_custom("generate_render: at least one any_hit shader required".into()))?;
+        let shaders = self
+            .shaders
+            .take()
+            .flatten()
+            .ok_or_else(|| SrError::new_custom(format!("{CTX}: no shaders set")))?;
         let trace_extent = self
             .trace_extent
-            .ok_or_else(|| SrError::new_custom("generate_render: trace_extent not set".into()))?;
+            .ok_or_else(|| SrError::new_custom(format!("{CTX}: trace_extent not set")))?;
 
-        // SBT currently hardcodes 1 raygen + 1 miss + 1 hit group; extra
-        // shader stages set on the builder are ignored by the dispatch.
-        let ray_gen_spirv = extract_spirv(&ray_gen.shader)?.to_vec();
-        let miss_spirv = extract_spirv(&miss.shader)?.to_vec();
-        let closest_hit_spirv = extract_spirv(&closest_hit.shader)?.to_vec();
-        let any_hit_spirv = extract_spirv(&any_hit.shader)?.to_vec();
+        // Pick each stage's module directly by its index — no scanning.
+        let stage_spirv = |stage: &str, (idx, name): &(usize, String)| -> SrResult<Vec<u8>> {
+            let src = shaders.shaders.get(*idx).ok_or_else(|| {
+                SrError::new_custom(format!(
+                    "{CTX}: {stage} entry_point index {idx} (\"{name}\") out of range for {} shader(s)",
+                    shaders.shaders.len()
+                ))
+            })?;
+            Ok(extract_spirv(src, CTX)?.to_vec())
+        };
 
-        let pipeline = Rc::new(RayTracingPipeline::new_heap(
-            Rc::clone(&core),
-            &ray_gen_spirv,
-            &miss_spirv,
-            &closest_hit_spirv,
-            &any_hit_spirv,
-        )?);
-        let sbt = Rc::new(ShaderBindingTable::new(&core, &pipeline)?);
+        // SBT currently hardcodes 1 raygen + 1 miss + 1 hit group.
+        let rt_shaders = RayTracingPipelineShaders {
+            ray_gen: stage_spirv("ray_gen", &shaders.ray_gen)?,
+            miss: stage_spirv("miss", &shaders.miss)?,
+            closest_hit: stage_spirv("closest_hit", &shaders.closest_hit)?,
+            any_hit: stage_spirv("any_hit", &shaders.any_hit)?,
+        };
+
+        // Intern the pipeline + SBT in the graph's persistent cache (built once,
+        // reused across frame rebuilds), resolved by handle in the closure.
+        let handle = rg.cache_raytracing_pipeline(&rt_shaders)?;
+        let core = rg.core();
 
         let mut common = self
             .common
             .take()
-            .ok_or_else(|| SrError::new_custom("generate_render: common not set".into()))?;
+            .ok_or_else(|| SrError::new_custom(format!("{CTX}: common not set")))?;
 
-        let pipeline_c = Rc::clone(&pipeline);
-        let sbt_c = Rc::clone(&sbt);
-        let core_c = Rc::clone(&core);
         common.render = Some(Box::new(move |cb, tr| {
+            let (pipeline, sbt) = tr.raytracing_pipeline(handle)?;
             let push_bytes = push(tr)?;
-            let device = core_c.device().inner();
+            let device = core.device().inner();
             unsafe {
-                core_c.descriptor_heap().cmd_bind(*cb);
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline_c.inner());
+                core.descriptor_heap().cmd_bind(*cb);
+                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline.inner());
                 if !push_bytes.is_empty() {
                     let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
                         address: push_bytes.as_ptr() as *const std::ffi::c_void,
                         size: push_bytes.len(),
                         _marker: Default::default(),
                     });
-                    core_c.descriptor_heap_device().cmd_push_data(*cb, &push_info);
+                    core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
                 }
-                core_c.rt_pipeline_device().cmd_trace_rays(
+                core.rt_pipeline_device().cmd_trace_rays(
                     *cb,
-                    sbt_c.raygen_region(),
-                    sbt_c.miss_region(),
-                    sbt_c.hit_region(),
-                    sbt_c.callable_region(),
+                    sbt.raygen_region(),
+                    sbt.miss_region(),
+                    sbt.hit_region(),
+                    sbt.callable_region(),
                     trace_extent[0],
                     trace_extent[1],
                     trace_extent[2],
@@ -290,89 +321,241 @@ impl RaytracingRenderPassBuilder {
         }));
 
         self.common = Some(common);
-
-        // Keep the built pipeline + SBT alive by stashing the Rc clones in the
-        // closure; the builder is consumed by `.build()` afterwards so nothing
-        // else needs to hold them.
-        let _ = (pipeline, sbt);
         Ok(self)
     }
 }
 
-pub(crate) struct RasterRenderPass {
-    pub(super) common: PassCommonData,
-    //TODO
-}
+// TODO EXPERIMENTAL, UNTESTED. The heap-mode raster path mirrors the compute and
+// ray-tracing builders below, but it has never been driven end-to-end. The
+// fixed-function state baked into `GraphicsPipeline::new_heap` is currently tuned
+// for 2D alpha-blended overlays (the egui paint pass), and `generate_render`
+// below does NOT yet wire up dynamic-rendering attachments, viewport/scissor,
+// vertex/index buffer binding, or the draw call — verify all of that before
+// relying on this.
 #[derive(Builder)]
 #[builder(pattern = "owned")]
-/// Remember [`PushConstType`] must be `#[repr(C)]` or the gpu will get garbage data caused by rust reordering the fields or a struct
-pub(crate) struct ComputeRenderPass {
+pub(crate) struct RasterRenderPass {
     pub(super) common: PassCommonData,
-    #[builder(setter(each = "add_shader"))]
-    pub(super) shaders: Vec<ShaderSource>,
-    ///This is the name of a method with a unique name between the shaders
-    pub(super) entry_point: String,
+    /// The vertex/fragment Slang/SPIR-V shaders + entry points this pass compiles
+    /// into its graphics pipeline. `None` for passes whose `common.render`
+    /// closure binds a pre-built pipeline directly.
+    #[builder(setter(strip_option), default)]
+    pub(super) shaders: Option<RasterShaders>,
 }
 
-pub struct ComputeShaders{
+/// The shaders + fixed-function inputs backing a single raster pass. Like
+/// [`ComputeShaders`], `vertex` / `fragment` are the `(index, name)` of the
+/// owning module in `shaders` so the builder picks each stage directly.
+pub struct RasterShaders {
     pub(super) shaders: Vec<ShaderSource>,
-    ///This is the index of the vec with the shader containing the method and its name
-    pub(super) entry_point: (usize,String),
+    pub(super) vertex: (usize, String),
+    pub(super) fragment: (usize, String),
+    pub(super) color_format: vk::Format,
+    pub(super) vertex_binding: vk::VertexInputBindingDescription,
+    pub(super) vertex_attributes: Vec<vk::VertexInputAttributeDescription>,
 }
 
-impl ComputeRenderPassBuilder {
-    /// Build a heap-mode compute pipeline from this pass's single Slang SPIR-V
-    /// shader and install a render closure that, when the graph records this
-    /// pass, binds the descriptor heap, binds the pipeline, pushes the
-    /// caller-provided bytes via `cmd_push_data`, and dispatches `dispatch`
-    /// workgroups.
+impl RasterShaders {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        shaders: Vec<ShaderSource>,
+        vertex: (usize, impl Into<String>),
+        fragment: (usize, impl Into<String>),
+        color_format: vk::Format,
+        vertex_binding: vk::VertexInputBindingDescription,
+        vertex_attributes: Vec<vk::VertexInputAttributeDescription>,
+    ) -> Self {
+        Self {
+            shaders,
+            vertex: (vertex.0, vertex.1.into()),
+            fragment: (fragment.0, fragment.1.into()),
+            color_format,
+            vertex_binding,
+            vertex_attributes,
+        }
+    }
+}
+
+impl RasterRenderPassBuilder {
+    /// EXPERIMENTAL / UNTESTED heap-mode raster pass. Builds a [`GraphicsPipeline`]
+    /// from this pass's `shaders` (vertex + fragment selected directly by index)
+    /// and installs a render closure that binds the descriptor heap, binds the
+    /// pipeline, and pushes the caller-provided bytes via `cmd_push_data`.
     ///
-    /// `push` is invoked at record time with the populated `TransientResources`,
-    /// so it can resolve graph image handles to heap slots
-    /// (`tr.image(&h)?.storage_slot()`) before assembling the push-constant
-    /// bytes. An empty `Vec` skips `cmd_push_data`.
+    /// The selected modules must be `ShaderSource::Spirv` — heap shaders are
+    /// compiled by the caller (e.g. via the Slang `ShaderCompiler`).
     ///
-    /// Requires exactly one shader, set as `ShaderSource::Spirv` (heap shaders
-    /// are compiled by the caller, e.g. via the Slang `ShaderCompiler`).
-    // Builder-level API: builds the pipeline per call. The renderer's per-frame
-    // hot path instead registers compute passes via persistent-pipeline closures
-    // (e.g. `Renderer::add_denoise_passes`), so this is currently unused there.
+    /// TODO: this does NOT yet begin/end dynamic rendering, set the
+    /// viewport/scissor, bind vertex/index buffers, or issue a draw — those depend
+    /// on a color target + geometry the graph doesn't model yet. Wire them up and
+    /// test against a real attachment before using this for anything.
     #[allow(dead_code)]
-    pub fn generate_render<PushConstType :  Pod + Zeroable>(mut self, core : Rc<Core>, dispatch: [u32; 3], get_push_data : impl Fn(&TransientResources)  -> PushConstType ) -> SrResult<ComputeRenderPass>
+    pub fn generate_render<F>(mut self, rg: &mut RenderGraph, push: F) -> SrResult<Self>
+    where
+        F: Fn(&TransientResources) -> SrResult<Vec<u8>> + 'static,
     {
-        //TODO this is currently duplicating the shader on the gpu if it already exists in the render graph cache and is being used by someone else
-        let spirv = match self.shaders.as_ref().and_then(|v| v.first()) {
-            Some(ShaderSource::Spirv(bytes)) => bytes,
-            Some(ShaderSource::Glsl(path)) => {
-                return Err(SrError::new_custom(format!(
-                    "ComputeRenderPassBuilder::generate_render only accepts ShaderSource::Spirv; got Glsl({path:?})"
-                )));
-            }
-            Some(ShaderSource::Slang(path)) => {
-                return Err(SrError::new_custom(format!(
-                    "ComputeRenderPassBuilder::generate_render only accepts ShaderSource::Spirv; got Slang({path:?})"
-                )));
-            }
-            None => {
-                return Err(SrError::new_custom(
-                    "ComputeRenderPassBuilder::generate_render: no shader set".into(),
-                ));
-            }
+        const CTX: &str = "RasterRenderPassBuilder::generate_render";
+
+        let shaders = self
+            .shaders
+            .take()
+            .flatten()
+            .ok_or_else(|| SrError::new_custom(format!("{CTX}: no shaders set")))?;
+
+        let stage_spirv = |stage: &str, (idx, name): &(usize, String)| -> SrResult<Vec<u8>> {
+            let src = shaders.shaders.get(*idx).ok_or_else(|| {
+                SrError::new_custom(format!(
+                    "{CTX}: {stage} entry_point index {idx} (\"{name}\") out of range for {} shader(s)",
+                    shaders.shaders.len()
+                ))
+            })?;
+            Ok(extract_spirv(src, CTX)?.to_vec())
         };
 
-        let pipeline = ComputePipeline::<PushConstType>::new_heap(core.device().inner().clone(), &spirv)?;
+        let graphics_shaders = GraphicsPipelineShaders {
+            vertex: stage_spirv("vertex", &shaders.vertex)?,
+            fragment: stage_spirv("fragment", &shaders.fragment)?,
+            color_format: shaders.color_format,
+            vertex_binding: shaders.vertex_binding,
+            vertex_attributes: shaders.vertex_attributes.clone(),
+        };
+
+        // Intern in the graph's persistent cache (built once, reused across frame
+        // rebuilds), resolved by handle in the closure.
+        let handle = rg.cache_graphics_pipeline(&graphics_shaders)?;
+        let core = rg.core();
 
         let mut common = self
             .common
             .take()
-            .ok_or_else(|| SrError::new_custom("ComputeRenderPassBuilder::generate_render: common not set".into()))?;
-
-
+            .ok_or_else(|| SrError::new_custom(format!("{CTX}: common not set")))?;
 
         common.render = Some(Box::new(move |cb, tr| {
+            let pipeline = tr.graphics_pipeline(handle)?;
+            let push_bytes = push(tr)?;
+            let device = core.device().inner();
+            unsafe {
+                core.descriptor_heap().cmd_bind(*cb);
+                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::GRAPHICS, pipeline.inner());
+                if !push_bytes.is_empty() {
+                    let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
+                        address: push_bytes.as_ptr() as *const std::ffi::c_void,
+                        size: push_bytes.len(),
+                        _marker: Default::default(),
+                    });
+                    core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
+                }
+                // TODO EXPERIMENTAL: begin_rendering(color attachment), set dynamic
+                // viewport/scissor, bind vertex/index buffers, cmd_draw*, end_rendering.
+                // Without this the pass binds state but draws nothing.
+            }
+            Ok(())
+        }));
+
+        self.common = Some(common);
+        Ok(self)
+    }
+}
+
+#[derive(Builder)]
+#[builder(pattern = "owned")]
+/// Remember the push-constant type used in `generate_render` must be `#[repr(C)]`
+/// or the gpu will get garbage data caused by rust reordering the fields of a struct.
+pub(crate) struct ComputeRenderPass {
+    pub(super) common: PassCommonData,
+    /// The Slang/SPIR-V shaders + entry point this pass compiles into its
+    /// pipeline. `None` for passes whose `common.render` closure binds a
+    /// pre-built (persistent) pipeline directly instead of going through
+    /// `ComputeRenderPassBuilder::generate_render`.
+    #[builder(setter(strip_option), default)]
+    pub(super) shaders: Option<ComputeShaders>,
+}
+
+/// The shaders backing a single compute pass. Instead of carrying the entry
+/// point as a bare name and scanning every shader for it, the entry point is the
+/// `(index, name)` of the shader in `shaders` that owns it — so the builder can
+/// pick the right module directly.
+pub struct ComputeShaders {
+    pub(super) shaders: Vec<ShaderSource>,
+    /// `(index into `shaders` of the module containing the entry point, entry point name)`
+    pub(super) entry_point: (usize, String),
+}
+
+impl ComputeShaders {
+    pub fn new(shaders: Vec<ShaderSource>, entry_index: usize, entry_point: impl Into<String>) -> Self {
+        Self {
+            shaders,
+            entry_point: (entry_index, entry_point.into()),
+        }
+    }
+}
+
+impl ComputeRenderPassBuilder {
+    /// Build a heap-mode compute pipeline from this pass's `shaders` and install
+    /// the render closure that binds the descriptor heap + pipeline, pushes the
+    /// caller's push constant via `cmd_push_data`, and dispatches `dispatch`
+    /// workgroups.
+    ///
+    /// This is the one-stop entry point that lets the caller (e.g. `lib.rs`)
+    /// describe a graph pass with **only its shaders and a push-data closure** —
+    /// pipeline creation lives here, so the caller never builds a
+    /// `ComputePipeline` (or writes the bind/dispatch boilerplate) itself.
+    ///
+    /// `get_push_data` is invoked at record time with the populated
+    /// `TransientResources`, so it can resolve graph image handles to heap slots
+    /// (`tr.image(&h)?.storage_slot()`) before returning the `PushConstType`
+    /// value pushed to the shader. A zero-sized `PushConstType` skips
+    /// `cmd_push_data`.
+    ///
+    /// Requires `shaders` to be set (via `.shaders(ComputeShaders::new(..))`). The
+    /// entry-point module is selected directly by `ComputeShaders::entry_point.0`
+    /// (its index in the shader list) and must be a `ShaderSource::Spirv` — heap
+    /// shaders are compiled by the caller, e.g. via the Slang `ShaderCompiler`.
+    ///
+    /// `PushConstType` must be `#[repr(C)]` plain data: it is copied verbatim into
+    /// the push-constant range, so any field reordering/padding the GPU doesn't
+    /// expect would corrupt it.
+    pub fn generate_render<PushConstType: Copy + 'static>(
+        mut self,
+        rg: &mut RenderGraph,
+        dispatch: [u32; 3],
+        get_push_data: impl Fn(&TransientResources) -> SrResult<PushConstType> + 'static,
+    ) -> SrResult<ComputeRenderPass> {
+        const CTX: &str = "ComputeRenderPassBuilder::generate_render";
+
+        let shaders = self
+            .shaders
+            .take()
+            .flatten()
+            .ok_or_else(|| SrError::new_custom(format!("{CTX}: no shaders set")))?;
+
+        // Pick the entry-point module directly by its index — no scanning the
+        // whole shader list to find which one owns the entry point.
+        let (entry_index, entry_name) = &shaders.entry_point;
+        let entry_shader = shaders.shaders.get(*entry_index).ok_or_else(|| {
+            SrError::new_custom(format!(
+                "{CTX}: entry_point index {entry_index} (\"{entry_name}\") out of range for {} shader(s)",
+                shaders.shaders.len()
+            ))
+        })?;
+        let spirv = extract_spirv(entry_shader, CTX)?;
+
+        // Intern the pipeline in the graph's persistent cache: built once per
+        // distinct shader, reused across the per-frame graph rebuilds, and
+        // resolved by handle inside the render closure below.
+        let handle = rg.cache_compute_pipeline(spirv)?;
+        let core = rg.core();
+
+        let mut common = self
+            .common
+            .take()
+            .ok_or_else(|| SrError::new_custom(format!("{CTX}: common not set")))?;
+
+        common.render = Some(Box::new(move |cb, tr| {
+            let pipeline = tr.compute_pipeline(handle)?;
             let device = core.device().inner();
 
-            let push_data: PushConstType = get_push_data(tr);
+            let push_data: PushConstType = get_push_data(tr)?;
 
             let push_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(
@@ -397,15 +580,10 @@ impl ComputeRenderPassBuilder {
             Ok(())
         }));
 
-        // Keep the pipeline alive for the graph's lifetime via the closure's Rc.
-        let _ = pipeline;
-        Ok(  ComputeRenderPass{
+        Ok(ComputeRenderPass {
             common,
-            shaders: self.shaders,
-            entry_point: "".to_string(),
+            shaders: Some(shaders),
         })
-
-
     }
 }
 

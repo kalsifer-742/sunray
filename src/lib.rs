@@ -21,9 +21,9 @@ pub use scene::*;
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
 use crate::render_graph::graph::{AnyRenderPass, Handle, ImageDesc, RenderGraph};
-use crate::render_graph::pass_builder::{ComputeRenderPassBuilder, PassCommonDataBuilder};
+use crate::render_graph::pass_builder::{ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, ShaderSource};
 use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
-use crate::vulkan_abstraction::{Buffer, ComputePipeline, ComputeTypeDef, DenoisePass, GpuOnlyBuffer, PostprocessPass, PostprocessPushConstant, RawBuffer, Reservoir, ReservoirGI, TemporalPass};
+use crate::vulkan_abstraction::{PostprocessPushConstant, Reservoir, ReservoirGI};
 use ash::vk;
 use vk_sync_fork as vk_sync;
 
@@ -83,14 +83,18 @@ pub struct Renderer {
     image_extent: vk::Extent3D,
     image_format: vk::Format,
 
+    // Heap-mode compute shaders (Slang-compiled SPIR-V). The pipelines themselves
+    // are no longer built here: each per-frame graph pass hands its SPIR-V to
+    // `ComputeRenderPassBuilder::generate_render`, which interns the pipeline in
+    // the graph's persistent cache (built once, reused across frame rebuilds).
     ///The first pass after raytracing merges the previous frame on the next one to reduce bias
-    temporal_accumulation_pipeline: vulkan_abstraction::ComputePipeline<TemporalPass>,
+    temporal_accumulation_spirv: Vec<u8>,
 
     ///The denoise pass is run after the temporal accumulation to reduce noise even more (a-trous filter)
-    denoise_pipeline: vulkan_abstraction::ComputePipeline<DenoisePass>,
+    denoise_spirv: Vec<u8>,
 
     ///An extra pass to handle post-processing like exposure and color correction. Should be mathematically easy to calculate
-    postprocess_pipeline: vulkan_abstraction::ComputePipeline<PostprocessPass>,
+    postprocess_spirv: Vec<u8>,
 
     blue_noise_image: vulkan_abstraction::Image,
     blue_noise_sampler: vulkan_abstraction::Sampler,
@@ -204,20 +208,12 @@ impl Renderer {
         let shaders_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
         let shader_compiler = shader_compiler::ShaderCompiler::new(shaders_dir)?;
 
+        // Heap-mode compute SPIR-V (Slang-compiled). The pipelines are interned
+        // lazily by the render graph's pipeline cache the first time each pass is
+        // built, so we only keep the bytes here.
         let denoise_spirv = shader_compiler.compile("denoise", "main")?;
-        let denoise_pipeline = vulkan_abstraction::ComputePipeline::<DenoisePass>::new_heap(core.device().inner().clone(), &denoise_spirv)?;
-
-
-
         let postprocess_spirv = shader_compiler.compile("postprocess", "main")?;
-        let postprocess_pipeline =
-            vulkan_abstraction::ComputePipeline::<PostprocessPass>::new_heap(core.device().inner().clone(), &postprocess_spirv)?;
-
-        // Heap-mode temporal accumulation pipeline (Slang port of the GLSL pass).
-        // Built once and reused; the render graph captures its handle each frame.
         let temporal_accumulation_spirv = shader_compiler.compile("temporal_accumulation", "main")?;
-        let temporal_accumulation_pipeline =
-            vulkan_abstraction::ComputePipeline::<TemporalPass>::new_heap(core.device().inner().clone(), &temporal_accumulation_spirv)?;
 
         let image_dependant_data = HashMap::new();
 
@@ -368,9 +364,9 @@ impl Renderer {
                 image_extent,
                 image_format,
 
-                denoise_pipeline,
-                temporal_accumulation_pipeline,
-                postprocess_pipeline,
+                denoise_spirv,
+                temporal_accumulation_spirv,
+                postprocess_spirv,
 
                 accumulation_images,
                 denoising_images,
@@ -803,9 +799,12 @@ impl Renderer {
         };
         let ris_pipeline = self.ray_tracing_pipeline_ris.inner();
         let final_pipeline = self.ray_tracing_pipeline_final.inner();
-        let taa_pipeline = self.temporal_accumulation_pipeline.inner();
-        let denoise_pipeline = self.denoise_pipeline.inner();
-        let postprocess_pipeline = self.postprocess_pipeline.inner();
+        // Compute passes now describe themselves with their SPIR-V; the graph's
+        // pipeline cache builds/reuses the pipeline. Snapshot the bytes into
+        // locals so the `&mut self.render_graph` borrow below stays disjoint.
+        let taa_spirv = self.temporal_accumulation_spirv.clone();
+        let denoise_spirv = self.denoise_spirv.clone();
+        let postprocess_spirv = self.postprocess_spirv.clone();
 
         let accum_arc0 = Arc::clone(&self.accumulation_images[0]);
         let accum_arc1 = Arc::clone(&self.accumulation_images[1]);
@@ -906,8 +905,7 @@ impl Renderer {
         // 2. Temporal accumulation.
         Self::add_temporal_pass(
             rg,
-            Rc::clone(&core),
-            taa_pipeline,
+            &taa_spirv,
             raw_color_h.clone(),
             motion_h.clone(),
             accum_history_h,
@@ -920,8 +918,7 @@ impl Renderer {
         // 3. Denoise (8 a-trous passes). Pass 0 reads the TAA output (accum_target).
         Self::add_denoise_passes(
             rg,
-            Rc::clone(&core),
-            denoise_pipeline,
+            &denoise_spirv,
             accum_target_h,
             depth_h,
             normal_h,
@@ -938,8 +935,7 @@ impl Renderer {
         let denoise_input_h = if final_idx == 0 { denoise_a_h } else { denoise_b_h };
         Self::add_postprocess_pass(
             rg,
-            Rc::clone(&core),
-            postprocess_pipeline,
+            &postprocess_spirv,
             denoise_input_h,
             postprocess_out_h,
             width,
@@ -1044,8 +1040,6 @@ impl Renderer {
 
         let pass = ComputeRenderPassBuilder::default()
             .common(common.build())
-            .shaders(vec![])
-            .entry_point(String::new())
             .build()
             .map_err(|e| SrError::new_custom(format!("raytracing RIS pass builder failed: {e}")))?;
         rg.add_render_pass(AnyRenderPass::Compute(pass));
@@ -1108,8 +1102,6 @@ impl Renderer {
 
         let pass = ComputeRenderPassBuilder::default()
             .common(common.build())
-            .shaders(vec![])
-            .entry_point(String::new())
             .build()
             .map_err(|e| SrError::new_custom(format!("raytracing final pass builder failed: {e}")))?;
         rg.add_render_pass(AnyRenderPass::Compute(pass));
@@ -1122,8 +1114,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn add_temporal_pass(
         rg: &mut RenderGraph,
-        core: Rc<vulkan_abstraction::Core>,
-        pipeline: vk::Pipeline,
+        spirv: &[u8],
         raw_color_h: Handle<vulkan_abstraction::Image>,
         motion_h: Handle<vulkan_abstraction::Image>,
         history_h: Handle<vulkan_abstraction::Image>,
@@ -1138,37 +1129,23 @@ impl Renderer {
         common.read(&history_h, vk_sync::AccessType::ComputeShaderReadOther)?;
         common.write(&accum_target_h, vk_sync::AccessType::ComputeShaderWrite)?;
 
-        common.render(move |cb, tr| {
-            let pack = |i: u32| -> [u32; 2] { [i, 0] };
-            let pc = vulkan_abstraction::TemporalAccumulationHeapPushConstant {
-                raw_rt_color: pack(tr.image(&raw_color_h)?.storage_slot()),
-                motion_vector: pack(tr.image(&motion_h)?.storage_slot()),
-                history: pack(tr.image(&history_h)?.storage_slot()),
-                accum_output: pack(tr.image(&accum_target_h)?.storage_slot()),
-                frame_count,
-                width,
-                height,
-            };
-            let device = core.device().inner();
-            unsafe {
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, pipeline);
-                core.descriptor_heap().cmd_bind(*cb);
-                let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
-                    address: &pc as *const _ as *const std::ffi::c_void,
-                    size: std::mem::size_of::<vulkan_abstraction::TemporalAccumulationHeapPushConstant>(),
-                    _marker: Default::default(),
-                });
-                core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
-                device.cmd_dispatch(*cb, width.div_ceil(16), height.div_ceil(16), 1);
-            }
-            Ok(())
-        });
-
+        // Only the shaders + a push-data closure: `generate_render` interns the
+        // pipeline in the graph cache and installs the bind/push/dispatch closure.
         let pass = ComputeRenderPassBuilder::default()
             .common(common.build())
-            .shaders(vec![])
-            .entry_point("main".to_string())
-            .build()
+            .shaders(ComputeShaders::new(vec![ShaderSource::Spirv(spirv.to_vec())], 0, "main"))
+            .generate_render(rg, [width.div_ceil(16), height.div_ceil(16), 1], move |tr| {
+                let pack = |i: u32| -> [u32; 2] { [i, 0] };
+                Ok(vulkan_abstraction::TemporalAccumulationHeapPushConstant {
+                    raw_rt_color: pack(tr.image(&raw_color_h)?.storage_slot()),
+                    motion_vector: pack(tr.image(&motion_h)?.storage_slot()),
+                    history: pack(tr.image(&history_h)?.storage_slot()),
+                    accum_output: pack(tr.image(&accum_target_h)?.storage_slot()),
+                    frame_count,
+                    width,
+                    height,
+                })
+            })
             .map_err(|e| SrError::new_custom(format!("temporal accumulation pass builder failed: {e}")))?;
         rg.add_render_pass(AnyRenderPass::Compute(pass));
         Ok(())
@@ -1180,8 +1157,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn add_denoise_passes(
         rg: &mut RenderGraph,
-        core: Rc<vulkan_abstraction::Core>,
-        pipeline: vk::Pipeline,
+        spirv: &[u8],
         accum_in_h: Handle<vulkan_abstraction::Image>,
         depth_h: Handle<vulkan_abstraction::Image>,
         normal_h: Handle<vulkan_abstraction::Image>,
@@ -1220,45 +1196,30 @@ impl Renderer {
                 )?;
             }
 
-            let core = Rc::clone(&core);
             let read_h_c = read_h.clone();
             let write_h_c = write_h.clone();
             let depth_c = depth_h.clone();
             let normal_c = normal_h.clone();
             let diffuse_c = diffuse_h.clone();
-            common.render(move |cb, tr| {
-                let pack = |i: u32| -> [u32; 2] { [i, 0] };
-                let push = vulkan_abstraction::DenoiseHeapPushConstant {
-                    temporal_result: pack(tr.image(&read_h_c)?.storage_slot()),
-                    depth: pack(tr.image(&depth_c)?.sampled_slot()),
-                    normal: pack(tr.image(&normal_c)?.sampled_slot()),
-                    diffuse: pack(tr.image(&diffuse_c)?.sampled_slot()),
-                    spatial_output: pack(tr.image(&write_h_c)?.storage_slot()),
-                    frame_count,
-                    step_width,
-                    width,
-                    height,
-                };
-                let device = core.device().inner();
-                unsafe {
-                    device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, pipeline);
-                    core.descriptor_heap().cmd_bind(*cb);
-                    let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
-                        address: &push as *const _ as *const std::ffi::c_void,
-                        size: std::mem::size_of::<vulkan_abstraction::DenoiseHeapPushConstant>(),
-                        _marker: Default::default(),
-                    });
-                    core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
-                    device.cmd_dispatch(*cb, width.div_ceil(16), height.div_ceil(16), 1);
-                }
-                Ok(())
-            });
-
+            // The same SPIR-V is handed to every a-trous pass; the graph's
+            // pipeline cache dedups them to one `vk::Pipeline`.
             let pass = ComputeRenderPassBuilder::default()
                 .common(common.build())
-                .shaders(vec![])
-                .entry_point("main".to_string())
-                .build()
+                .shaders(ComputeShaders::new(vec![ShaderSource::Spirv(spirv.to_vec())], 0, "main"))
+                .generate_render(rg, [width.div_ceil(16), height.div_ceil(16), 1], move |tr| {
+                    let pack = |i: u32| -> [u32; 2] { [i, 0] };
+                    Ok(vulkan_abstraction::DenoiseHeapPushConstant {
+                        temporal_result: pack(tr.image(&read_h_c)?.storage_slot()),
+                        depth: pack(tr.image(&depth_c)?.sampled_slot()),
+                        normal: pack(tr.image(&normal_c)?.sampled_slot()),
+                        diffuse: pack(tr.image(&diffuse_c)?.sampled_slot()),
+                        spatial_output: pack(tr.image(&write_h_c)?.storage_slot()),
+                        frame_count,
+                        step_width,
+                        width,
+                        height,
+                    })
+                })
                 .map_err(|e| SrError::new_custom(format!("denoise pass builder failed: {e}")))?;
             rg.add_render_pass(AnyRenderPass::Compute(pass));
         }
@@ -1270,8 +1231,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn add_postprocess_pass(
         rg: &mut RenderGraph,
-        core: Rc<vulkan_abstraction::Core>,
-        pipeline: vk::Pipeline,
+        spirv: &[u8],
         denoise_in_h: Handle<vulkan_abstraction::Image>,
         postprocess_out_h: Handle<vulkan_abstraction::Image>,
         width: u32,
@@ -1281,41 +1241,20 @@ impl Renderer {
         let mut common = PassCommonDataBuilder::new(rg, "postprocess");
         common.read(&denoise_in_h, vk_sync::AccessType::ComputeShaderReadOther)?;
         common.write(&postprocess_out_h, vk_sync::AccessType::ComputeShaderWrite)?;
-
-
-
-
-
-
-
-        common.render(move |cb, tr| {
-            let push_constants = PostprocessPushConstant {
-                input_idx: tr.image(&denoise_in_h)?.storage_slot(),
-                _input_pad: 0,
-                output_idx: tr.image(&postprocess_out_h)?.storage_slot(),
-                _output_pad: 0,
-                exposure,
-            };
-            let device = core.device().inner();
-            unsafe {
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, pipeline);
-                core.descriptor_heap().cmd_bind(*cb);
-                let push_info = vk::PushDataInfoEXT::default().offset(0).data(vk::HostAddressRangeConstEXT {
-                    address: &push_constants as *const _ as *const std::ffi::c_void,
-                    size: std::mem::size_of::<PostprocessPushConstant>(),
-                    _marker: Default::default(),
-                });
-                core.descriptor_heap_device().cmd_push_data(*cb, &push_info);
-                device.cmd_dispatch(*cb, width.div_ceil(16), height.div_ceil(16), 1);
-            }
-            Ok(())
-        });
+        
 
         let pass = ComputeRenderPassBuilder::default()
             .common(common.build())
-            .shaders(vec![])
-            .entry_point("main".to_string())
-            .build()
+            .shaders(ComputeShaders::new(vec![ShaderSource::Spirv(spirv.to_vec())], 0, "main"))
+            .generate_render(rg, [width.div_ceil(16), height.div_ceil(16), 1], move |tr| {
+                Ok(PostprocessPushConstant {
+                    input_idx: tr.image(&denoise_in_h)?.storage_slot(),
+                    _input_pad: 0,
+                    output_idx: tr.image(&postprocess_out_h)?.storage_slot(),
+                    _output_pad: 0,
+                    exposure,
+                })
+            })
             .map_err(|e| SrError::new_custom(format!("postprocess pass builder failed: {e}")))?;
         rg.add_render_pass(AnyRenderPass::Compute(pass));
         Ok(())

@@ -149,7 +149,9 @@
       "Bash(rm -f examples/png/render.png)",
       "Read(//c/Users/MatGa/Documents/GitHub/Bosh/**)",
       "Read(//c/Users/MatGa/Documents/GitHub/**)",
-      "Bash(grep -E \"bevy_integration|examples\\\\\\\\\\\\\\\\bevy_app|error\")"
+      "Bash(grep -E \"bevy_integration|examples\\\\\\\\\\\\\\\\bevy_app|error\")",
+      "Bash(echo \"---exit:$?---\")",
+      "Bash(echo \"exit:$?  \\(no lines above = no errors\\)\")"
     ]
   }
 }

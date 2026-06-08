@@ -5,14 +5,25 @@ use ash::vk;
 use ash::vk::TaggedStructure;
 
 use crate::error::SrResult;
-use crate::vulkan_abstraction::Core;
+use crate::vulkan_abstraction::{Core, Pipeline};
 
 // Slang emits every entry point as a SPIR-V "main" (see ray_tracing_pipeline.rs).
 const ENTRY_POINT: &CStr = c"main";
 
+/// Inputs for a heap-mode graphics pipeline: the vertex + fragment SPIR-V plus
+/// the fixed-function vertex layout and color-attachment format the pipeline is
+/// specialized for.
+pub struct GraphicsPipelineShaders {
+    pub vertex: Vec<u8>,
+    pub fragment: Vec<u8>,
+    pub color_format: vk::Format,
+    pub vertex_binding: vk::VertexInputBindingDescription,
+    pub vertex_attributes: Vec<vk::VertexInputAttributeDescription>,
+}
+
 /// Heap-mode graphics (raster) pipeline.
 ///
-/// Like [`crate::vulkan_abstraction::ComputePipeline::new_heap`], the pipeline
+/// Like [`crate::vulkan_abstraction::ComputePipeline::new`], the pipeline
 /// layout is `VK_NULL_HANDLE` and the pipeline carries `DESCRIPTOR_HEAP_EXT`; the
 /// push-constant interface lives in the shader's SPIR-V and is fed via
 /// `vkCmdPushDataEXT`. Resources are addressed through `DescriptorHandle<>` in the
@@ -134,6 +145,30 @@ impl GraphicsPipeline {
 
     pub fn inner(&self) -> vk::Pipeline {
         self.pipeline
+    }
+}
+
+impl Pipeline for GraphicsPipeline {
+    type Shaders = GraphicsPipelineShaders;
+
+    fn new(core: Rc<Core>, shaders: &Self::Shaders) -> SrResult<Self> {
+        Self::new_heap(
+            core,
+            &shaders.vertex,
+            &shaders.fragment,
+            shaders.color_format,
+            shaders.vertex_binding,
+            &shaders.vertex_attributes,
+        )
+    }
+
+    fn inner(&self) -> vk::Pipeline {
+        self.pipeline
+    }
+
+    // Heap-mode graphics pipelines are built with a null layout (see `new_heap`).
+    fn layout(&self) -> vk::PipelineLayout {
+        vk::PipelineLayout::null()
     }
 }
 
