@@ -306,23 +306,21 @@ pub(crate) struct RasterRenderPass {
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 /// Remember [`PushConstType`] must be `#[repr(C)]` or the gpu will get garbage data caused by rust reordering the fields or a struct
-pub(crate) struct ComputeRenderPass<PushConstType: Pod + Zeroable > {
+pub(crate) struct ComputeRenderPass {
     pub(super) common: PassCommonData,
     #[builder(setter(each = "add_shader"))]
     pub(super) shaders: Vec<ShaderSource>,
     ///This is the name of a method with a unique name between the shaders
     pub(super) entry_point: String,
-
-    get_push_const : Box<dyn Fn(&TransientResources)  -> PushConstType > ,
 }
 
-pub struct ComputerShaders{
+pub struct ComputeShaders{
     pub(super) shaders: Vec<ShaderSource>,
     ///This is the index of the vec with the shader containing the method and its name
     pub(super) entry_point: (usize,String),
 }
 
-impl<PushConstType :  Pod + Zeroable> ComputeRenderPassBuilder<PushConstType> {
+impl ComputeRenderPassBuilder {
     /// Build a heap-mode compute pipeline from this pass's single Slang SPIR-V
     /// shader and install a render closure that, when the graph records this
     /// pass, binds the descriptor heap, binds the pipeline, pushes the
@@ -340,7 +338,7 @@ impl<PushConstType :  Pod + Zeroable> ComputeRenderPassBuilder<PushConstType> {
     // hot path instead registers compute passes via persistent-pipeline closures
     // (e.g. `Renderer::add_denoise_passes`), so this is currently unused there.
     #[allow(dead_code)]
-    pub fn generate_render(mut self, core : Rc<Core>, dispatch: [u32; 3]) -> SrResult<ComputeRenderPass<PushConstType>>
+    pub fn generate_render<PushConstType :  Pod + Zeroable>(mut self, core : Rc<Core>, dispatch: [u32; 3], get_push_data : impl Fn(&TransientResources)  -> PushConstType ) -> SrResult<ComputeRenderPass>
     {
         //TODO this is currently duplicating the shader on the gpu if it already exists in the render graph cache and is being used by someone else
         let spirv = match self.shaders.as_ref().and_then(|v| v.first()) {
@@ -369,16 +367,12 @@ impl<PushConstType :  Pod + Zeroable> ComputeRenderPassBuilder<PushConstType> {
             .take()
             .ok_or_else(|| SrError::new_custom("ComputeRenderPassBuilder::generate_render: common not set".into()))?;
 
-        let get_push_const = self
-            .get_push_const
-            .take()
-            .ok_or_else(|| SrError::new_custom("ComputeRenderPassBuilder::generate_render: get_push_const not set".into()))?;
 
 
         common.render = Some(Box::new(move |cb, tr| {
             let device = core.device().inner();
 
-            let push_data: PushConstType = get_push_const(tr);
+            let push_data: PushConstType = get_push_data(tr);
 
             let push_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(
@@ -409,7 +403,6 @@ impl<PushConstType :  Pod + Zeroable> ComputeRenderPassBuilder<PushConstType> {
             common,
             shaders: self.shaders,
             entry_point: "".to_string(),
-            get_push_const: Box::new(()),
         })
 
 

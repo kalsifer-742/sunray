@@ -206,9 +206,9 @@ impl Renderer {
 
         let denoise_spirv = shader_compiler.compile("denoise", "main")?;
         let denoise_pipeline = vulkan_abstraction::ComputePipeline::<DenoisePass>::new_heap(core.device().inner().clone(), &denoise_spirv)?;
-        
-        
-        
+
+
+
         let postprocess_spirv = shader_compiler.compile("postprocess", "main")?;
         let postprocess_pipeline =
             vulkan_abstraction::ComputePipeline::<PostprocessPass>::new_heap(core.device().inner().clone(), &postprocess_spirv)?;
@@ -1282,13 +1282,11 @@ impl Renderer {
         common.read(&denoise_in_h, vk_sync::AccessType::ComputeShaderReadOther)?;
         common.write(&postprocess_out_h, vk_sync::AccessType::ComputeShaderWrite)?;
 
-        
-        
-                        
-        fn binder<PipelineType: ComputeTypeDef>( pipeline : ComputePipeline<PipelineType>  )  {
-            
-        }
-        
+
+
+
+
+
 
         common.render(move |cb, tr| {
             let push_constants = PostprocessPushConstant {
