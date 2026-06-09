@@ -360,7 +360,7 @@ impl Renderer {
         name_a: &'static str,
         name_b: &'static str,
     ) -> SrResult<[Arc<vulkan_abstraction::RawBuffer>; 2]> {
-        let byte_size = (num_pixels * std::mem::size_of::<T>()) as vk::DeviceSize;
+        let byte_size = (num_pixels * size_of::<T>()) as vk::DeviceSize;
         let usage = vk::BufferUsageFlags::STORAGE_BUFFER
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
             | vk::BufferUsageFlags::TRANSFER_DST;
@@ -1354,15 +1354,6 @@ impl Renderer {
         &self.core
     }
 
-    /// Updates the local CPU copy of an object's transform
-    #[deprecated = "use set_entity_transform with a proper EntityId"]
-    pub fn set_object_transform(&mut self, instance_id: usize, transform: nalgebra::Matrix4<f32>) {
-        // Vulkan expects a 3x4 row-major matrix for raytracing transforms
-        let vk_transform = na_mat4_to_vk_transform(transform);
-
-        let entity_id = vulkan_abstraction::EntityId(instance_id as u64);
-        let _ = self.resource_manager.set_entity_transform(entity_id, vk_transform);
-    }
 
     /// Call this ONCE per frame before `render_to_image` to update blasses that needs it
     pub fn rebuild_blasses(&mut self) -> SrResult<()> {
