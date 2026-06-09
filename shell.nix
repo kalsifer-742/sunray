@@ -43,6 +43,7 @@ pkgs.mkShell {
   buildInputs =
     with pkgs;
     [
+      cmake
       clang
       llvmPackages.libclang
       glslang

@@ -39,6 +39,9 @@ const MAX_TLAS_INSTANCES: usize = 10_000;
 ///
 /// Apparently 2 is the most common choice. Empirically it seems like the performance doesn't really
 /// get any better with a higher number, but it does get measurably worse with only 1.
+///
+/// TODO this feature is actually not doing what it is supposed and needs to be reworked,
+/// the render graph is incapable of starting a second frame with a current frame still ongoing
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 //TODO add a list of callbacks to call at the end of frames for cleanup or at start for setup
