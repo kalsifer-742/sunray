@@ -79,14 +79,17 @@ pub struct Renderer {
     ray_miss_spirv: &'static [u8],
     closest_hit_spirv: &'static [u8],
     any_hit_spirv: &'static [u8],
-
+    
+    //TODO this does not give info about which frame has this size and format 
     image_extent: vk::Extent3D,
     image_format: vk::Format,
-
+    
     // Heap-mode compute shaders (Slang-compiled SPIR-V). The pipelines themselves
     // are no longer built here: each per-frame graph pass hands its SPIR-V to
     // `ComputeRenderPassBuilder::generate_render`, which interns the pipeline in
     // the graph's persistent cache (built once, reused across frame rebuilds).
+    //TODO why are they cloned vec instead of static refs?
+    
     ///The first pass after raytracing merges the previous frame on the next one to reduce bias
     temporal_accumulation_spirv: Vec<u8>,
 
@@ -95,10 +98,11 @@ pub struct Renderer {
 
     ///An extra pass to handle post-processing like exposure and color correction. Should be mathematically easy to calculate
     postprocess_spirv: Vec<u8>,
-
+    //TODO OnceLock with the result loaded and usable done as soon as the render is created basically as the defualt sampler and fallback textures
     blue_noise_image: vulkan_abstraction::Image,
     blue_noise_sampler: vulkan_abstraction::Sampler,
-
+        
+    //TODO this is to be moved inside the render_graph as he is the one allowed to compile at runtime,all other stuff is precompiled
     /// Slang compiler held for the renderer's lifetime — owns a `GlobalSession` and
     /// is consulted when (re)building heap-mode pipelines.
     #[allow(unused)]
@@ -106,35 +110,38 @@ pub struct Renderer {
 
     core: Rc<vulkan_abstraction::Core>,
 
-    //2 images to avoid race conditions when reading/writing
+    //TODO all of this params are temporal stuff to be incorporated in a future version of the graph when temporal stuff can be handled internally
     pub accumulation_images: [Arc<vulkan_abstraction::Image>; 2],
     pub denoising_images: [Arc<vulkan_abstraction::Image>; 2],
     ///this is used for temporal accumulation, there is an absolute frame counter in the core
+    /// TODO to be phased out in favor of absolute frame count present in the core 
     pub relative_frame_count: u32,
 
-    prev_view_proj: nalgebra::Matrix4<f32>, //used to calculate motion vectors
+    /// Ping-pong reservoir buffers. Stored as `Arc<RawBuffer>` (rather than plain
+    /// `GpuOnlyBuffer`) so the same buffer can be imported into the render graph
+    /// each frame for hazard tracking — the RIS pass writes them and the final
+    /// pass reads them, so the graph emits the reservoir hand-off barrier between
+    /// the two RT passes automatically. The shader still addresses them by
+    /// device-address (see `RaytracingHeapPushConstant::reservoirs`); the graph
+    /// import only governs synchronization.
+    reservoir_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
+    /// Ping-pong pair of GI reservoir buffers for ReSTIR GI (Ouyang 2021)
+    /// contract as reservoir_buffers above, but storing surface samples (x2) instead of light samples.
+    reservoir_gi_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
+    
+    prev_view_proj: nalgebra::Matrix4<f32>, //used to calculate motion vectors 
 
-    /// Persistent render graph used for the denoise + post-process pipeline.
+    /// Persistent render graph.
     /// Re-populated each frame (passes / imports change because the ping-pong
     /// indices and per-frame descriptor sets do), but the underlying command
     /// buffer is reused across `compile` calls.
-    pub render_graph: crate::render_graph::graph::RenderGraph,
+    pub render_graph: RenderGraph,
     /// Fence signaled when the render graph's submission completes.
     render_graph_fence: vulkan_abstraction::Fence,
 
-    // Ping-pong reservoir buffers. Stored as `Arc<RawBuffer>` (rather than plain
-    // `GpuOnlyBuffer`) so the same buffer can be imported into the render graph
-    // each frame for hazard tracking — the RIS pass writes them and the final
-    // pass reads them, so the graph emits the reservoir hand-off barrier between
-    // the two RT passes automatically. The shader still addresses them by
-    // device-address (see `RaytracingHeapPushConstant::reservoirs`); the graph
-    // import only governs synchronization.
-    reservoir_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
-    // Ping-pong pair of GI reservoir buffers for ReSTIR GI (Ouyang 2021); same lifetime/layout
-    // contract as reservoir_buffers above, but storing surface samples (x2) instead of light samples.
-    reservoir_gi_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
-}
 
+}
+//TODO substitute all the top of pipe and bottom of pipe with none and all
 impl Renderer {
     pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
         Ok(Self::new_impl(image_extent, image_format, &[], None)?.0)
@@ -395,7 +402,7 @@ impl Renderer {
             "ReSTIR GI Reservoir Buffer B",
         )
     }
-
+    //TODO this needs to be changes to a subscription based approach where all the necessary methods to recreate the necessary image dependant data are rebuilt 
     pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
         let new_extent = utils::tuple_to_extent3d(image_extent);
         if new_extent == self.image_extent {
@@ -594,6 +601,7 @@ impl Renderer {
 
     /// Spawn a new instance that shares the BLAS and material of `src` with a new transform.
     /// Automatically rebuilds the TLAS.
+    #[deprecated]
     pub fn duplicate_entity(
         &mut self,
         src: vulkan_abstraction::EntityId,
@@ -612,6 +620,7 @@ impl Renderer {
     }
 
     /// Remove an entity from the scene. Automatically rebuilds the TLAS.
+    #[deprecated]
     pub fn destroy_entity(&mut self, id: vulkan_abstraction::EntityId) -> SrResult<()> {
         self.resource_manager.destroy_entity(id);
         self.resource_manager.rebuild_tlas()?;
@@ -620,11 +629,12 @@ impl Renderer {
     }
 
     /// Update an entity's world transform. Does NOT rebuild the TLAS — call `rebuild_tlas` afterwards.
+    #[deprecated]
     pub fn set_entity_transform(&mut self, id: vulkan_abstraction::EntityId, transform: nalgebra::Matrix4<f32>) -> SrResult<()> {
         let vk_transform = na_mat4_to_vk_transform(transform);
         self.resource_manager.set_entity_transform(id, vk_transform)
     }
-
+    #[deprecated]
     pub fn set_camera(&mut self, camera: crate::Camera) -> SrResult<()> {
         //TODO
         //
@@ -722,6 +732,7 @@ impl Renderer {
     /// RT-output images are created as graph-internal (transient) resources; the
     /// cross-frame accumulation ping-pong, the denoise ping-pong, and the
     /// post-process output are imported.
+    //TODO to be moved in the default pipeline section
     fn build_unified_graph(&mut self, postprocess_out: &Arc<vulkan_abstraction::Image>, extent: vk::Extent3D) -> SrResult<()> {
         let frame_count = self.relative_frame_count;
         let width = extent.width;
@@ -1250,7 +1261,7 @@ impl Renderer {
 
         dst_image.get_raw_image_data_with_no_padding()
     }
-
+    //TODO this needs to be reworked for a better integration with the graph or kept as default last pass
     fn cmd_blit_image(
         core: &vulkan_abstraction::Core,
         cmd_buf: vk::CommandBuffer,
@@ -1353,14 +1364,15 @@ impl Renderer {
     pub fn core(&self) -> &Rc<vulkan_abstraction::Core> {
         &self.core
     }
-
-
+    
     /// Call this ONCE per frame before `render_to_image` to update blasses that needs it
+    #[deprecated]
     pub fn rebuild_blasses(&mut self) -> SrResult<()> {
         self.resource_manager.update_tlas()
     }
 
     /// Call this ONCE per frame before `render_to_image`
+    #[deprecated]
     pub fn rebuild_tlas(&mut self) -> SrResult<()> {
         self.resource_manager.update_tlas()
     }

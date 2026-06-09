@@ -88,7 +88,7 @@ pub struct DenoiseHeapPushConstant {
 
 #[allow(dead_code)] // read by the gpu
 #[repr(C, packed)]
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct TemporalAccumulationPushConstant {
     pub frame_count: u32,
     pub width: u32,
@@ -125,7 +125,6 @@ pub struct PostprocessPushConstant {
     pub _output_pad: u32,
     pub exposure: f32,
 }
-
 pub struct ComputePipeline<PushConstType> {
     device: Rc<Device>,
     pipeline: vk::Pipeline,

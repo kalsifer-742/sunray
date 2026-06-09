@@ -281,6 +281,8 @@ fn render_frame_impl(state: &mut SunrayRenderState, camera: &ExtractedCamera, eg
         );
         renderer.set_camera(cam)?;
     }
+    
+    
 
     let frame_index = (*frame_count as usize) % MAX_FRAMES_IN_FLIGHT;
     let img_acquired_sem = img_acquired_sems[frame_index].inner();

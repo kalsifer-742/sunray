@@ -8,6 +8,8 @@ pub struct Semaphore {
     core: Rc<vulkan_abstraction::Core>,
     handle: vk::Semaphore,
 }
+
+//TODO timeline semaphores
 impl Semaphore {
     pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let handle = unsafe {

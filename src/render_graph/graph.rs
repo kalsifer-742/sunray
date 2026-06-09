@@ -198,7 +198,6 @@ pub enum GraphResourceDesc {
 #[derive(EnumAsInner)]
 pub enum GraphResourceInfo {
     //TODO imported res with ownership taking option for internal aliasing later
-    //this is description of what I need to allocate to satisfy the request pof the render pass
     Created(GraphResourceDesc),
     Imported(GraphResourceImportInfo),
 }

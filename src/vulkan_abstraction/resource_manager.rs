@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
-
+use std::sync::OnceLock;
 use crate::vulkan_abstraction::{
     ArenaBuffer, BLAS, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents,
 };
@@ -10,6 +10,7 @@ use rand::RngExt;
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
+const FALLBACK_SAMPLER: OnceLock<vulkan_abstraction::Sampler> = OnceLock::new();
 pub(crate) struct ResourceManager {
     //TODO ring buffer for cameras and instances_buffer
     // TODo ring buffering this would be needed for cpu stuff too if they were ever uses outside of gpu data build
@@ -54,7 +55,7 @@ pub(crate) struct ResourceManager {
     // Owned images with unique IDs (includes scene images)
     images: HashMap<u64, vulkan_abstraction::Image>,
 
-    // Fallback and default textures/samplers
+    // Fallback and default textures/samplers //TODO these need to become a global OnceLock
     fallback_texture_image: vulkan_abstraction::Image,
     fallback_texture_sampler: vulkan_abstraction::Sampler,
     default_sampler: vulkan_abstraction::Sampler,
@@ -70,7 +71,6 @@ impl ResourceManager {
 
     pub fn new_empty(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let matrices_uniform_buffer = vulkan_abstraction::UniformBuffer::new(Rc::clone(&core), 1 as vk::DeviceSize)?;
-
         // SHADER_DEVICE_ADDRESS so the heap path can compute the buffer's BDA
         // when allocating a storage-buffer descriptor (`Buffer::storage_slot`
         // internally calls `vkGetBufferDeviceAddress`).
@@ -243,7 +243,7 @@ impl ResourceManager {
 
             device.end_command_buffer(cmd_buf)?;
         }
-
+        
         graphics_queue.submit_sync(cmd_buf)?;
         unsafe { device.free_command_buffers(cmd_pool.inner(), &[cmd_buf]) };
 
