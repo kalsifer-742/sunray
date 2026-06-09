@@ -162,7 +162,8 @@
       "Bash(nix-instantiate --eval -E 'with import <nixpkgs>{}; shader-slang.outputs')",
       "Bash(nix-instantiate --eval -E 'with import <nixpkgs>{}; builtins.toString shader-slang.dev')",
       "Bash(nix-shell --run 'echo \"INCLUDE=$SLANG_INCLUDE_DIR\"; echo \"LIB=$SLANG_LIB_DIR\"; echo \"LIBCLANG=$LIBCLANG_PATH\"; ls \"$SLANG_INCLUDE_DIR/slang.h\"; ls \"$SLANG_LIB_DIR/libslang.so\"')",
-      "Bash(nix-shell *)"
+      "Bash(nix-shell *)",
+      "PowerShell(cargo check *)"
     ]
   }
 }

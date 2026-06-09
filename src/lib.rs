@@ -94,20 +94,16 @@ pub struct Renderer {
     image_format: vk::Format,
     
 
-    
-
     blue_noise_image: vulkan_abstraction::Image,
     blue_noise_sampler: vulkan_abstraction::Sampler,
-        
 
 
     core: Rc<vulkan_abstraction::Core>,
 
-    //TODO all of this params are temporal stuff to be incorporated in a future version of the graph when temporal stuff can be handled internally
+    //TODO finello all of this params are temporal stuff to be incorporated in a future version of the graph when temporal stuff can be handled internally
     pub accumulation_images: [Arc<vulkan_abstraction::Image>; 2],
     pub denoising_images: [Arc<vulkan_abstraction::Image>; 2],
     ///this is used for temporal accumulation, there is an absolute frame counter in the core
-    /// TODO to be phased out in favor of absolute frame count present in the core 
     pub relative_frame_count: u32,
 
     /// Ping-pong reservoir buffers. Stored as `Arc<RawBuffer>` (rather than plain
@@ -121,7 +117,9 @@ pub struct Renderer {
     /// Ping-pong pair of GI reservoir buffers for ReSTIR GI (Ouyang 2021)
     /// contract as reservoir_buffers above, but storing surface samples (x2) instead of light samples.
     reservoir_gi_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
-    
+
+
+
     prev_view_proj: nalgebra::Matrix4<f32>, //used to calculate motion vectors 
 
     /// Persistent render graph.
@@ -134,7 +132,6 @@ pub struct Renderer {
 
 
 }
-//TODO substitute all the top of pipe and bottom of pipe with none and all
 impl Renderer {
     pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
         Ok(Self::new_impl(image_extent, image_format, &[], None)?.0)
@@ -383,7 +380,7 @@ impl Renderer {
 
             let create_barrier = |image: vk::Image| {
                 vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                    .src_stage_mask(vk::PipelineStageFlags2::NONE)
                     .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                     .src_access_mask(vk::AccessFlags2::empty())
                     .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
@@ -458,7 +455,7 @@ impl Renderer {
                     let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
                     device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
                     let barrier = vk::ImageMemoryBarrier2::default()
-                        .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                        .src_stage_mask(vk::PipelineStageFlags2::NONE)
                         .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                         .src_access_mask(vk::AccessFlags2::empty())
                         .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
@@ -670,7 +667,7 @@ impl Renderer {
     /// RT-output images are created as graph-internal (transient) resources; the
     /// cross-frame accumulation ping-pong, the denoise ping-pong, and the
     /// post-process output are imported.
-    //TODO to be moved in the default pipeline section
+    //TODO finni
     fn build_unified_graph(&mut self, postprocess_out: &Arc<vulkan_abstraction::Image>, extent: vk::Extent3D) -> SrResult<()> {
         let frame_count = self.relative_frame_count;
         let width = extent.width;
@@ -1251,7 +1248,7 @@ impl Renderer {
                 core,
                 cmd_buf,
                 dst_image,
-                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::NONE,
                 vk::PipelineStageFlags2::TRANSFER,
                 vk::AccessFlags2::empty(),
                 vk::AccessFlags2::TRANSFER_WRITE,
@@ -1288,7 +1285,7 @@ impl Renderer {
                 cmd_buf,
                 src_image,
                 vk::PipelineStageFlags2::TRANSFER,
-                vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::AccessFlags2::TRANSFER_READ,
                 vk::AccessFlags2::empty(),
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,

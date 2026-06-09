@@ -291,7 +291,7 @@ impl EguiPaint {
                 cmd,
                 image,
                 vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                 vk::AccessFlags2::empty(),
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,

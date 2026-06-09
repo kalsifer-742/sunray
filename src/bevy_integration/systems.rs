@@ -371,7 +371,7 @@ fn build_present_barrier_cmd_bufs(core: &Rc<Core>, images: &[vk::Image]) -> SrRe
                     cmd_buf.inner(),
                     *image,
                     vk::PipelineStageFlags2::TRANSFER,
-                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+                    vk::PipelineStageFlags2::ALL_COMMANDS,
                     vk::AccessFlags2::TRANSFER_WRITE,
                     vk::AccessFlags2::empty(),
                     vk::ImageLayout::GENERAL,
