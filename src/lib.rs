@@ -5,6 +5,8 @@ pub mod scene;
 pub mod shader_compiler;
 pub mod utils;
 pub mod vulkan_abstraction;
+pub mod finello_pathtracing_pipeline;
+
 
 /// Bevy 0.19 plugin that drives this renderer from inside a Bevy `App`.
 ///
@@ -29,8 +31,9 @@ use crate::vulkan_abstraction::{PostprocessPushConstant, Reservoir, ReservoirGI}
 use ash::vk;
 use vk_sync_fork as vk_sync;
 
+//TODO finello
 pub const DENOISE_PASSES: u32 = 8;
-
+//TODO finello
 pub const EXPOSURE: f32 = 1.0;
 
 const MAX_TLAS_INSTANCES: usize = 10_000;
@@ -65,9 +68,7 @@ pub struct Renderer {
 
     resource_manager: vulkan_abstraction::ResourceManager,
 
-    // Heap-mode ray-tracing SPIR-V (one blob per stage). Like the compute passes,
-    // the RT pipelines + shader binding tables are no longer built here: each
-    // per-frame graph pass hands these blobs to
+    // Heap-mode ray-tracing SPIR-V (one blob per stage).
     // `RaytracingRenderPassBuilder::generate_render`, which interns the pipeline
     // and SBT in the graph's persistent cache (built once, reused across frame
     // rebuilds). RIS and final share miss/closest-hit/any-hit and differ only in
@@ -76,37 +77,29 @@ pub struct Renderer {
     ray_gen_ris_spirv: &'static [u8],
     /// Ray-gen for the final pass: traces rays based on the reservoirs the RIS pass produced.
     ray_gen_final_spirv: &'static [u8],
+
     ray_miss_spirv: &'static [u8],
     closest_hit_spirv: &'static [u8],
     any_hit_spirv: &'static [u8],
-    
-    //TODO this does not give info about which frame has this size and format 
+    ///The first pass after raytracing merges the previous frame on the next one to reduce bias
+    temporal_accumulation_spirv: &'static [u8],
+    ///The denoise pass is run after the temporal accumulation to reduce noise even more (a-trous filter)
+    denoise_spirv:&'static [u8],
+    ///An extra pass to handle post-processing like exposure and color correction. Should be mathematically easy to calculate
+    postprocess_spirv: &'static [u8],
+
+
+    // this is about the frame being worked on by the cpu
     image_extent: vk::Extent3D,
     image_format: vk::Format,
     
-    // Heap-mode compute shaders (Slang-compiled SPIR-V). The pipelines themselves
-    // are no longer built here: each per-frame graph pass hands its SPIR-V to
-    // `ComputeRenderPassBuilder::generate_render`, which interns the pipeline in
-    // the graph's persistent cache (built once, reused across frame rebuilds).
-    //TODO why are they cloned vec instead of static refs?
+
     
-    ///The first pass after raytracing merges the previous frame on the next one to reduce bias
-    temporal_accumulation_spirv: Vec<u8>,
 
-    ///The denoise pass is run after the temporal accumulation to reduce noise even more (a-trous filter)
-    denoise_spirv: Vec<u8>,
-
-    ///An extra pass to handle post-processing like exposure and color correction. Should be mathematically easy to calculate
-    postprocess_spirv: Vec<u8>,
-    //TODO OnceLock with the result loaded and usable done as soon as the render is created basically as the defualt sampler and fallback textures
     blue_noise_image: vulkan_abstraction::Image,
     blue_noise_sampler: vulkan_abstraction::Sampler,
         
-    //TODO this is to be moved inside the render_graph as he is the one allowed to compile at runtime,all other stuff is precompiled
-    /// Slang compiler held for the renderer's lifetime — owns a `GlobalSession` and
-    /// is consulted when (re)building heap-mode pipelines.
-    #[allow(unused)]
-    shader_compiler: shader_compiler::ShaderCompiler,
+
 
     core: Rc<vulkan_abstraction::Core>,
 
@@ -192,26 +185,14 @@ impl Renderer {
         //must be filled by loading a scene
         let resource_manager = vulkan_abstraction::ResourceManager::new_empty(Rc::clone(&core))?;
 
-        // Heap-mode RT SPIR-V. The pipelines + SBTs are no longer built here:
-        // each per-frame graph pass hands these blobs to
-        // `RaytracingRenderPassBuilder::generate_render`, which interns the
-        // pipeline and SBT in the graph's persistent cache. RIS and final share
-        // miss / closest-hit / any-hit and differ only in the ray-gen stage.
         let ray_gen_ris_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_ris.spirv"));
         let ray_gen_final_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_gen_final.spirv"));
         let ray_miss_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/ray_miss.spirv"));
         let closest_hit_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/closest_hit.spirv"));
         let any_hit_spirv: &'static [u8] = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/any_hit.spirv"));
-
-        let shaders_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        let shader_compiler = shader_compiler::ShaderCompiler::new(shaders_dir)?;
-
-        // Heap-mode compute SPIR-V (Slang-compiled). The pipelines are interned
-        // lazily by the render graph's pipeline cache the first time each pass is
-        // built, so we only keep the bytes here.
-        let denoise_spirv = shader_compiler.compile("denoise", "main")?;
-        let postprocess_spirv = shader_compiler.compile("postprocess", "main")?;
-        let temporal_accumulation_spirv = shader_compiler.compile("temporal_accumulation", "main")?;
+        let denoise_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/denoise.spirv"));
+        let postprocess_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/postprocess.spirv"));
+        let temporal_accumulation_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/temporal_accumulation.spirv"));
 
         let image_dependant_data = HashMap::new();
 
@@ -238,7 +219,7 @@ impl Renderer {
         let reservoir_buffers = Self::create_reservoir_buffers(&core, num_pixels)?;
         let reservoir_gi_buffers = Self::create_reservoir_gi_buffers(&core, num_pixels)?;
 
-        let blue_noise_bytes = include_bytes!("../src/util_files/noise.png");
+        let blue_noise_bytes = include_bytes!("finello_pathtracing_pipeline/util_files/noise.png");
         let blue_noise_img = image::load_from_memory(blue_noise_bytes).unwrap().to_rgba8();
         let (noise_width, noise_height) = blue_noise_img.dimensions();
         let blue_noise_data = blue_noise_img.into_raw();
@@ -271,50 +252,7 @@ impl Renderer {
         let render_graph = RenderGraph::new(Rc::clone(&core))?;
         let render_graph_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(core.device()))?;
 
-        // Discard-init accumulation + denoising images to GENERAL once at startup.
-        // Frame-0 denoise descriptor bindings expect GENERAL layout — the in-cmd-buf
-        // discard barriers that used to do this transition lived inside the old
-        // `cmd_denoise_image` and are gone now that denoise is in the render graph.
-        {
-            let device = core.device().inner();
-            let mut setup_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&core))?;
-            let create_barrier = |image: vk::Image| {
-                vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .src_access_mask(vk::AccessFlags2::empty())
-                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .image(image)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-            };
-            let barriers = [
-                create_barrier(accumulation_images[0].inner()),
-                create_barrier(accumulation_images[1].inner()),
-                create_barrier(denoising_images[0].inner()),
-                create_barrier(denoising_images[1].inner()),
-            ];
-            let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-            unsafe {
-                device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
-                let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
-                device.cmd_pipeline_barrier2(setup_cmd_buf.inner(), &dep_info);
-                device.end_command_buffer(setup_cmd_buf.inner())?;
-                let fence = setup_cmd_buf.fence_mut().submit()?;
-                core.graphics_queue()
-                    .submit_async(setup_cmd_buf.inner(), &[], &[], &[], fence)?;
-                setup_cmd_buf.fence_mut().wait()?;
-            }
-        }
+
 
         Ok((
             Self {
@@ -330,15 +268,16 @@ impl Renderer {
                 ray_miss_spirv,
                 closest_hit_spirv,
                 any_hit_spirv,
+                denoise_spirv,
+                temporal_accumulation_spirv,
+                postprocess_spirv,
 
                 prev_view_proj: nalgebra::zero(),
 
                 image_extent,
                 image_format,
 
-                denoise_spirv,
-                temporal_accumulation_spirv,
-                postprocess_spirv,
+
 
                 accumulation_images,
                 denoising_images,
@@ -350,7 +289,6 @@ impl Renderer {
                 resource_manager,
                 reservoir_gi_buffers,
 
-                shader_compiler,
 
                 core,
             },

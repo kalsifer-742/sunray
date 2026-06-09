@@ -1,5 +1,6 @@
 pub mod device;
 pub mod instance;
+pub mod queue;
 
 pub use device::*;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
@@ -8,7 +9,7 @@ pub use instance::*;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::Queue;
 use crate::vulkan_abstraction::diagnostics::DiagnosticTool;
-use crate::{CreateSurfaceFn, error::*};
+use crate::{error::*, CreateSurfaceFn};
 use ash::vk::Semaphore;
 use ash::{ext, khr, vk};
 use parking_lot::lock_api::MutexGuard;

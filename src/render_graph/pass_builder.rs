@@ -600,6 +600,8 @@ pub trait ShaderDesc {}
 #[derive(Clone, Debug)]
 pub enum ShaderSource {
     //TODO supported shaders, for now pre-compiled SPIR-V is the only one supported
+    //TODO the slang compiler and shaderc are to be moved inside the render_graph as he is the one allowed to compile at runtime,all other stuff is precompiled
+
     Glsl(PathBuf),
     Slang(PathBuf),
     /// Pre-compiled SPIR-V bytes — produced upstream (e.g. by the Slang
@@ -608,4 +610,4 @@ pub enum ShaderSource {
     Spirv(Vec<u8>),
 }
 
-pub(crate) type DynRenderFn = dyn FnMut(&mut CommandBuffer, &TransientResources) -> SrResult<()>; //TODO TransientResources here is intended to be a way to dereference the resources,but this implies it handles also external ones
+pub(crate) type DynRenderFn = dyn FnMut(&mut CommandBuffer, &TransientResources) -> SrResult<()>;
