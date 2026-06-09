@@ -153,7 +153,16 @@
       "Bash(echo \"---exit:$?---\")",
       "Bash(echo \"exit:$?  \\(no lines above = no errors\\)\")",
       "Read(//c/Users/MatGa/.cargo/registry/src/**)",
-      "Read(//c/Users/MatGa/.cargo/git/**)"
+      "Read(//c/Users/MatGa/.cargo/git/**)",
+      "Bash(nix-instantiate --eval -E 'with import <nixpkgs>{}; shader-slang.version')",
+      "Bash(nix-instantiate --eval -E 'with import <nixpkgs>{}; builtins.tryEval \\(toString shader-slang\\)')",
+      "Read(//nix/store/jmm72lar133p4wmgspy9qck8s8lqs30k-shader-slang-2026.5.2/**)",
+      "Read(//nix/store/jmm72lar133p4wmgspy9qck8s8lqs30k-shader-slang-2026.5.2/lib/**)",
+      "Read(//home/bosh/.cargo/registry/src/**)",
+      "Bash(nix-instantiate --eval -E 'with import <nixpkgs>{}; shader-slang.outputs')",
+      "Bash(nix-instantiate --eval -E 'with import <nixpkgs>{}; builtins.toString shader-slang.dev')",
+      "Bash(nix-shell --run 'echo \"INCLUDE=$SLANG_INCLUDE_DIR\"; echo \"LIB=$SLANG_LIB_DIR\"; echo \"LIBCLANG=$LIBCLANG_PATH\"; ls \"$SLANG_INCLUDE_DIR/slang.h\"; ls \"$SLANG_LIB_DIR/libslang.so\"')",
+      "Bash(nix-shell *)"
     ]
   }
 }

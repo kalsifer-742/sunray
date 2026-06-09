@@ -40,24 +40,24 @@ bimap = "0.6.3"
 #na = "0.32.2"
 
 # --- Bevy integration (optional, gated behind the `bevy` feature) -----------
-# Path deps on the local Bosh/bevy fork (0.19.0-dev). We depend on the
-# individual crates rather than the `bevy` meta-crate so the example can build
-# the minimal plugin set (Option B in docs/bevy_integration.md) and we never
-# pull in `RenderPlugin`/wgpu at *runtime*. `bevy_render` is still a compile
-# dependency because we reuse its `ExtractPlugin` + render-world scaffolding.
-bevy_app = { path = "../bevy/crates/bevy_app", optional = true }
-bevy_ecs = { path = "../bevy/crates/bevy_ecs", optional = true }
-bevy_render = { path = "../bevy/crates/bevy_render", optional = true }
-bevy_window = { path = "../bevy/crates/bevy_window", optional = true }
-bevy_winit = { path = "../bevy/crates/bevy_winit", optional = true }
-bevy_input = { path = "../bevy/crates/bevy_input", optional = true }
-bevy_time = { path = "../bevy/crates/bevy_time", optional = true }
-bevy_transform = { path = "../bevy/crates/bevy_transform", optional = true }
-bevy_math = { path = "../bevy/crates/bevy_math", optional = true }
-bevy_platform = { path = "../bevy/crates/bevy_platform", optional = true }
-bevy_a11y = { path = "../bevy/crates/bevy_a11y", optional = true }
-bevy_diagnostic = { path = "../bevy/crates/bevy_diagnostic", optional = true }
-bevy_log = { path = "../bevy/crates/bevy_log", optional = true }
+# Registry deps (0.19.0-rc.2). We depend on the individual crates rather than
+# the `bevy` meta-crate so the example can build the minimal plugin set
+# (Option B in docs/bevy_integration.md) and we never pull in
+# `RenderPlugin`/wgpu at *runtime*. `bevy_render` is still a compile dependency
+# because we reuse its `ExtractPlugin` + render-world scaffolding.
+bevy_app = { version =  "0.19.0-rc.2", optional = true }
+bevy_ecs = { version = "0.19.0-rc.2", optional = true }
+bevy_render = { version = "0.19.0-rc.2", optional = true }
+bevy_window = { version = "0.19.0-rc.2", optional = true }
+bevy_winit = { version = "0.19.0-rc.2", optional = true }
+bevy_input = { version = "0.19.0-rc.2", optional = true }
+bevy_time = { version = "0.19.0-rc.2", optional = true }
+bevy_transform = { version = "0.19.0-rc.2", optional = true }
+bevy_math = { version = "0.19.0-rc.2", optional = true }
+bevy_platform = { version = "0.19.0-rc.2", optional = true }
+bevy_a11y = { version = "0.19.0-rc.2", optional = true }
+bevy_diagnostic = { version = "0.19.0-rc.2", optional = true }
+bevy_log = { version = "0.19.0-rc.2", optional = true }
 # egui core only — NOT bevy_egui and NOT a paint backend. We do input mapping +
 # tessellation ourselves (Option C in docs/bevy_integration.md). `egui-ash-renderer`
 # is intentionally avoided: it bundles a descriptor-set + GLSL/SPIR-V raster

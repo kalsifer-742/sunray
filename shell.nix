@@ -3,7 +3,7 @@
 }:
 
 let
-  x11Libs = with pkgs.xorg; [
+  x11Libs = with pkgs; [
     libX11
     libXcursor
     libXrandr
@@ -43,7 +43,11 @@ pkgs.mkShell {
   buildInputs =
     with pkgs;
     [
+      clang
+      llvmPackages.libclang
+      glslang
       shaderc
+      shader-slang
     ]
     ++ x11Libs
     ++ waylandLibs
@@ -53,7 +57,18 @@ pkgs.mkShell {
   SHADERC_LIB_DIR = "${pkgs.shaderc.lib}/lib";
 
   # 2. Tell the linker and runtime exactly where to find Vulkan and Windowing libraries
-  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (bpy-libs ++ x11Libs ++ waylandLibs ++ vulkanLibs);
+  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+    bpy-libs ++ x11Libs ++ waylandLibs ++ vulkanLibs ++ [ pkgs.shader-slang ]
+  );
+
+  LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+  # 3. Use the nixpkgs Slang compiler instead of the one bundled with the Vulkan SDK.
+  #    Headers live in the `dev` output, the shared libs in the default output.
+  SLANG_INCLUDE_DIR = "${pkgs.shader-slang.dev}/include";
+  SLANG_LIB_DIR = "${pkgs.shader-slang}/lib";
+
+  VULKAN_SDK = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
 
   VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
 }
