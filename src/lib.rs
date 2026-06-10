@@ -38,6 +38,25 @@ pub const EXPOSURE: f32 = 1.0;
 
 const MAX_TLAS_INSTANCES: usize = 10_000;
 
+/// Key identifying a GPU asset (BLAS or image) inside the renderer's
+/// `ResourceManager`. `group` ties together every asset created by one
+/// `load_scene` call so a whole scene can be deallocated in bulk (see
+/// [`Renderer::unload_scene`]); `index` is unique within the group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResourceKey {
+    pub group: u64,
+    pub index: u64,
+}
+
+/// CPU-side retained entity backing the deprecated entity API: each one turns
+/// into a per-frame `(ResourceKey, transform)` instance when `render_to_image`
+/// collects the instance list. New code should pass instances to
+/// [`Renderer::render`] directly instead.
+struct RetainedEntity {
+    blas_key: ResourceKey,
+    transform: vk::TransformMatrixKHR,
+}
+
 /// The number of concurrent frames that are processed (both by CPU and GPU).
 ///
 /// Apparently 2 is the most common choice. Empirically it seems like the performance doesn't really
@@ -67,7 +86,18 @@ pub use crate::vulkan_abstraction::DiagnosticTool;
 pub struct Renderer {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
-    resource_manager: vulkan_abstraction::ResourceManager,
+    resource_manager: vulkan_abstraction::ResourceManager<ResourceKey>,
+
+    /// Retained entities backing the deprecated entity API (collected into the
+    /// per-frame instance list by `render_to_image`).
+    entities: HashMap<u64, RetainedEntity>,
+    next_entity_id: u64,
+    /// Next `ResourceKey::group`; one group per `load_scene` call.
+    next_group: u64,
+    /// Group → every key created for that scene load, for bulk deallocation.
+    scene_groups: HashMap<u64, Vec<ResourceKey>>,
+    /// Camera stored by the deprecated `set_camera`, used by `render_to_image`.
+    camera: Camera,
 
     // Heap-mode ray-tracing SPIR-V (one blob per stage).
     // `RaytracingRenderPassBuilder::generate_render`, which interns the pipeline
@@ -255,6 +285,12 @@ impl Renderer {
         Ok((
             Self {
                 image_dependant_data,
+
+                entities: HashMap::new(),
+                next_entity_id: 0,
+                next_group: 0,
+                scene_groups: HashMap::new(),
+                camera: Camera::default(),
 
                 render_graph,
                 render_graph_fence,
@@ -527,85 +563,180 @@ impl Renderer {
     }
 
     pub fn load_scene(&mut self, scene: &Scene, scene_data: SceneData) -> SrResult<Vec<vulkan_abstraction::EntityId>> {
+        Ok(self.load_scene_grouped(scene, scene_data)?.1)
+    }
+
+    /// Load a scene's assets into the resource manager and spawn one retained
+    /// entity per scene instance. Returns the asset group id (usable with
+    /// [`Self::unload_scene`] to free everything this call created in bulk)
+    /// alongside the spawned entity ids.
+    pub fn load_scene_grouped(
+        &mut self,
+        scene: &Scene,
+        scene_data: SceneData,
+    ) -> SrResult<(u64, Vec<vulkan_abstraction::EntityId>)> {
         // Wait for all in-flight GPU work before invalidating descriptor sets that reference
         // buffers which will be reallocated (e.g. emissive_indirection_gpu).
         unsafe { self.core.device().inner().device_wait_idle() }?;
-        let ids = self.resource_manager.load_scene(scene, scene_data)?;
+
+        let group = self.next_group;
+        self.next_group += 1;
+
+        let LoadedScene {
+            blases,
+            instances,
+            textures,
+            sampler_descs,
+            images,
+        } = scene.load_into_gpu(&self.core, scene_data)?;
+
+        let mut group_keys: Vec<ResourceKey> = Vec::new();
+        let mut next_index = 0u64;
+        let mut make_key = || {
+            let key = ResourceKey {
+                group,
+                index: next_index,
+            };
+            next_index += 1;
+            group_keys.push(key);
+            key
+        };
+
+        let blas_keys = self
+            .resource_manager
+            .add_scene_assets(blases, textures, sampler_descs, images, &mut make_key)?;
+        drop(make_key);
+        self.scene_groups.insert(group, group_keys);
+
+        let mut entity_ids = Vec::with_capacity(instances.len());
+        for (blas_index, transform) in instances {
+            let id = self.next_entity_id;
+            self.next_entity_id += 1;
+            self.entities.insert(
+                id,
+                RetainedEntity {
+                    blas_key: blas_keys[blas_index],
+                    transform,
+                },
+            );
+            entity_ids.push(vulkan_abstraction::EntityId(id));
+        }
+
         self.image_dependant_data = HashMap::new();
-        Ok(ids)
+        Ok((group, entity_ids))
     }
 
-    /// Spawn a new instance that shares the BLAS and material of `src` with a new transform.
-    /// Automatically rebuilds the TLAS.
-    #[deprecated]
+    /// Free every asset created by the `load_scene_grouped` call that returned
+    /// `group`, along with the retained entities spawned from it. Allows
+    /// loading a scene repeatedly without leaking GPU memory.
+    pub fn unload_scene(&mut self, group: u64) -> SrResult<()> {
+        unsafe { self.core.device().inner().device_wait_idle() }?;
+        if let Some(keys) = self.scene_groups.remove(&group) {
+            self.entities.retain(|_, entity| entity.blas_key.group != group);
+            for key in &keys {
+                self.resource_manager.remove(key);
+            }
+        }
+        Ok(())
+    }
+
+    /// Group the retained entities into the per-frame `(blas key, transforms)`
+    /// instance list `ResourceManager::prepare_frame` consumes.
+    fn collect_retained_instances(&self) -> Vec<(ResourceKey, Vec<vk::TransformMatrixKHR>)> {
+        let mut by_key: HashMap<ResourceKey, Vec<vk::TransformMatrixKHR>> = HashMap::new();
+        for entity in self.entities.values() {
+            by_key.entry(entity.blas_key).or_default().push(entity.transform);
+        }
+        by_key.into_iter().collect()
+    }
+
+    /// Spawn a new retained instance sharing the BLAS of `src` with a new transform.
+    /// The instance shows up in the next frame — the TLAS is rebuilt per frame.
+    #[deprecated(note = "pass instances to `render` instead")]
     pub fn duplicate_entity(
         &mut self,
         src: vulkan_abstraction::EntityId,
         transform: nalgebra::Matrix4<f32>,
     ) -> SrResult<vulkan_abstraction::EntityId> {
-        let vk_transform = na_mat4_to_vk_transform(transform);
-        let id = self.resource_manager.clone_entity(src, vk_transform)?;
-        self.resource_manager.rebuild_tlas()?;
-        // rebuild_tlas calls AccelerationStructure::rebuild which creates a new
-        // VkAccelerationStructureKHR handle, invalidating any descriptor sets that
-        // reference the old one. Clear them so they are rebuilt on the next frame.
+        let blas_key = self
+            .entities
+            .get(&src.0)
+            .map(|e| e.blas_key)
+            .ok_or_else(|| SrError::new_custom(format!("duplicate_entity: no entity {}", src.0)))?;
 
-        self.clear_image_dependent_data();
-
-        Ok(id)
+        let id = self.next_entity_id;
+        self.next_entity_id += 1;
+        self.entities.insert(
+            id,
+            RetainedEntity {
+                blas_key,
+                transform: na_mat4_to_vk_transform(transform),
+            },
+        );
+        Ok(vulkan_abstraction::EntityId(id))
     }
 
-    /// Remove an entity from the scene. Automatically rebuilds the TLAS.
-    #[deprecated]
+    /// Remove a retained entity from the scene (effective from the next frame).
+    #[deprecated(note = "pass instances to `render` instead")]
     pub fn destroy_entity(&mut self, id: vulkan_abstraction::EntityId) -> SrResult<()> {
-        self.resource_manager.destroy_entity(id);
-        self.resource_manager.rebuild_tlas()?;
-        self.clear_image_dependent_data();
+        self.entities.remove(&id.0);
         Ok(())
     }
 
-    /// Update an entity's world transform. Does NOT rebuild the TLAS — call `rebuild_tlas` afterwards.
-    #[deprecated]
+    /// Update a retained entity's world transform (effective from the next frame).
+    #[deprecated(note = "pass instances to `render` instead")]
     pub fn set_entity_transform(&mut self, id: vulkan_abstraction::EntityId, transform: nalgebra::Matrix4<f32>) -> SrResult<()> {
-        let vk_transform = na_mat4_to_vk_transform(transform);
-        self.resource_manager.set_entity_transform(id, vk_transform)
+        if let Some(entity) = self.entities.get_mut(&id.0) {
+            entity.transform = na_mat4_to_vk_transform(transform);
+        }
+        Ok(())
     }
-    #[deprecated]
+
+    /// Store the camera `render_to_image` renders with. The matrices are
+    /// uploaded per frame inside `render`.
+    #[deprecated(note = "pass the camera to `render` instead")]
     pub fn set_camera(&mut self, camera: crate::Camera) -> SrResult<()> {
-        //TODO
-        //
-        // Waiting for device idle here serializes the UBO update against any
-        // in-flight GPU work. Minimum viable fix — the proper long-term fix is
-        // per-frame UBOs (double/triple buffering) so we never overwrite bytes
-        // a running frame might still read.
+        self.camera = camera;
+        Ok(())
+    }
+
+    /// Render to dst_image with the camera stored by `set_camera` and the
+    /// retained entities as the instance list. See [`Self::render`].
+    pub fn render_to_image(&mut self, dst_image: vk::Image, wait_sem: vk::Semaphore) -> SrResult<vk::Fence> {
+        let camera = self.camera;
+        let instances = self.collect_retained_instances();
+        self.render(dst_image, wait_sem, &camera, &instances)
+    }
+
+    /// Render to dst_image. All per-frame inputs are parameters: the camera and
+    /// the instance list (`(blas key, world transforms of its instances)` —
+    /// keys come from scene loading). The user may also pass a Semaphore which the user should signal when the image is
+    /// ready to be written to (for example after being acquired from a swapchain) and a Fence will be returned
+    /// that will be signaled when the rendering is finished (which can be used to know when the Semaphore has no pending operations left).
+    pub fn render(
+        &mut self,
+        dst_image: vk::Image,
+        wait_sem: vk::Semaphore,
+        camera: &Camera,
+        instances: &[(ResourceKey, Vec<vk::TransformMatrixKHR>)],
+    ) -> SrResult<vk::Fence> {
+        // Waiting for device idle serializes the per-frame uploads (matrices
+        // UBO, transforms, instance buffer, TLAS rebuild) against in-flight GPU
+        // work. Minimum viable fix — the proper long-term fix is per-frame
+        // buffers (double/triple buffering) so we never overwrite bytes a
+        // running frame might still read.
         unsafe {
             self.core.device().inner().device_wait_idle()?;
         }
 
         let mut matrices = camera.as_matrices(self.image_extent);
-
-        // Inject the history matrix saved from the last frame
+        // Inject the history matrix saved from the last frame; save the current
+        // one to use as history NEXT frame.
         matrices.prev_view_proj = self.prev_view_proj;
-        let tmp = matrices.view_proj;
+        self.prev_view_proj = matrices.view_proj;
 
-        // Upload the struct to the uniform buffer
-        self.resource_manager.set_matrices(matrices)?;
-
-        // Save the current frame's matrix to use as history NEXT frame
-        self.prev_view_proj = tmp;
-
-        Ok(())
-    }
-
-    /// Render to dst_image. the user may also pass a Semaphore which the user should signal when the image is
-    /// ready to be written to (for example after being acquired from a swapchain) and a Fence will be returned
-    /// that will be signaled when the rendering is finished (which can be used to know when the Semaphore has no pending operations left).
-    pub fn render_to_image(&mut self, dst_image: vk::Image, wait_sem: vk::Semaphore) -> SrResult<vk::Fence> {
+        self.resource_manager.prepare_frame(matrices, instances)?;
         self.resource_manager.start_of_frame()?;
-
-        unsafe {
-            self.core.device().inner().device_wait_idle()?;
-        }
 
         if !self.image_dependant_data.contains_key(&dst_image) {
             self.build_image_dependent_data(&[dst_image])?;
@@ -700,7 +831,6 @@ impl Renderer {
                 self.reservoir_gi_buffers[0].device_address(),
                 self.reservoir_gi_buffers[1].device_address(),
             ],
-            textures_lookup: pack(self.resource_manager.textures_lookup_slot()),
             frame_count,
             use_srgb: if self.image_format == vk::Format::R8G8B8A8_SRGB {
                 1
@@ -1301,16 +1431,16 @@ impl Renderer {
         &self.core
     }
     
-    /// Call this ONCE per frame before `render_to_image` to update blasses that needs it
-    #[deprecated]
+    /// No-op: the TLAS is rebuilt from the per-frame instance list inside `render`.
+    #[deprecated(note = "the TLAS is rebuilt per frame; this does nothing")]
     pub fn rebuild_blasses(&mut self) -> SrResult<()> {
-        self.resource_manager.update_tlas()
+        Ok(())
     }
 
-    /// Call this ONCE per frame before `render_to_image`
-    #[deprecated]
+    /// No-op: the TLAS is rebuilt from the per-frame instance list inside `render`.
+    #[deprecated(note = "the TLAS is rebuilt per frame; this does nothing")]
     pub fn rebuild_tlas(&mut self) -> SrResult<()> {
-        self.resource_manager.update_tlas()
+        Ok(())
     }
 }
 

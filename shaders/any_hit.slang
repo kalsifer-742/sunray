@@ -10,7 +10,6 @@ import rt_utils;
 [shader("anyhit")]
 void any_hit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes attribs) {
     StructuredBuffer<MeshInfo> meshes = pc.meshes_info;
-    StructuredBuffer<TextureEntry> textures_lookup = pc.textures_lookup;
 
     uint blas_instance_id = InstanceID();
     MeshInfo mesh_info = meshes[blas_instance_id];
@@ -36,7 +35,7 @@ void any_hit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes att
     float2 uv2 = mesh_info.vertices[i2].base_color_tex_coord;
     float2 uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
 
-    float4 base_color = sample_texture(textures_lookup, mesh_info.material_base_color_texture_index, uv, mesh_info.material_base_color_value);
+    float4 base_color = sample_texture(mesh_info.material_base_color_image, mesh_info.material_base_color_sampler, uv, mesh_info.material_base_color_value);
 
     if (base_color.a < mesh_info.material_alpha_cutoff) {
         IgnoreHit();

@@ -22,7 +22,7 @@ pub struct RaytracingPushConstant {
 /// Push-constant layout for the heap-mode (Slang) raytracing pipeline. Every
 /// `DescriptorHandle<T>` field in `shaders/rt_types.slang::RaytracingPC`
 /// lowers to a `uint2`, so each is mirrored here as `[u32; 2]` (low word =
-/// heap shader index, high word = 0). Total size: 152 bytes — well within
+/// heap shader index, high word = 0). Total size: 144 bytes — well within
 /// the 256-byte minimum push-constant range required by Vulkan.
 #[allow(dead_code)] // read by the gpu
 #[repr(C)]
@@ -55,7 +55,6 @@ pub struct RaytracingHeapPushConstant {
     /// matching the previous `[[u32; 2]; 2]` heap-handle layout.
     pub reservoirs: [u64; 2],
     pub reservoirs_gi: [u64; 2],
-    pub textures_lookup: [u32; 2],
     pub frame_count: u32,
     pub use_srgb: u32,
 }

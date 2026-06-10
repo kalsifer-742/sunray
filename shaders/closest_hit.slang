@@ -11,7 +11,6 @@ import rt_utils;
 [shader("closesthit")]
 void closest_hit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes attribs) {
     StructuredBuffer<MeshInfo> meshes = pc.meshes_info;
-    StructuredBuffer<TextureEntry> textures_lookup = pc.textures_lookup;
 
     float3 bary = float3(1.0 - attribs.barycentrics.x - attribs.barycentrics.y,
                          attribs.barycentrics.x,
@@ -37,15 +36,13 @@ void closest_hit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes
     float2 uv        = v0.base_color_tex_coord * bary.x + v1.base_color_tex_coord * bary.y + v2.base_color_tex_coord * bary.z;
     float2 normal_uv = v0.normal_tex_coord * bary.x     + v1.normal_tex_coord * bary.y     + v2.normal_tex_coord * bary.z;
 
-    // Work around the Slang heap-mode nested-struct offset bug (#10671 follow-up):
-    // accessing `mesh_info.material.X` through the `OpBufferPointerEXT`-returned
-    // pointer drops the MeshInfo[2]=16 byte offset, so every material read lands
-    // 16 bytes too early. `mesh_info.material_*` accesses the inlined fields that
-    // sit at the correct absolute offsets in MeshInfo_std430.
-    float4 base_color = sample_texture(textures_lookup, mesh_info.material_base_color_texture_index, uv, mesh_info.material_base_color_value);
+    // Material fields are inlined into MeshInfo (Slang heap-mode nested-struct
+    // offset bug — see rt_types.slang::MeshInfo) and texture references are
+    // pre-resolved heap slots.
+    float4 base_color = sample_texture(mesh_info.material_base_color_image, mesh_info.material_base_color_sampler, uv, mesh_info.material_base_color_value);
     float3 emissive_factor_rgb = mesh_info.material_emissive_factor.rgb;
     float emissive_strength = mesh_info.material_emissive_factor.w;
-    float4 emissive_sample = sample_texture(textures_lookup, mesh_info.material_emissive_texture_index, uv, float4(emissive_factor_rgb, 1.0));
+    float4 emissive_sample = sample_texture(mesh_info.material_emissive_image, mesh_info.material_emissive_sampler, uv, float4(emissive_factor_rgb, 1.0));
     float3 final_emission = emissive_sample.rgb * emissive_strength;
 
     // Transform the geometric normal with the inverse-transpose (== Normal * WorldToObject for an affine matrix).
@@ -63,8 +60,8 @@ void closest_hit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes
         float3 world_bitangent = cross(world_normal, world_tangent) * handedness;
         float3x3 TBN = float3x3(world_tangent, world_bitangent, world_normal);
 
-        if (mesh_info.material_normal_texture_index != NULL_TEXTURE) {
-            float3 raw_normal_map = sample_texture(textures_lookup, mesh_info.material_normal_texture_index, normal_uv, float4(0.5, 0.5, 1.0, 1.0)).rgb;
+        if (mesh_info.material_normal_image != NULL_TEXTURE) {
+            float3 raw_normal_map = sample_texture(mesh_info.material_normal_image, mesh_info.material_normal_sampler, normal_uv, float4(0.5, 0.5, 1.0, 1.0)).rgb;
             float3 sampled_normal = raw_normal_map * 2.0 - 1.0;
             sampled_normal.xy *= 1.0;
             sampled_normal.z = sqrt(clamp(1.0 - dot(sampled_normal.xy, sampled_normal.xy), 0.0, 1.0));
@@ -82,8 +79,8 @@ void closest_hit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes
     float final_roughness = mesh_info.material_roughness_factor;
     float final_metallic = mesh_info.material_metallic_factor;
 
-    if (mesh_info.material_metallic_roughness_texture_index != NULL_TEXTURE) {
-        float4 mr_sample = sample_texture(textures_lookup, mesh_info.material_metallic_roughness_texture_index, uv, float4(1.0));
+    if (mesh_info.material_metallic_roughness_image != NULL_TEXTURE) {
+        float4 mr_sample = sample_texture(mesh_info.material_metallic_roughness_image, mesh_info.material_metallic_roughness_sampler, uv, float4(1.0));
         // glTF spec: G = roughness, B = metallic.
         final_roughness *= mr_sample.g;
         final_metallic  *= mr_sample.b;

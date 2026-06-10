@@ -1,61 +1,59 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hash;
-use std::ops::Range;
 use std::rc::Rc;
-use std::sync::OnceLock;
-use crate::vulkan_abstraction::{ArenaBuffer, BLAS, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents, Texture};
-use crate::{CameraMatrices, MAX_TLAS_INSTANCES, error::SrResult, vulkan_abstraction};
+
 use ash::vk;
-use rand::RngExt;
+
 use crate::render_graph::graph::SamplerDesc;
+use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents};
+use crate::{CameraMatrices, MAX_TLAS_INSTANCES, error::SrResult, vulkan_abstraction};
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
 //TODO handle growable
 
 //TODO there is structural decision to make on what to save and how cause raster needs a different way to store the geometry data probabibly with a features set constable?
-//TODO this needs to handle the extraction system
-pub(crate) struct ResourceManager<KeyType : Hash + Eq>  {
-    //TODO these 3 are to be sent each frame
-    matrices_uniform_buffer: vulkan_abstraction::UniformBuffer<vulkan_abstraction::MatricesBufferContents>,
-    transforms: vulkan_abstraction::ArenaKeyMappedBuffer<vk::TransformMatrixKHR>,
+/// Owns the GPU-side scene resources. Split in two halves:
+///
+/// * **Stable assets**, keyed by the caller-provided `K` (e.g. one key per
+///   BLAS / image): geometry + material data lives in arena buffers whose
+///   slots survive across frames.
+/// * **Per-frame state**, supplied each frame through [`Self::prepare_frame`]:
+///   the camera matrices and the instance list `(key, transforms)`. The
+///   instance buffer / TLAS / flat transform buffer / emissive indirection are
+///   derived from those parameters every frame — nothing about instances is
+///   retained here.
+pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
+
+    //TODO this is still to be moved 
+    matrices_uniform_buffer: vulkan_abstraction::UniformBuffer<MatricesBufferContents>,
+    /// Flat per-instance transforms in instance order; `EmissiveIndirectionEntry::entity_id`
+    /// indexes into this buffer.
+    transforms: vulkan_abstraction::StagingBuffer<vk::TransformMatrixKHR>,
     instances_buffer: vulkan_abstraction::StagingBuffer<vk::AccelerationStructureInstanceKHR>,
-
-
-
+    
+    
     tlas: vulkan_abstraction::TLAS,
-    entities_gpu: vulkan_abstraction::ArenaKeyMappedBuffer<vulkan_abstraction::EntityGpuData>,
-    blas_emissive_triangles: vulkan_abstraction::ArenaGpuBuffer<vulkan_abstraction::gltf::EmissiveTriangle>,
+    /// Dense `(emissive triangle slot, instance index)` table for NEE sampling.
+    /// Recreated only when the entries actually change (the shader reads its
+    /// length via `GetDimensions`, so the buffer must be exactly sized).
     emissive_indirection_gpu: vulkan_abstraction::GpuOnlyBuffer,
+    emissive_indirection_cache: Vec<vulkan_abstraction::gltf::EmissiveIndirectionEntry>,
 
-
-    entities: std::collections::HashSet<KeyType>,
-
-    blases: HashMap<KeyType, vulkan_abstraction::BLAS>,
-    emissive_triangle_ranges: HashMap<KeyType, std::collections::HashSet<u32>> ,
-    entity_to_blas_instance: HashMap<KeyType, u32>,
-    images: HashMap<KeyType, vulkan_abstraction::Image>,
-
-    //TODO this are the explicit slots into the heap
-    textures: Vec< (u32 , u32) >,
-
-    // Samplers loaded from scene
-    //TODO this needs to be reworked to a finite set of reused samplers, since they don't need to be unique to each texture and when adding them I need to look at what I already have by hashing the desc there is now intent for now to remove them so this can only grow
-    samplers : HashMap<SamplerDesc, vulkan_abstraction::Sampler > ,
-    // Heap-mode texture indirection buffer. 1024 entries of `[u32; 4]` =
-    // `(image_heap_slot, 0, sampler_heap_slot, 0)`. The two padding words
-    // make each entry match Slang's `TextureEntry { DescriptorHandle image;
-    // DescriptorHandle sampler; }` layout where each `DescriptorHandle`
-    // lowers to a `uint2`. The Slang RT shaders dereference this via
-    // `pc.textures_lookup[texture_index]`.
-    //TODO this is useless now cause it can be optimized away thanks to descriptors heap and just use the existing information inside entity gpu data
-    textures_lookup_buffer: vulkan_abstraction::GpuOnlyBuffer,
-
-
-
-    // Fallback and default textures/samplers
-    fallback_texture_image: vulkan_abstraction::Image,
-    fallback_texture_sampler: vulkan_abstraction::Sampler,
+    // ── Stable per-asset GPU data, keyed by `K`.
+    /// Per-BLAS mesh info (vertex/index BDA + material). The slot index is the
+    /// `gl_InstanceCustomIndexEXT` every instance of that BLAS uses.
+    meshes_info: vulkan_abstraction::ArenaGpuBuffer<EntityGpuData>,
+    blas_emissive_triangles: vulkan_abstraction::ArenaGpuBuffer<vulkan_abstraction::gltf::EmissiveTriangle>,
+    blases: HashMap<K, vulkan_abstraction::BLAS>,
+    /// Key → slot in `meshes_info`.
+    mesh_info_slots: HashMap<K, u32>,
+    /// Key → slots of the BLAS's triangles in `blas_emissive_triangles`.
+    emissive_triangle_slots: HashMap<K, Vec<u32>>,
+    images: HashMap<K, vulkan_abstraction::Image>,
+    /// Finite set of samplers, deduplicated by their description: glTF samplers
+    /// don't need to be unique per texture. Never shrinks.
+    samplers: HashMap<SamplerDesc, vulkan_abstraction::Sampler>,
     default_sampler: vulkan_abstraction::Sampler,
 
     //these are action to be done at the start or end of frame together with queued free slots for arena buffers
@@ -65,30 +63,36 @@ pub(crate) struct ResourceManager<KeyType : Hash + Eq>  {
     core: Rc<vulkan_abstraction::Core>,
 }
 
-impl ResourceManager {
-    pub const NUMBER_OF_SAMPLERS: usize = 1024;
-
+impl<K: Hash + Eq + Copy> ResourceManager<K> {
     pub fn new_empty(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let matrices_uniform_buffer = vulkan_abstraction::UniformBuffer::new(Rc::clone(&core), 1 as vk::DeviceSize)?;
+
         // SHADER_DEVICE_ADDRESS so the heap path can compute the buffer's BDA
         // when allocating a storage-buffer descriptor (`Buffer::storage_slot`
         // internally calls `vkGetBufferDeviceAddress`).
-
-
-        let entities = vulkan_abstraction::ArenaKeyMappedBuffer::new(
+        let meshes_info = vulkan_abstraction::ArenaGpuBuffer::new(
             core.clone(),
             ARENA_CAPACITY,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "Entities GPU buffer",
+            "Meshes info GPU buffer",
         )?;
 
-        let transforms = vulkan_abstraction::ArenaKeyMappedBuffer::new(
+        let blas_emissive_triangles = vulkan_abstraction::ArenaGpuBuffer::new(
             core.clone(),
             ARENA_CAPACITY,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_SRC
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            "blas emissive triangles",
+        )?;
+
+        let transforms = vulkan_abstraction::StagingBuffer::new(
+            Rc::clone(&core),
+            MAX_TLAS_INSTANCES as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "Entity transforms GPU buffer",
+            "Per-frame instance transforms",
         )?;
 
         let mut instances_buffer = vulkan_abstraction::StagingBuffer::new(
@@ -101,43 +105,6 @@ impl ResourceManager {
         )?;
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[], &mut instances_buffer)?;
 
-        let fallback_texture_image = {
-            const RESOLUTION: u32 = 64;
-            let image_data = crate::utils::iterate_image_extent(RESOLUTION, RESOLUTION)
-                .map(|(x, y)| {
-                    if (x + y).is_multiple_of(2) {
-                        0xff000000u32
-                    } else {
-                        0xffff00ffu32
-                    }
-                })
-                .flat_map(u32::to_be_bytes)
-                .collect::<Vec<u8>>();
-
-            vulkan_abstraction::Image::new_from_data(
-                Rc::clone(&core),
-                image_data,
-                vk::Extent3D {
-                    width: RESOLUTION,
-                    height: RESOLUTION,
-                    depth: 1,
-                },
-                vk::Format::R8G8B8A8_UNORM,
-                vk::ImageTiling::OPTIMAL,
-                gpu_allocator::MemoryLocation::GpuOnly,
-                vk::ImageUsageFlags::SAMPLED,
-                "fallback texture image",
-            )?
-        };
-        let fallback_texture_sampler = vulkan_abstraction::Sampler::new(
-            Rc::clone(&core),
-            vk::Filter::NEAREST,
-            vk::Filter::NEAREST,
-            vk::SamplerAddressMode::REPEAT,
-            vk::SamplerAddressMode::REPEAT,
-            vk::SamplerAddressMode::REPEAT,
-            vk::SamplerMipmapMode::LINEAR,
-        )?;
         let default_sampler = vulkan_abstraction::Sampler::new(
             Rc::clone(&core),
             vk::Filter::LINEAR,
@@ -150,38 +117,19 @@ impl ResourceManager {
 
         Ok(Self {
             matrices_uniform_buffer,
-
-            ,
             transforms,
-            entity_data: HashMap::new(),
-
-            blases: Default::default(),
-            tlas,
             instances_buffer,
-
-            : Default::default(),
-            blas_emissive_triangles: vulkan_abstraction::ArenaGpuBuffer::new(
-                core.clone(),
-                ARENA_CAPACITY,
-                vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                "blas emissive triangles",
-            )?,
-
+            tlas,
             emissive_indirection_gpu: vulkan_abstraction::Buffer::new_null(Rc::clone(&core)),
-            textures: Vec::new(),
+            emissive_indirection_cache: Vec::new(),
 
-            // Empty until `set_textures` runs — the renderer doesn't push the
-            // RT PC before a scene is loaded so the dangling slot is fine.
-            textures_lookup_buffer: vulkan_abstraction::Buffer::new_null(Rc::clone(&core)),
-
-            samplers: Vec::new(),
-
+            meshes_info,
+            blas_emissive_triangles,
+            blases: HashMap::new(),
+            mesh_info_slots: HashMap::new(),
+            emissive_triangle_slots: HashMap::new(),
             images: HashMap::new(),
-
-            fallback_texture_image,
-            fallback_texture_sampler,
+            samplers: HashMap::new(),
             default_sampler,
 
             buffer_copies_queued: vec![],
@@ -189,12 +137,10 @@ impl ResourceManager {
         })
     }
 
-
-
-    pub fn start_of_frame(&mut self) -> SrResult<()> { //TODO this can be moved to a render pass at the start of each frame
-        self..process_pending_frees();
+    pub fn start_of_frame(&mut self) -> SrResult<()> {
+        //TODO this can be moved to a render pass at the start of each frame
+        self.meshes_info.process_pending_frees();
         self.blas_emissive_triangles.process_pending_frees();
-        self.transforms.process_pending_frees();
 
         if self.buffer_copies_queued.is_empty() {
             return Ok(());
@@ -249,9 +195,90 @@ impl ResourceManager {
         Ok(())
     }
 
-    // ─── Camera ──────────────────────────────────────────────────────────────
+    // ─── Per-frame state ─────────────────────────────────────────────────────
 
-    pub fn set_matrices(
+    /// Upload everything that is decided per frame: the camera matrices and the
+    /// instance list. `instances` pairs each BLAS key with the world transforms
+    /// of its instances this frame; the instance buffer, the TLAS, the flat
+    /// transform buffer, and the emissive indirection table are all derived
+    /// from it here. The caller must guarantee no frame is in flight (the
+    /// renderer's `device_wait_idle` covers this).
+    pub fn prepare_frame(
+        &mut self,
+        matrices: CameraMatrices,
+        instances: &[(K, Vec<vk::TransformMatrixKHR>)],
+    ) -> SrResult<()> {
+        self.set_matrices(matrices)?;
+
+        let mut as_instances: Vec<vk::AccelerationStructureInstanceKHR> = Vec::new();
+        let mut emissive_entries: Vec<vulkan_abstraction::gltf::EmissiveIndirectionEntry> = Vec::new();
+        let no_emissive: Vec<u32> = Vec::new();
+
+        {
+            let transforms_mem = self.transforms.map_mut()?;
+
+            for (key, instance_transforms) in instances {
+                let Some(blas) = self.blases.get(key) else {
+                    return Err(crate::error::SrError::new_custom(
+                        "prepare_frame: instance references a BLAS key that was never loaded".to_string(),
+                    ));
+                };
+                let mesh_info_slot = self.mesh_info_slots[key];
+                let emissive_slots = self.emissive_triangle_slots.get(key).unwrap_or(&no_emissive);
+
+                let blas_device_handle = unsafe {
+                    self.core
+                        .acceleration_structure_device()
+                        .get_acceleration_structure_device_address(
+                            &vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(blas.inner()),
+                        )
+                };
+
+                for transform in instance_transforms {
+                    let instance_index = as_instances.len();
+                    if instance_index >= MAX_TLAS_INSTANCES {
+                        return Err(crate::error::SrError::new_custom(format!(
+                            "prepare_frame: more than MAX_TLAS_INSTANCES ({MAX_TLAS_INSTANCES}) instances"
+                        )));
+                    }
+
+                    transforms_mem[instance_index] = *transform;
+
+                    as_instances.push(vk::AccelerationStructureInstanceKHR {
+                        transform: *transform,
+                        instance_custom_index_and_mask: vk::Packed24_8::new(mesh_info_slot, 0xFF),
+                        instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                            0, // hit_group_offset = 0, same hit group for the whole scene
+                            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+                        ),
+                        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                            device_handle: blas_device_handle,
+                        },
+                    });
+
+                    for &tri_slot in emissive_slots {
+                        emissive_entries.push(vulkan_abstraction::gltf::EmissiveIndirectionEntry {
+                            blas_tri_index: tri_slot,
+                            entity_id: instance_index as u32,
+                        });
+                    }
+                }
+            }
+        }
+
+        {
+            let mapped = self.instances_buffer.map_mut()?;
+            mapped[..as_instances.len()].copy_from_slice(&as_instances);
+        }
+        self.tlas
+            .rebuild_from_buffer(as_instances.len() as u32, &self.instances_buffer)?;
+
+        self.update_emissive_indirection(emissive_entries)?;
+
+        Ok(())
+    }
+
+    fn set_matrices(
         &mut self,
         CameraMatrices {
             view_inverse,
@@ -276,403 +303,187 @@ impl ResourceManager {
         Ok(())
     }
 
-    // ─── Entity management ───────────────────────────────────────────────────
-
-    /// Build the GPU data for an entity from its BLAS, material, and transform.
-    fn build_entity_gpu_data(blas: &vulkan_abstraction::BLAS, material: &vulkan_abstraction::gltf::Material) -> EntityGpuData {
-        EntityGpuData {
-            vertex_buffer: blas.vertex_buffer().get_device_address(),
-            index_buffer: blas.index_buffer().get_device_address(),
-            material: Material::from(material),
-        }
-    }
-
-    /// Create an entity with the given BLAS index, material, and transform.
-    /// Returns the entity ID. After this call the TLAS must be rebuilt by the caller.
-    pub fn create_entity(
+    /// Recreate the dense emissive indirection buffer if the entries changed.
+    /// The shader reads `num_lights` from the buffer's size (`GetDimensions`),
+    /// so the buffer must be exactly sized — it can't be a persistent
+    /// max-capacity allocation.
+    fn update_emissive_indirection(
         &mut self,
-        blas_index: u64,
-        material: &vulkan_abstraction::gltf::Material,
-        transform: vk::TransformMatrixKHR,
-    ) -> SrResult<vulkan_abstraction::EntityId> {
-        let id = Self::generate(&self.entity_data);
-
-        let gpu_data = Self::build_entity_gpu_data(&self.blases[&blas_index], material);
-        let (slot, copy_region) = self..insert(id, &gpu_data)?;
-        self.copy_commands_queue(self..inner_staging(), self..inner(), copy_region);
-
-        let (_, xform_copy) = self.transforms.insert(id, &transform)?;
-        self.copy_commands_queue(self.transforms.inner_staging(), self.transforms.inner(), xform_copy);
-
-        let entity = vulkan_abstraction::Entity {
-            id: vulkan_abstraction::EntityId(id),
-            blas_index,
-            transform,
-            material: Material::from(material),
-            blas_instance_index: slot as u64,
-        };
-        self..insert(slot as u64, id);
-        self.entity_data.insert(id, entity);
-
-        Ok(vulkan_abstraction::EntityId(id))
-    }
-
-    /// Destroy an entity, freeing its arena slots. The TLAS must be rebuilt by the caller.
-    pub fn destroy_entity(&mut self, id: vulkan_abstraction::EntityId) {
-        if let Some(entity) = self.entity_data.remove(&id.0) {
-            self..remove(&entity.blas_instance_index);
-            self..remove(id.0);
-            self.transforms.remove(id.0);
-        }
-    }
-
-    /// Update an entity's transform. The TLAS must be rebuilt or updated by the caller.
-    pub fn set_entity_transform(&mut self, id: vulkan_abstraction::EntityId, transform: vk::TransformMatrixKHR) -> SrResult<()> {
-        if let Some(entity) = self.entity_data.get_mut(&id.0) {
-            entity.transform = transform;
-            let (_, xform_copy) = self.transforms.insert(id.0, &transform)?;
-            self.copy_commands_queue(self.transforms.inner_staging(), self.transforms.inner(), xform_copy);
-        }
-        Ok(())
-    }
-
-    pub fn get_entity(&self, id: vulkan_abstraction::EntityId) -> Option<&vulkan_abstraction::Entity> {
-        self.entity_data.get(&id.0)
-    }
-
-    pub fn entity_data(&self) -> &HashMap<u64, vulkan_abstraction::Entity> {
-        &self.entity_data
-    }
-
-    // ─── Emissive triangles (per-BLAS, local-space) ──────────────────────────
-
-    /// Append local-space emissive triangles for a BLAS into the arena ring buffer.
-    /// Allocates slots and flushes the staging copies to GPU.
-    pub fn add_blas_emissive_triangles(&mut self, triangles: &[vulkan_abstraction::gltf::EmissiveTriangle]) -> SrResult<()> {
-        if triangles.is_empty() {
+        entries: Vec<vulkan_abstraction::gltf::EmissiveIndirectionEntry>,
+    ) -> SrResult<()> {
+        if entries == self.emissive_indirection_cache && !self.emissive_indirection_gpu.is_null() {
             return Ok(());
         }
 
-        for tri in triangles {
-            let (_slot, copy_region) = self.blas_emissive_triangles.allocate_and_update(tri)?;
-            self.copy_commands_queue(
+        // A heap descriptor for a zero-sized buffer is invalid; keep a dummy
+        // entry when the scene has no emissive geometry (the shader sees
+        // num_lights through entry count of real scenes only).
+        let dummy = [vulkan_abstraction::gltf::EmissiveIndirectionEntry {
+            blas_tri_index: 0,
+            entity_id: 0,
+        }];
+        let data: &[vulkan_abstraction::gltf::EmissiveIndirectionEntry] =
+            if entries.is_empty() { &dummy } else { &entries };
+
+        self.emissive_indirection_gpu = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
+            Rc::clone(&self.core),
+            data,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            "emissive indirection",
+        )?;
+        self.emissive_indirection_cache = entries;
+
+        Ok(())
+    }
+
+    // ─── Asset management ────────────────────────────────────────────────────
+
+    /// Register every asset of a loaded scene, assigning each BLAS and image a
+    /// fresh key from `make_key`. Materials get their texture references
+    /// resolved to descriptor-heap slots here (samplers are deduplicated into
+    /// the manager's finite sampler set). Returns the BLAS keys, parallel to
+    /// `blases`.
+    pub fn add_scene_assets(
+        &mut self,
+        blases: Vec<crate::LoadedBlas>,
+        textures: Vec<vulkan_abstraction::gltf::Texture>,
+        sampler_descs: Vec<SamplerDesc>,
+        images: Vec<vulkan_abstraction::Image>,
+        make_key: &mut dyn FnMut() -> K,
+    ) -> SrResult<Vec<K>> {
+        let image_slots: Vec<u32> = images.iter().map(|image| image.sampled_slot()).collect();
+
+        let mut sampler_slots = Vec::with_capacity(sampler_descs.len());
+        for desc in &sampler_descs {
+            sampler_slots.push(self.sampler_slot(desc)?);
+        }
+        let default_sampler_slot = self.default_sampler.slot();
+
+        let resolve = |texture_index: Option<usize>| -> (u32, u32) {
+            match texture_index {
+                Some(i) => {
+                    let texture = &textures[i];
+                    let image_slot = image_slots[texture.source];
+                    let sampler_slot = texture
+                        .sampler
+                        .map(|s| sampler_slots[s])
+                        .unwrap_or(default_sampler_slot);
+                    (image_slot, sampler_slot)
+                }
+                None => (Material::NULL_TEXTURE_INDEX, Material::NULL_TEXTURE_INDEX),
+            }
+        };
+
+        let mut keys = Vec::with_capacity(blases.len());
+        for loaded in blases {
+            let key = make_key();
+            let material = Material::new(&loaded.material, &resolve);
+            self.add_blas(key, loaded.blas, material, &loaded.emissive_triangles)?;
+            keys.push(key);
+        }
+
+        for image in images {
+            self.images.insert(make_key(), image);
+        }
+
+        Ok(keys)
+    }
+
+    /// Register a BLAS under `key`: uploads its mesh info (slot becomes the
+    /// instance custom index) and its local-space emissive triangles.
+    pub fn add_blas(
+        &mut self,
+        key: K,
+        blas: vulkan_abstraction::BLAS,
+        material: Material,
+        emissive_triangles: &[vulkan_abstraction::gltf::EmissiveTriangle],
+    ) -> SrResult<()> {
+        let gpu_data = EntityGpuData {
+            vertex_buffer: blas.vertex_buffer().get_device_address(),
+            index_buffer: blas.index_buffer().get_device_address(),
+            material,
+        };
+        let (slot, copy_region) = self.meshes_info.allocate_and_update(&gpu_data)?;
+        self.queue_copy(self.meshes_info.inner_staging(), self.meshes_info.inner(), copy_region);
+        self.mesh_info_slots.insert(key, slot as u32);
+
+        let mut tri_slots = Vec::with_capacity(emissive_triangles.len());
+        for tri in emissive_triangles {
+            let (tri_slot, tri_copy) = self.blas_emissive_triangles.allocate_and_update(tri)?;
+            self.queue_copy(
                 self.blas_emissive_triangles.inner_staging(),
                 self.blas_emissive_triangles.inner(),
-                copy_region,
+                tri_copy,
             );
+            tri_slots.push(tri_slot as u32);
         }
+        self.emissive_triangle_slots.insert(key, tri_slots);
 
+        self.blases.insert(key, blas);
         Ok(())
     }
 
-    /// Rebuild the dense emissive indirection buffer from all live entities and their BLASes' ranges.
-    pub fn rebuild_emissive_indirection(&mut self) -> SrResult<()> {
-        let mut entries = Vec::new();
-
-        for (&entity_id, entity) in &self.entity_data {
-            let blas = &self.blases[&entity.blas_index];
-            let arena_slot = self..get_slot(entity_id).unwrap_or(0);
-            for range in blas.emissive_triangle_ranges() {
-                for tri_idx in range.clone() {
-                    entries.push(vulkan_abstraction::gltf::EmissiveIndirectionEntry {
-                        blas_tri_index: tri_idx,
-                        entity_id: arena_slot as u32, //TODO this is putting a u64 into a u32 this is collision at its finest
-                    });
-                }
+    /// Remove whatever asset `key` refers to (BLAS and/or image). Arena slots
+    /// are deferred-freed; the BLAS / image objects are dropped immediately, so
+    /// the caller must guarantee the GPU is idle.
+    pub fn remove(&mut self, key: &K) {
+        if let Some(slot) = self.mesh_info_slots.remove(key) {
+            self.meshes_info.free_index(slot as usize);
+        }
+        if let Some(tri_slots) = self.emissive_triangle_slots.remove(key) {
+            for slot in tri_slots {
+                self.blas_emissive_triangles.free_index(slot as usize);
             }
         }
+        self.blases.remove(key);
+        self.images.remove(key);
+    }
 
-        if entries.is_empty() {
-            let dummy = [vulkan_abstraction::gltf::EmissiveIndirectionEntry {
-                blas_tri_index: 0,
-                entity_id: 0,
-            }];
-            self.emissive_indirection_gpu = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
-                Rc::clone(&self.core),
-                &dummy,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                "emissive indirection dummy",
-            )?;
-        } else {
-            self.emissive_indirection_gpu = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
-                Rc::clone(&self.core),
-                &entries,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                "emissive indirection",
-            )?;
+    /// Slot of the (deduplicated) sampler matching `desc`, creating it on first
+    /// use. The sampler set only grows — samplers are never removed.
+    fn sampler_slot(&mut self, desc: &SamplerDesc) -> SrResult<u32> {
+        if let Some(sampler) = self.samplers.get(desc) {
+            return Ok(sampler.slot());
         }
-
-        Ok(())
+        let sampler = vulkan_abstraction::Sampler::new_from_desc(Rc::clone(&self.core), desc)?;
+        let slot = sampler.slot();
+        self.samplers.insert(desc.clone(), sampler);
+        Ok(slot)
     }
 
-    // ─── Image storage ───────────────────────────────────────────────────────
-
-    /// Take ownership of an image and return a unique ID for it.
-    pub fn add_image(&mut self, image: vulkan_abstraction::Image) -> u64 {
-        let id = Self::generate(&self.images);
-        self.images.insert(id, image);
-        id
-    }
-
-    /// Remove and destroy an image by its ID. No-op if the ID doesn't exist.
-    pub fn remove_image(&mut self, id: u64) {
-        self.images.remove(&id);
-    }
-
-    pub fn get_image(&self, id: u64) -> Option<&vulkan_abstraction::Image> {
-        self.images.get(&id)
-    }
-
-    // ─── Acceleration structures ───────────────────────────────────────────
+    // ─── Accessors for the heap-mode push constant ──────────────────────────
 
     pub fn tlas(&self) -> &vulkan_abstraction::TLAS {
         &self.tlas
-    }
-
-    pub fn blases(&self) -> &HashMap<u64, BLAS> {
-        &self.blases
-    }
-
-    pub fn blases_mut(&mut self) -> &mut HashMap<u64, BLAS> {
-        &mut self.blases
-    }
-
-    pub fn rebuild_tlas(&mut self) -> SrResult<()> {
-        self.tlas
-            .rebuild_from_entities(&self.entity_data, &self.blases, &mut self.instances_buffer)
-    }
-
-    pub fn update_tlas(&mut self) -> SrResult<()> {
-        self.tlas
-            .update_from_entities(&self.entity_data, &self.blases, &mut self.instances_buffer)
-    }
-
-    // ─── Textures ───────────────────────────────────────────────────────────
-
-    pub fn default_sampler(&self) -> &vulkan_abstraction::Sampler {
-        &self.default_sampler
-    }
-
-    pub fn set_textures(
-        &mut self,
-        images: &[vulkan_abstraction::Image],
-        samplers: &[vulkan_abstraction::Sampler],
-        textures: &[vulkan_abstraction::gltf::Texture],
-    ) -> SrResult<()> {
-        self.textures.clear();
-        self.textures.reserve_exact(Self::NUMBER_OF_SAMPLERS);
-
-        // Parallel buffer of `(image_heap_slot, 0, sampler_heap_slot, 0)`
-        // used by the Slang RT shaders. Both lookups also populate the
-        // legacy `(vk::Sampler, vk::ImageView)` vector so descriptor-set
-        // passes (denoise / postprocess / temporal) keep working during the
-        // transition.
-        let mut lookup_entries: Vec<[u32; 4]> = Vec::with_capacity(Self::NUMBER_OF_SAMPLERS);
-
-        for tex in textures {
-            let sampler = match tex.sampler {
-                Some(i) => &samplers[i],
-                None => &self.default_sampler,
-            };
-            let image = &images[tex.source];
-            self.textures.push((sampler.inner(), image.image_view()));
-            lookup_entries.push([image.sampled_slot(), 0, sampler.slot(), 0]);
-        }
-
-        while self.textures.len() < Self::NUMBER_OF_SAMPLERS {
-            self.textures.push((
-                self.fallback_texture_sampler.inner(),
-                self.fallback_texture_image.image_view(),
-            ));
-            lookup_entries.push([
-                self.fallback_texture_image.sampled_slot(),
-                0,
-                self.fallback_texture_sampler.slot(),
-                0,
-            ]);
-        }
-
-        assert_eq!(self.textures.len(), Self::NUMBER_OF_SAMPLERS);
-        assert_eq!(lookup_entries.len(), Self::NUMBER_OF_SAMPLERS);
-
-        self.textures_lookup_buffer = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
-            Rc::clone(&self.core),
-            &lookup_entries,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "RT texture-handle lookup",
-        )?;
-        Ok(())
-    }
-
-    /// Heap shader-index of the texture lookup `StructuredBuffer<TextureEntry>`
-    /// referenced by the Slang RT shaders. Lazily allocates the slot on the
-    /// first call.
-    pub fn textures_lookup_slot(&self) -> u32 {
-        use vulkan_abstraction::Buffer;
-        self.textures_lookup_buffer.raw().storage_slot()
     }
 
     /// Buffer-device-address of the matrices uniform buffer. The Slang RT
     /// shaders read matrices via a `Matrices*` BDA pointer rather than a
     /// heap descriptor — see `shaders/rt_types.slang::RaytracingPC.matrices`.
     pub fn matrices_buffer_address(&self) -> vk::DeviceAddress {
-        use vulkan_abstraction::Buffer;
         self.matrices_uniform_buffer.get_device_address()
     }
 
-    // ─── Scene loading ───────────────────────────────────────────────────────
-
-    pub fn load_scene(
-        &mut self,
-        scene: &crate::Scene,
-        scene_data: crate::SceneData,
-    ) -> SrResult<Vec<vulkan_abstraction::EntityId>> {
-        let mut blases = vec![];
-        let (blas_instances, blas_indices, materials, textures, samplers, images, emissive_triangles) =
-            scene.load_into_gpu(&self.core, &mut blases, scene_data)?;
-
-        // Collect entity creation data before consuming blas_instances
-        let entity_creation_data: Vec<_> = blas_instances
-            .iter()
-            .zip(blas_indices.iter())
-            .zip(materials.iter())
-            .map(|((bi, &blas_idx), mat)| (blas_idx, mat.clone(), bi.transform))
-            .collect();
-
-        // Insert BLASes with stable IDs; build a remapping from scene index to manager ID.
-        let blas_id_map: Vec<u64> = blases
-            .into_iter()
-            .map(|blas| {
-                let id = Self::generate(&self.blases);
-                self.blases.insert(id, blas);
-                id
-            })
-            .collect();
-
-        self.set_textures(&images, &samplers, &textures)?;
-        self.add_blas_emissive_triangles(&emissive_triangles)?;
-
-        // Create entities; this assigns arena slots that become gl_InstanceCustomIndexEXT.
-        let mut entity_ids = Vec::with_capacity(entity_creation_data.len());
-        for (scene_blas_idx, material, transform) in &entity_creation_data {
-            let blas_id = blas_id_map[*scene_blas_idx];
-            entity_ids.push(self.create_entity(blas_id, material, *transform)?);
-        }
-
-        // Rebuild TLAS *after* entity slots are known so instance_custom_index matches.
-        self.rebuild_tlas()?;
-
-        self.rebuild_emissive_indirection()?;
-
-        for image in images {
-            self.add_image(image);
-        }
-        self.samplers = samplers;
-
-        Ok(entity_ids)
-    }
-
-    /// Spawn a new instance that shares the same BLAS and material as `src` but has a different
-    /// transform. The caller must rebuild the TLAS afterwards.
-    pub fn clone_entity(
-        &mut self,
-        src: vulkan_abstraction::EntityId,
-        transform: vk::TransformMatrixKHR,
-    ) -> SrResult<vulkan_abstraction::EntityId> {
-        let (blas_index, material) = self
-            .entity_data
-            .get(&src.0)
-            .map(|e| (e.blas_index, e.material))
-            .ok_or_else(|| crate::error::SrError::new_custom(format!("clone_entity: no entity {}", src.0)))?;
-
-        let id = Self::generate(&self.entity_data);
-
-        let gpu_data = EntityGpuData {
-            vertex_buffer: self.blases[&blas_index].vertex_buffer().get_device_address(),
-            index_buffer: self.blases[&blas_index].index_buffer().get_device_address(),
-            material,
-        };
-        let (slot, copy_region) = self..insert(id, &gpu_data)?;
-        self.copy_commands_queue(self..inner_staging(), self..inner(), copy_region);
-
-        let (_, xform_copy) = self.transforms.insert(id, &transform)?;
-        self.copy_commands_queue(self.transforms.inner_staging(), self.transforms.inner(), xform_copy);
-
-        let entity = vulkan_abstraction::Entity {
-            id: vulkan_abstraction::EntityId(id),
-            blas_index,
-            transform,
-            material,
-            blas_instance_index: slot as u64,
-        };
-        self..insert(slot as u64, id);
-        self.entity_data.insert(id, entity);
-
-        Ok(vulkan_abstraction::EntityId(id))
-    }
-
-    // ─── Descriptor set accessors ────────────────────────────────────────────
-
-    pub fn get_matrices_uniform_buffer(&self) -> vk::Buffer {
-        self.matrices_uniform_buffer.inner()
-    }
-
-    pub fn get_meshes_info_storage_buffer(&self) -> vk::Buffer {
-        self..inner()
-    }
-
-    pub fn get_emissive_triangles_storage_buffer(&self) -> vk::Buffer {
-        self.blas_emissive_triangles.inner()
-    }
-
-    pub fn get_emissive_indirection_buffer(&self) -> vk::Buffer {
-        self.emissive_indirection_gpu.inner()
-    }
-
-    pub fn get_entity_transforms_buffer(&self) -> vk::Buffer {
-        self.transforms.inner()
-    }
-
-    pub fn get_textures(&self) -> &[(vk::Sampler, vk::ImageView)] {
-        &self.textures
-    }
-
-    // ─── Heap shader-index accessors ─────────────────────────────────────────
-    // Used by the Slang RT path to fill the heap-mode push constant. Each
-    // call lazily allocates a `StorageBuffer` descriptor slot on first use.
+    // Each call lazily allocates a `StorageBuffer` descriptor slot on first use.
     pub fn meshes_info_storage_slot(&self) -> u32 {
-        use vulkan_abstraction::Buffer;
-        self.entities_gpu.raw().storage_slot()
+        self.meshes_info.raw().storage_slot()
     }
 
     pub fn emissive_triangles_storage_slot(&self) -> u32 {
-        use vulkan_abstraction::Buffer;
         self.blas_emissive_triangles.raw().storage_slot()
     }
 
     pub fn emissive_indirection_storage_slot(&self) -> u32 {
-        use vulkan_abstraction::Buffer;
         self.emissive_indirection_gpu.raw().storage_slot()
     }
 
     pub fn entity_transforms_storage_slot(&self) -> u32 {
-        use vulkan_abstraction::Buffer;
         self.transforms.raw().storage_slot()
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────
 
-    fn copy_commands_queue(&mut self, src: vk::Buffer, dst: vk::Buffer, region: vk::BufferCopy) {
+    fn queue_copy(&mut self, src: vk::Buffer, dst: vk::Buffer, region: vk::BufferCopy) {
         self.buffer_copies_queued.push((src, dst, region));
-    }
-
-    pub(crate) fn generate<T>(hash_map: &HashMap<u64, T>) -> u64 {
-        loop {
-            let mut rng = rand::rng();
-            let key = rng.random::<u64>();
-            if !hash_map.contains_key(&key) {
-                return key;
-            }
-        }
     }
 }

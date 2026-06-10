@@ -35,38 +35,6 @@ public struct VertexAttributes {
     public float2 _pad3;
 }
 
-// Mirrors `#[repr(C, packed)]` `Material` in `src/vulkan_abstraction/resources/material.rs`.
-// The two-float `_pad_mid` block sits where Rust placed `_padding: [f32; 2]` to align
-// `emissive_factor` to offset 48 even in scalar layout; the three trailing pads close
-// the struct out at 96 bytes.
-public struct Material {
-    public float4 base_color_value;
-    public uint base_color_texture_index;
-
-    public float metallic_factor;
-    public float roughness_factor;
-    public uint metallic_roughness_texture_index;
-
-    public uint normal_texture_index;
-    public uint occlusion_texture_index;
-
-    public float _pad_mid_0;
-    public float _pad_mid_1;
-
-    public float4 emissive_factor;
-    public uint emissive_texture_index;
-
-    public uint alpha_mode;
-    public float alpha_cutoff;
-
-    public float transmission_factor;
-    public float ior;
-
-    public uint _pad0;
-    public uint _pad1;
-    public uint _pad2;
-}
-
 // BLAS vertex/index buffers are reached via buffer-device-address pointers
 // (one address per BLAS), not heap descriptors — the heap would otherwise
 // need a slot per BLAS buffer. Slang's `T*` lowers to a SPIR-V
@@ -74,36 +42,47 @@ public struct Material {
 // `Ptr<T>::__subscript`, which is the equivalent of GLSL's
 // `buffer_reference { T v[]; }` unbounded-array idiom.
 //
-// **Material fields are inlined** rather than nested as `Material material`:
+// **Material fields are inlined** rather than nested as a `Material` struct:
 // Slang's heap-mode (`OpBufferPointerEXT`) access chain for a nested struct
-// member drops the parent member offset. With `Material material` at MeshInfo
-// member-2 (offset 16), `mesh_info.material.roughness_factor` would read at
-// byte 24 instead of byte 40 — every material field ends up 16 bytes off. The
-// CPU layout in `EntityGpuData` (`#[repr(C, packed)]`) is unchanged: it still
-// embeds the `Material` struct so the bytes line up; only the shader-side view
-// is flattened. Field order/sizes mirror `Material` exactly.
-// TODO issue the problem to the slang repo
+// member drops the parent member offset, so every nested-material read would
+// land 16 bytes off. Field order/sizes mirror `#[repr(C, packed)]` `Material`
+// in `src/vulkan_abstraction/resources/material.rs` exactly (112 bytes after
+// the two pointers).
+// TODO issue the problem to the slang repo and look at alternatives and alignment
+//
+// MeshInfo is read through a `StructuredBuffer` → std430 layout: every float4
+// must sit at a 16-aligned offset (hence the `_material_pad_mid_*` pair) and
+// the struct size must be a 16-multiple (hence the trailing pads) so the
+// std430 array stride (128) matches the CPU side.
+//
+// `material_*_image` / `material_*_sampler` are *resolved descriptor heap
+// slots* (filled in at scene-load time on the CPU) — there is no texture
+// indirection buffer. `NULL_TEXTURE` in an image slot means "no texture".
 public struct MeshInfo {
     public VertexAttributes* vertices;                          // 0
     public uint* indices;                                       // 8
     public float4 material_base_color_value;                    // 16
-    public uint material_base_color_texture_index;              // 32
-    public float material_metallic_factor;                      // 36
-    public float material_roughness_factor;                     // 40
-    public uint material_metallic_roughness_texture_index;      // 44
-    public uint material_normal_texture_index;                  // 48
-    public uint material_occlusion_texture_index;               // 52
-    public float _material_pad_mid_0;                           // 56
-    public float _material_pad_mid_1;                           // 60
-    public float4 material_emissive_factor;                     // 64
-    public uint material_emissive_texture_index;                // 80
-    public uint material_alpha_mode;                            // 84
-    public float material_alpha_cutoff;                         // 88
-    public float material_transmission_factor;                  // 92
-    public float material_ior;                                  // 96
-    public uint _material_pad0;                                 // 100
-    public uint _material_pad1;                                 // 104
-    public uint _material_pad2;                                 // 108
+    public float material_metallic_factor;                      // 32
+    public float material_roughness_factor;                     // 36
+    public float _material_pad_mid_0;                           // 40
+    public float _material_pad_mid_1;                           // 44
+    public float4 material_emissive_factor;                     // 48
+    public uint material_alpha_mode;                            // 64
+    public float material_alpha_cutoff;                         // 68
+    public float material_transmission_factor;                  // 72
+    public float material_ior;                                  // 76
+    public uint material_base_color_image;                      // 80
+    public uint material_base_color_sampler;                    // 84
+    public uint material_metallic_roughness_image;              // 88
+    public uint material_metallic_roughness_sampler;            // 92
+    public uint material_normal_image;                          // 96
+    public uint material_normal_sampler;                        // 100
+    public uint material_occlusion_image;                       // 104
+    public uint material_occlusion_sampler;                     // 108
+    public uint material_emissive_image;                        // 112
+    public uint material_emissive_sampler;                      // 116
+    public uint _material_pad_end_0;                            // 120
+    public uint _material_pad_end_1;                            // 124
 }
 
 // --- Emissive lighting ------------------------------------------------------
@@ -167,9 +146,8 @@ public struct ReservoirGI {
 // Every binding from the old `RaytracingDescriptorSetLayout` is now a
 // `DescriptorHandle<T>` field here. `reservoirs[2]` and `reservoirs_gi[2]`
 // keep the same A/B ping-pong scheme, indexed by `frame_count & 1u`.
-// `textures_lookup` replaces the old 1024-element combined-sampler array:
-// each entry is `(image_heap_index, sampler_heap_index)` so material indices
-// (`base_color_texture_index`, …) keep their original meaning.
+// Texture access goes through the heap slots stored per material in
+// `MeshInfo` — there is no texture indirection buffer.
 public struct
 RaytracingPC {
     // BDA-like uint64 instead of a DescriptorHandle<AS> — see
@@ -207,20 +185,8 @@ RaytracingPC {
     public Reservoir* reservoirs[2];
     public ReservoirGI* reservoirs_gi[2];
 
-    public DescriptorHandle<StructuredBuffer<TextureEntry>> textures_lookup;
-
     public uint frame_count;
     public uint use_srgb;
-}
-
-// Per-texture indirection entry. Two `DescriptorHandle` fields each lower
-// to a `uint2`, so the CPU writes 4 × u32 per entry: `(image_heap_idx, 0,
-// sampler_heap_idx, 0)`. The pad words are required because Slang's
-// `DescriptorHandle<T>` is two 32-bit components even though we only use
-// the low one.
-public struct TextureEntry {
-    public DescriptorHandle<Texture2D<float4>> image;
-    public DescriptorHandle<SamplerState> sampler;
 }
 
 public static const uint NULL_TEXTURE = 0xFFFFFFFFu;

@@ -16,7 +16,7 @@ pub struct EmissiveTriangle {
 /// The shader picks a random entry, fetches the local-space triangle from the BLAS emissive buffer,
 /// and applies the entity's transform to get world-space coordinates.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EmissiveIndirectionEntry {
     pub blas_tri_index: u32,
     pub entity_id: u32,

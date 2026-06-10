@@ -1,5 +1,6 @@
 use nalgebra as na;
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     position: na::Point3<f32>,
     target: na::Point3<f32>,

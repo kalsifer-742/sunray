@@ -1,4 +1,3 @@
-use std::ops::Range;
 use std::rc::Rc;
 
 use crate::error::*;
@@ -39,21 +38,16 @@ pub struct BLAS {
     index_buffer: vulkan_abstraction::IndexBuffer,
 
     state: BlasState,
-    /// Ranges into the global blas_emissive_triangles buffer (local-space, per-BLAS).
-    /// One range per primitive that has emissive triangles.
-    emissive_triangle_ranges: Vec<Range<u32>>,
 }
 
 impl BLAS {
     /// the vertex_buffer is assumed to have a vec3 position attribute as its first (not necessarily the only) attribute in memory.
-    /// `emissive_triangles` is the global accumulation buffer — this BLAS appends its local emissive
-    /// triangles (from `local_emissive_data`) and records the resulting range.
+    /// Emissive triangles are no longer tracked here — the `ResourceManager` owns
+    /// the per-BLAS emissive triangle slots.
     pub fn new(
-        //TODO this needs to accept a buffer for the emissive triangles and fill itself the holes
         core: Rc<vulkan_abstraction::Core>,
         vertex_buffer: vulkan_abstraction::VertexBuffer,
         index_buffer: vulkan_abstraction::IndexBuffer,
-        emissive_triangle_ranges: Vec<Range<u32>>,
         fast_build: bool,
     ) -> SrResult<Self> {
         /*
@@ -85,16 +79,11 @@ impl BLAS {
             vertex_buffer,
             index_buffer,
             state: BlasState::Optimal,
-            emissive_triangle_ranges,
         })
     }
 
     pub fn state(&self) -> &BlasState {
         &self.state
-    }
-
-    pub fn emissive_triangle_ranges(&self) -> &[Range<u32>] {
-        &self.emissive_triangle_ranges
     }
 
     fn make_geometry<'a>(vertex_buffer: &VertexBuffer, index_buffer: &IndexBuffer) -> vk::AccelerationStructureGeometryKHR<'a> {

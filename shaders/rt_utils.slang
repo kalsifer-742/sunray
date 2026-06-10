@@ -113,22 +113,22 @@ public float3 unpack_normal(uint p) {
     return normalize(n);
 }
 
-// --- Heap-indirected texture sampler ----------------------------------------
-// `texture_index` is the material's original [0, 1024) index. Looks up the
-// (image_heap_slot, sampler_heap_slot) pair from `textures_lookup` and
-// dereferences the heap. `NULL_TEXTURE` returns `fallback` unchanged.
+// --- Heap texture sampler ----------------------------------------------------
+// Materials store *resolved* descriptor heap slots (`material_*_image` /
+// `material_*_sampler` in `MeshInfo`), filled in on the CPU at scene-load
+// time — there is no indirection buffer. `NULL_TEXTURE` in the image slot
+// returns `fallback` unchanged.
 public float4 sample_texture(
-    StructuredBuffer<TextureEntry> textures_lookup,
-    uint texture_index,
+    uint image_slot,
+    uint sampler_slot,
     float2 uv,
     float4 fallback
 ) {
-    if (texture_index == NULL_TEXTURE) {
+    if (image_slot == NULL_TEXTURE) {
         return fallback;
     }
-    TextureEntry entry = textures_lookup[texture_index];
-    Texture2D<float4> tex = entry.image;
-    SamplerState smp = entry.sampler;
+    Texture2D<float4> tex = DescriptorHandle<Texture2D<float4>>(uint2(image_slot, 0));
+    SamplerState smp = DescriptorHandle<SamplerState>(uint2(sampler_slot, 0));
     return tex.SampleLevel(smp, uv, 0.0);
 }
 

@@ -4,25 +4,9 @@ use ash::vk;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntityId(pub u64);
 
-/// CPU-side entity metadata. Not uploaded to GPU — used for TLAS rebuilds,
-/// emissive indirection, and reconstructing EntityGpuData on transform updates.Contains all the info needed to build a blas instance
-#[derive(Copy, Clone)]
-pub struct Entity {
-    pub id: EntityId,
-    /// Index into Renderer's blases vec (shared geometry).
-    pub blas_index: u64,
-    /// Index into Renderer's instances buffer.
-    pub blas_instance_index: u64,
-
-    /// GPU-ready material (kept CPU-side to reconstruct EntityGpuData on updates).
-    pub material: Material,
-
-    pub transform: vk::TransformMatrixKHR,
-}
-
-/// Per-entity data uploaded to GPU and read by shaders.
-/// Stored in the entities arena buffer (indexed by arena slot =
-/// `gl_InstanceCustomIndexEXT`).
+/// Per-BLAS data uploaded to GPU and read by shaders. Stored in the meshes-info
+/// arena buffer; the slot index is what every instance of that BLAS passes as
+/// `gl_InstanceCustomIndexEXT`, so instances sharing a BLAS share one entry.
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
 pub(crate) struct EntityGpuData {

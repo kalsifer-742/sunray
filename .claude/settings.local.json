@@ -163,7 +163,13 @@
       "Bash(nix-instantiate --eval -E 'with import <nixpkgs>{}; builtins.toString shader-slang.dev')",
       "Bash(nix-shell --run 'echo \"INCLUDE=$SLANG_INCLUDE_DIR\"; echo \"LIB=$SLANG_LIB_DIR\"; echo \"LIBCLANG=$LIBCLANG_PATH\"; ls \"$SLANG_INCLUDE_DIR/slang.h\"; ls \"$SLANG_LIB_DIR/libslang.so\"')",
       "Bash(nix-shell *)",
-      "PowerShell(cargo check *)"
+      "PowerShell(cargo check *)",
+      "PowerShell(git *)",
+      "PowerShell(git worktree add \"$env:TEMP\\\\sunray_baseline\" 1b1f48e 2>&1 | Select-Object -Last 2)",
+      "PowerShell(Set-Location *)",
+      "PowerShell($env:ENABLE_NVIDIA_AFTERMATH = \"0\"; foreach \\($i in 1..3\\) { $out = cargo run --example png 2>&1 | Out-String; if \\($out -match \"DEVICE_LOST\"\\) { \"run ${i}: DEVICE_LOST\" } elseif \\($out -match \"You can find your render\"\\) { \"run ${i}: rendered OK\" } else { \"run ${i}: other failure\" } })",
+      "PowerShell(foreach \\($i in 1..3\\) { $out = cargo run --example png 2>&1 | Out-String; if \\($out -match \"DEVICE_LOST\"\\) { \"run ${i}: DEVICE_LOST\" } elseif \\($out -match \"You can find your render\"\\) { \"run ${i}: rendered OK\" } else { \"run ${i}: other failure\" } })",
+      "PowerShell(Remove-Item *)"
     ]
   }
 }
