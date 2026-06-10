@@ -22,7 +22,7 @@ use error::*;
 pub use scene::*;
 
 use std::{collections::HashMap, rc::Rc, sync::Arc};
-
+use std::hash::Hash;
 use crate::render_graph::graph::{AnyRenderPass, BufferDesc, Handle, ImageDesc, RenderGraph};
 use crate::render_graph::pass_builder::{
     ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
@@ -69,7 +69,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //TODO add a list of callbacks to call at the end of frames for cleanup or at start for setup
 //TODO deferred deallocation for buffers and acceleration structures
 //TODO generic over the key
-
+//TODO the renderer should internalize the swapchain maybe
 /// Per-output-image data. The render graph now owns the intermediate G-buffer /
 /// RT-output images as internal (transient) resources, so the only image that
 /// still lives here is the post-process result, which the external blit copies
@@ -84,7 +84,7 @@ pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::S
 pub use crate::vulkan_abstraction::DiagnosticTool;
 
 
-pub struct Renderer {
+pub struct Renderer<ResourceKey : Hash + Eq + Copy> {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
     resource_manager: vulkan_abstraction::ResourceManager<ResourceKey>,
@@ -172,7 +172,7 @@ pub struct Renderer {
 
 
 }
-impl Renderer {
+impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
     pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
         Ok(Self::new_impl(image_extent, image_format, &[], None)?.0)
     }

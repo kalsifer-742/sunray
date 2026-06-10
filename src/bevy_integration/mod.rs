@@ -28,7 +28,6 @@ mod egui_support;
 mod plugin;
 mod state;
 mod surface;
-mod swapchain;
 mod systems;
 
 pub use camera::SunrayCamera;

@@ -17,7 +17,7 @@ use ash::vk;
 use bevy_ecs::prelude::*;
 use bevy_window::RawHandleWrapper;
 
-use super::swapchain::{Surface, Swapchain};
+use crate::vulkan_abstraction::image::swapchain::{Surface, Swapchain};
 use crate::{Renderer, vulkan_abstraction};
 
 /// Main-world resource: which scene to load. Set [`gltf_path`](Self::request)

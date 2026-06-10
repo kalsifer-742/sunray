@@ -5,7 +5,7 @@ use std::rc::Rc;
 use ash::vk;
 
 use crate::render_graph::graph::SamplerDesc;
-use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents};
+use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, HostAccessibleBuffer, Material};
 use crate::{CameraMatrices, error::SrResult, vulkan_abstraction};
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
@@ -26,7 +26,7 @@ const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
 
     //TODO this is still to be moved 
-    matrices_uniform_buffer: vulkan_abstraction::UniformBuffer<MatricesBufferContents>,
+    matrices_uniform_buffer: vulkan_abstraction::UniformBuffer<CameraMatrices>,
     /// Flat per-instance transforms in instance order; `EmissiveIndirectionEntry::entity_id`
     /// indexes into this buffer.
     transforms: vulkan_abstraction::StagingBuffer<vk::TransformMatrixKHR>,
@@ -291,7 +291,7 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
         // shader's `float4x4(m.vi0, m.vi1, m.vi2, m.vi3)` reconstructs the
         // matrix correctly without any per-shader `transpose()` call.
         let mem = self.matrices_uniform_buffer.map_mut()?;
-        mem[0] = MatricesBufferContents {
+        mem[0] = CameraMatrices {
             view_inverse: view_inverse.transpose(),
             proj_inverse: proj_inverse.transpose(),
             view_proj: view_proj.transpose(),

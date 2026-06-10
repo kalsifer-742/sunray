@@ -8,7 +8,7 @@ use log::info;
 use nalgebra as na;
 use rand::random_range;
 use std::time::Instant;
-use sunray::vulkan_abstraction::EntityId;
+use sunray::vulkan_abstraction::{swapchain, EntityId};
 use sunray::{
     MAX_FRAMES_IN_FLIGHT,
     camera::Camera,
@@ -25,7 +25,6 @@ use winit::{
 };
 
 mod surface;
-mod swapchain;
 mod utils;
 
 struct AppResources {

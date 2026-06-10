@@ -24,7 +24,7 @@ use super::egui_paint::EguiPaint;
 use super::egui_support::ExtractedEgui;
 use super::state::*;
 use super::surface;
-use super::swapchain::{Surface, Swapchain};
+use crate::vulkan_abstraction::image::swapchain::{Surface, Swapchain};
 use crate::camera::Camera;
 use crate::error::{ErrorSource, SrResult};
 use crate::vulkan_abstraction::{self, CmdBuffer, Core, Semaphore};

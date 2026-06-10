@@ -16,7 +16,8 @@ impl Default for Camera {
         }
     }
 }
-
+#[derive(Clone, Copy)]
+#[repr(C, packed)]
 pub(crate) struct CameraMatrices {
     pub view_inverse: na::Matrix4<f32>,
     pub proj_inverse: na::Matrix4<f32>,

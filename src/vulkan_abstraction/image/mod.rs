@@ -1,5 +1,7 @@
 pub mod sampler;
 pub mod texture;
+pub mod swapchain;
+
 pub use sampler::*;
 pub use texture::*;
 
