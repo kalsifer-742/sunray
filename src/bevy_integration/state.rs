@@ -78,6 +78,19 @@ pub struct ExtractedScene {
     pub generation: u64,
 }
 
+/// Extracted (Send) per-frame instance list built from
+/// [`super::SunrayInstance`] entities. Rebuilt from scratch every extract, so
+/// entity adds / removes / transform edits are picked up with no retained
+/// state or change tracking.
+#[derive(Resource, Default)]
+pub struct ExtractedInstances {
+    /// `(BLAS index in the loaded scene, world transform)`, one per entity.
+    pub instances: Vec<(usize, vk::TransformMatrixKHR)>,
+    /// Whether any `SunrayInstance` entity existed this frame. When true the
+    /// entity-driven list replaces the scene's baked instances.
+    pub active: bool,
+}
+
 /// The renderer (which owns its surface + swapchain internally). **NonSend**
 /// (see module docs).
 #[derive(Default)]
@@ -90,6 +103,9 @@ pub struct SunrayRenderState {
     /// `load_gltf` and handed to `render_to_swapchain` each frame. Lives here
     /// (the caller side) — the renderer retains nothing about instances.
     pub scene_instances: Vec<(UntypedAssetId, Vec<vk::TransformMatrixKHR>)>,
+    /// BLAS keys of the loaded scene in load order; `SunrayInstance::blas_index`
+    /// indexes this list when entity-driven instances are active.
+    pub scene_blas_keys: Vec<UntypedAssetId>,
     /// Asset group of the currently loaded scene (for bulk unload on reload).
     pub scene_group: Option<u64>,
 

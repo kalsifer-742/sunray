@@ -300,6 +300,32 @@ fn pipeline_cache_key(kind: u8, parts: &[&[u8]]) -> u64 {
     hasher.finish()
 }
 
+/// Where a graph resource ends up once the graph's submission completes: the
+/// last pass that touched it and the access it is left in.
+///
+/// TODO(temp impl): this is the seed of the cross-submission sync contract.
+/// The goal is that whatever runs *after* the graph (the external blit, the
+/// present transition, the next frame's graph) reads the end state of the
+/// resources it shares with the graph and emits a precise pipeline barrier
+/// from `end_access` instead of `vkDeviceWaitIdle`, and that `compile` itself
+/// consumes the previous submission's end states as the initial access of
+/// imported resources — so consecutive frames chain render-pass-to-render-pass
+/// with no idle. Right now the states are only collected and exposed; nothing
+/// consumes them yet.
+#[derive(Clone, Debug)]
+pub struct ResourceEndState {
+    /// Pass id of the last pass that touched the resource, `None` if the
+    /// resource was registered but never used by any pass.
+    pub last_use_pass: Option<usize>,
+    /// Access type the resource is left in when the submission completes
+    /// (`Nothing` when never used).
+    pub end_access: vk_sync::AccessType,
+    /// Graph-created (transient) resource: its backing memory is recycled on
+    /// `reset`, so its end state only matters for in-graph aliasing, never to
+    /// the caller.
+    pub internal: bool,
+}
+
 /// A single transition required before a destination pass can run, derived from
 /// a read/write hazard on `resource_id` against an earlier producer or reader.
 #[derive(Clone, Debug)]
@@ -390,6 +416,11 @@ pub struct RenderGraph {
     /// At most one swapchain target per graph; remembered so the compile step can
     /// flag the present-target layout transition without scanning every resource.
     swapchain_resource_id: Option<u32>,
+    /// Per-resource end state (last use + final access) collected by `compile`,
+    /// keyed by resource id. See [`ResourceEndState`] — temp impl, exposed so a
+    /// later stage can sync against the graph with a barrier instead of a
+    /// device-wait-idle; nothing consumes it yet.
+    resource_end_states: HashMap<u32, ResourceEndState>,
     /// Lives across `compile` / `run` cycles so the same primary command buffer
     /// is re-recorded each frame rather than reallocated.
     cmd_buffer: CmdBuffer,
@@ -410,6 +441,7 @@ impl RenderGraph {
             virtual_resources: vec![],
             transient_resources: TransientResources::default(),
             swapchain_resource_id: None,
+            resource_end_states: HashMap::new(),
             cmd_buffer,
             core,
         })
@@ -427,6 +459,7 @@ impl RenderGraph {
         self.passes.clear();
         self.virtual_resources.clear();
         self.swapchain_resource_id = None;
+        self.resource_end_states.clear();
         self.transient_resources.free_internal_state();
     }
 
@@ -643,6 +676,29 @@ impl RenderGraph {
             }
         }
 
+        // Export the end state of every resource: the last pass that touches it
+        // and the access it is left in when the submission completes. Usages are
+        // recorded in pass-id order, so the last entry is the latest pass.
+        // TODO(temp impl): nothing consumes these yet — see `ResourceEndState`
+        // for the intended pass-to-pass cross-submission sync.
+        self.resource_end_states.clear();
+        for (res_id, info) in self.virtual_resources.iter().enumerate() {
+            let res_id = res_id as u32;
+            let internal = matches!(info, GraphResourceInfo::Created(_));
+            let (last_use_pass, end_access) = match resource_usages.get(&res_id).and_then(|u| u.usages.last()) {
+                Some((pass, access)) => (Some(*pass), access.access_type),
+                None => (None, vk_sync::AccessType::Nothing),
+            };
+            self.resource_end_states.insert(
+                res_id,
+                ResourceEndState {
+                    last_use_pass,
+                    end_access,
+                    internal,
+                },
+            );
+        }
+
         // Weakly-connected components via union-find over dependency edges. Any resource
         // shared by multiple passes already produced at least one hazard edge above, so
         // passes that share a resource end up in the same component.
@@ -760,6 +816,22 @@ impl RenderGraph {
         unsafe { device.end_command_buffer(raw_cb)? };
 
         Ok(())
+    }
+
+    /// End states of every resource as collected by the last [`Self::compile`],
+    /// keyed by resource id (cleared on [`Self::reset`]). For *imported*
+    /// resources this is the state the resource is left in when the graph's
+    /// submission completes — the caller can chain further GPU work with a
+    /// plain pipeline barrier from `end_access` instead of waiting the device
+    /// idle. Internal (created/transient) resources are reported too but die
+    /// with the next `reset`. Temp impl, see [`ResourceEndState`].
+    pub fn resource_end_states(&self) -> &HashMap<u32, ResourceEndState> {
+        &self.resource_end_states
+    }
+
+    /// End state of one resource by handle, if the graph compiled it.
+    pub fn end_state<R: Resource>(&self, handle: &Handle<R>) -> Option<&ResourceEndState> {
+        self.resource_end_states.get(&handle.raw.id)
     }
 
     /// Submit the recorded command buffer to the graphics queue, signaling

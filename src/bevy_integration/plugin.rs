@@ -14,8 +14,8 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, ScheduleLabel};
 use bevy_render::extract_plugin::ExtractPlugin;
 use bevy_render::{ExtractSchedule, Render, RenderApp, RenderSystems};
 
-use super::state::{ExtractedCamera, ExtractedScene, SunrayRenderState, SunrayScene, SunrayWindows};
-use super::systems::{ensure_renderer, extract_camera, extract_scene, extract_windows, render_frame};
+use super::state::{ExtractedCamera, ExtractedInstances, ExtractedScene, SunrayRenderState, SunrayScene, SunrayWindows};
+use super::systems::{ensure_renderer, extract_camera, extract_instances, extract_scene, extract_windows, render_frame};
 
 /// Add this instead of `bevy_render::RenderPlugin` (and without
 /// `PipelinedRenderingPlugin` — the renderer is `Rc`-based and runs
@@ -52,6 +52,7 @@ impl Plugin for SunrayRenderPlugin {
         render_app.init_resource::<SunrayWindows>();
         render_app.init_resource::<ExtractedCamera>();
         render_app.init_resource::<ExtractedScene>();
+        render_app.init_resource::<ExtractedInstances>();
 
         // The renderer itself is NonSend (Rc-based). Seed it with the chosen format.
         render_app.world_mut().insert_non_send(SunrayRenderState {
@@ -59,8 +60,11 @@ impl Plugin for SunrayRenderPlugin {
             ..Default::default()
         });
 
-        // Extraction: window handles, camera, scene request.
-        render_app.add_systems(ExtractSchedule, (extract_windows, extract_camera, extract_scene));
+        // Extraction: window handles, camera, scene request, entity instances.
+        render_app.add_systems(
+            ExtractSchedule,
+            (extract_windows, extract_camera, extract_scene, extract_instances),
+        );
 
         // Per-frame render work, NonSend → pinned to the main thread, chained.
         render_app.add_systems(Render, (ensure_renderer, render_frame).chain().in_set(RenderSystems::Render));

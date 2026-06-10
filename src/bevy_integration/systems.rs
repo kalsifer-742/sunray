@@ -11,13 +11,15 @@
 //! owns the swapchain and all present plumbing internally.
 
 use ash::vk;
+use bevy_asset::UntypedAssetId;
 use bevy_ecs::prelude::*;
 use bevy_render::Extract;
-use bevy_transform::components::Transform;
+use bevy_transform::components::{GlobalTransform, Transform};
 use bevy_window::{PrimaryWindow, RawHandleWrapper, Window};
 use nalgebra as na;
 
 use super::camera::{SunrayCamera, eye_target_fov};
+use super::instance::{SunrayInstance, transform_matrix_khr};
 use super::egui_paint::EguiPaint;
 use super::egui_support::ExtractedEgui;
 use super::state::*;
@@ -86,6 +88,22 @@ pub(crate) fn extract_scene(mut out: ResMut<ExtractedScene>, src: Extract<Res<Su
     }
 }
 
+/// Rebuild the per-frame instance list from every [`SunrayInstance`] entity in
+/// the main world. A full re-extract each frame: spawning, despawning, and
+/// transform edits are all reflected without any change tracking, matching the
+/// renderer's caller-owned per-frame instance-list contract.
+pub(crate) fn extract_instances(
+    mut out: ResMut<ExtractedInstances>,
+    query: Extract<Query<(&SunrayInstance, &GlobalTransform)>>,
+) {
+    out.instances.clear();
+    out.active = false;
+    for (instance, transform) in &query {
+        out.active = true;
+        out.instances.push((instance.blas_index, transform_matrix_khr(transform)));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Render world: lazy init + per-frame
 // ---------------------------------------------------------------------------
@@ -127,12 +145,14 @@ fn ensure_renderer_impl(state: &mut SunrayRenderState, windows: &SunrayWindows, 
             // Free the previous scene's assets so reloading doesn't leak.
             if let Some(prev_group) = state.scene_group.take() {
                 state.scene_instances.clear();
+                state.scene_blas_keys.clear();
                 state.renderer.as_mut().unwrap().unload_scene(prev_group)?;
             }
             match state.renderer.as_mut().unwrap().load_gltf(&path) {
                 Ok((group, instances)) => {
                     log::info!("sunray: loaded {} unique BLASes from {path}", instances.len());
                     state.scene_group = Some(group);
+                    state.scene_blas_keys = instances.iter().map(|(key, _)| *key).collect();
                     state.scene_instances = instances;
                 }
                 Err(e) => log::error!("sunray: load_gltf({path}) failed: {e}"),
@@ -189,12 +209,13 @@ fn resize_impl(state: &mut SunrayRenderState, size: (u32, u32)) -> SrResult<()> 
 pub(crate) fn render_frame(
     mut state: NonSendMut<SunrayRenderState>,
     camera: Res<ExtractedCamera>,
+    instances: Res<ExtractedInstances>,
     egui: Option<Res<ExtractedEgui>>,
 ) {
     if state.renderer.is_none() {
         return;
     }
-    if let Err(e) = render_frame_impl(&mut state, &camera, egui.as_deref()) {
+    if let Err(e) = render_frame_impl(&mut state, &camera, &instances, egui.as_deref()) {
         match e.get_source() {
             ErrorSource::Vulkan(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 log::warn!("sunray render_frame (out of date — will rebuild on resize): {e}");
@@ -204,15 +225,43 @@ pub(crate) fn render_frame(
     }
 }
 
-fn render_frame_impl(state: &mut SunrayRenderState, camera: &ExtractedCamera, egui: Option<&ExtractedEgui>) -> SrResult<()> {
+fn render_frame_impl(
+    state: &mut SunrayRenderState,
+    camera: &ExtractedCamera,
+    instances: &ExtractedInstances,
+    egui: Option<&ExtractedEgui>,
+) -> SrResult<()> {
     // Split borrows over the distinct fields we touch this frame.
     let SunrayRenderState {
         renderer,
         scene_instances,
+        scene_blas_keys,
         egui_paint,
         ..
     } = &mut *state;
     let renderer = renderer.as_mut().unwrap();
+
+    // Entity-driven instances replace the scene's baked instance list when any
+    // `SunrayInstance` entity exists: group the extracted (blas_index, transform)
+    // pairs by BLAS key into the per-frame list the renderer consumes.
+    let entity_instances: Vec<(UntypedAssetId, Vec<vk::TransformMatrixKHR>)>;
+    let frame_instances: &[(UntypedAssetId, Vec<vk::TransformMatrixKHR>)] = if instances.active {
+        let mut grouped: Vec<(UntypedAssetId, Vec<vk::TransformMatrixKHR>)> =
+            scene_blas_keys.iter().map(|&key| (key, Vec::new())).collect();
+        for (blas_index, transform) in &instances.instances {
+            match grouped.get_mut(*blas_index) {
+                Some((_, transforms)) => transforms.push(*transform),
+                None => log::warn!(
+                    "sunray: SunrayInstance.blas_index {blas_index} out of range ({} BLASes loaded); instance skipped",
+                    grouped.len()
+                ),
+            }
+        }
+        entity_instances = grouped;
+        &entity_instances
+    } else {
+        scene_instances
+    };
 
     // The camera is a per-frame input handed to the renderer — nothing is
     // stored on the renderer side.
@@ -249,9 +298,9 @@ fn render_frame_impl(state: &mut SunrayRenderState, camera: &ExtractedCamera, eg
                 frame.ready_to_present_sem,
             )
         };
-        renderer.render_to_swapchain_with(&cam, scene_instances, Some(&mut finalize))?;
+        renderer.render_to_swapchain_with(&cam, frame_instances, Some(&mut finalize))?;
     } else {
-        renderer.render_to_swapchain(&cam, scene_instances)?;
+        renderer.render_to_swapchain(&cam, frame_instances)?;
     }
 
     Ok(())

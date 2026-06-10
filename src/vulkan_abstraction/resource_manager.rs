@@ -12,6 +12,10 @@ const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
 //TODO handle growable
 
+/// Deferred work executed at the start of a specific absolute frame (see
+/// [`ResourceManager::start_of_frame`]).
+type FrameCallback<K> = Box<dyn FnOnce(&mut ResourceManager<K>) -> SrResult<()>>;
+
 /// The raw per-frame data resolved from the caller's `(key, transforms)`
 /// instance list. The renderer uploads these into CpuToGpu buffers created on
 /// the spot each frame (and deferred-freed through the end-of-frame
@@ -50,14 +54,25 @@ pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
     samplers: HashMap<SamplerDesc, vulkan_abstraction::Sampler>,
     default_sampler: vulkan_abstraction::Sampler,
 
-    //these are action to be done at the start or end of frame together with queued free slots for arena buffers
-    //TODO this is to be moved to start of frame stuff with proper callbacks
+    /// Pending staging→GPU copy regions for the arena buffers; flushed by the
+    /// callback `queue_copy` schedules for the upcoming frame.
     buffer_copies_queued: Vec<(vk::Buffer, vk::Buffer, vk::BufferCopy)>,
+    /// Deferred work keyed by the absolute frame at whose start it must run
+    /// (arena copy flushes, deferred slot frees). Drained by
+    /// [`Self::start_of_frame`] — nothing runs unconditionally every frame.
+    //TODO the copy flush should become a transfer pass recorded at the head of
+    //     the render graph instead of its own synchronous submit, and the
+    //     free callbacks should key off GPU completion (the frame timeline)
+    //     rather than the CPU-side frame counter + the renderer's wait-idle.
+    start_of_frame_callbacks: Vec<(u64, FrameCallback<K>)>,
 
     core: Rc<vulkan_abstraction::Core>,
 }
 
-impl<K: Hash + Eq + Copy> ResourceManager<K> {
+
+
+// `K: 'static` because deferred frame work is stored as boxed `FnOnce(&mut Self)`.
+impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
     pub fn new_empty(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         // SHADER_DEVICE_ADDRESS so the heap path can compute the buffer's BDA
         // when allocating a storage-buffer descriptor (`Buffer::storage_slot`
@@ -117,15 +132,45 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
             default_sampler,
 
             buffer_copies_queued: vec![],
+            start_of_frame_callbacks: vec![],
             core,
         })
     }
 
-    pub fn start_of_frame(&mut self) -> SrResult<()> {
-        //TODO this can be moved to a render pass at the start of each frame
-        self.meshes_info.process_pending_frees();
-        self.blas_emissive_triangles.process_pending_frees();
+    // ─── Start-of-frame scheduling ───────────────────────────────────────────
 
+    /// Absolute frame number the next rendered frame will carry.
+    fn next_frame(&self) -> u64 {
+        *self.core.absolute_frame_count.borrow() as u64 + 1
+    }
+
+    /// Schedule `callback` to run at the start of frame `frame` (or the first
+    /// `start_of_frame` call at/after it).
+    fn schedule_at_frame(&mut self, frame: u64, callback: impl FnOnce(&mut Self) -> SrResult<()> + 'static) {
+        self.start_of_frame_callbacks.push((frame, Box::new(callback)));
+    }
+
+    /// Run the deferred work due at the start of `upcoming_frame` (the frame
+    /// about to be rendered): arena copy flushes scheduled by asset loads and
+    /// slot-free processing scheduled by `remove`. A callback may schedule
+    /// further callbacks; ones due this same frame run before this returns.
+    pub fn start_of_frame(&mut self, upcoming_frame: u64) -> SrResult<()> {
+        let mut i = 0;
+        while i < self.start_of_frame_callbacks.len() {
+            if self.start_of_frame_callbacks[i].0 <= upcoming_frame {
+                let (_, callback) = self.start_of_frame_callbacks.remove(i);
+                callback(self)?;
+            } else {
+                i += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Flush the queued arena staging→GPU copies in one synchronous submit.
+    /// Runs as the start-of-frame callback `queue_copy` schedules.
+    //TODO this can be moved to a render pass at the start of each frame
+    fn flush_queued_copies(&mut self) -> SrResult<()> {
         if self.buffer_copies_queued.is_empty() {
             return Ok(());
         }
@@ -337,19 +382,38 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
     }
 
     /// Remove whatever asset `key` refers to (BLAS and/or image). Arena slots
-    /// are deferred-freed; the BLAS / image objects are dropped immediately, so
-    /// the caller must guarantee the GPU is idle.
+    /// are deferred-freed (reclaimed by a start-of-frame callback scheduled for
+    /// the frame at which no in-flight frame can still read them); the BLAS /
+    /// image objects are dropped immediately, so the caller must guarantee the
+    /// GPU is idle.
     pub fn remove(&mut self, key: &K) {
+        let mut any_freed = false;
         if let Some(slot) = self.mesh_info_slots.remove(key) {
             self.meshes_info.free_index(slot as usize);
+            any_freed = true;
         }
         if let Some(tri_slots) = self.emissive_triangle_slots.remove(key) {
             for slot in tri_slots {
                 self.blas_emissive_triangles.free_index(slot as usize);
+                any_freed = true;
             }
         }
         self.blases.remove(key);
         self.images.remove(key);
+
+        if any_freed {
+            // The arenas tag each free with the frame it happened on and only
+            // reclaim once MAX_FRAMES_IN_FLIGHT frames have passed, so running
+            // the callback at next_frame + MAX_FRAMES_IN_FLIGHT reclaims
+            // exactly these slots (re-checked per slot — running early or late
+            // is safe, just less precise).
+            let due = self.next_frame() + crate::MAX_FRAMES_IN_FLIGHT as u64;
+            self.schedule_at_frame(due, |rm| {
+                rm.meshes_info.process_pending_frees();
+                rm.blas_emissive_triangles.process_pending_frees();
+                Ok(())
+            });
+        }
     }
 
     /// Slot of the (deduplicated) sampler matching `desc`, creating it on first
@@ -382,6 +446,13 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
     // ─── Internal helpers ────────────────────────────────────────────────────
 
     fn queue_copy(&mut self, src: vk::Buffer, dst: vk::Buffer, region: vk::BufferCopy) {
+        // First copy since the last flush: schedule one flush callback for the
+        // upcoming frame (the flush drains the whole queue, so later copies
+        // queued before it runs piggyback on the same callback).
+        if self.buffer_copies_queued.is_empty() {
+            let due = self.next_frame();
+            self.schedule_at_frame(due, Self::flush_queued_copies);
+        }
         self.buffer_copies_queued.push((src, dst, region));
     }
 }

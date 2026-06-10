@@ -85,7 +85,7 @@ pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::S
 
 
 
-pub struct Renderer<K: Hash + Eq + Copy = ResourceKey> {
+pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
     resource_manager: vulkan_abstraction::ResourceManager<K>,
@@ -196,7 +196,9 @@ struct FrameGpuData {
     entity_transforms_slot: u32,
     emissive_indirection_slot: u32,
 }
-impl<K: Hash + Eq + Copy> Renderer<K> {
+// `K: 'static` propagated from `ResourceManager` (its deferred frame work is
+// stored as boxed callbacks).
+impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
         Self::new_impl(image_extent, image_format, &[], None)
     }
@@ -861,7 +863,7 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
             self.core.device().inner().device_wait_idle()?;
         }
 
-        self.resource_manager.start_of_frame()?;
+        self.resource_manager.start_of_frame(upcoming_frame)?;
 
         // ── Per-frame GPU data: CpuToGpu buffers created on the spot, local to
         // this frame. They're moved into an end-of-frame callback at the end of
@@ -1803,7 +1805,7 @@ const ENABLE_NVIDIA_AFTERMATH_VAR_NAME: &str = "ENABLE_NVIDIA_AFTERMATH"; // doe
 const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
 const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 
-impl<K: Hash + Eq + Copy> Drop for Renderer<K> {
+impl<K: Hash + Eq + Copy + 'static> Drop for Renderer<K> {
     fn drop(&mut self) {
         // Stop the frame watcher before any Vulkan object it touches (the
         // timeline semaphore, the device) can be destroyed by the field drops

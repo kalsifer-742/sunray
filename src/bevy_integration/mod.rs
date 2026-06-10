@@ -25,6 +25,7 @@
 mod camera;
 mod egui_paint;
 mod egui_support;
+mod instance;
 mod plugin;
 mod state;
 mod surface;
@@ -32,8 +33,9 @@ mod systems;
 
 pub use camera::SunrayCamera;
 pub use egui_support::{EguiContext, EguiFrameOutput, ExtractedEgui};
+pub use instance::SunrayInstance;
 pub use plugin::{SunrayEguiPlugin, SunrayRenderPlugin};
-pub use state::{ExtractedCamera, ExtractedScene, SunrayRenderState, SunrayScene, SunrayWindows};
+pub use state::{ExtractedCamera, ExtractedInstances, ExtractedScene, SunrayRenderState, SunrayScene, SunrayWindows};
 
 /// Marker type whose `TypeId` brands renderer-generated asset ids, keeping
 /// them distinct from ids of real Bevy assets.
