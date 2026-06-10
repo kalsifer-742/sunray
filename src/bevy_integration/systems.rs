@@ -6,11 +6,9 @@
 //! Render systems (run in `Render` / [`bevy_render::RenderSystems::Render`],
 //! chained, NonSend → main thread): [`ensure_renderer`] then [`render_frame`].
 //!
-//! The per-frame logic in [`render_frame`] mirrors `examples/window/main.rs`'s
-//! `draw()`: wait the in-flight fence, acquire a swapchain image, push the
-//! camera, `render_to_image`, flip the image to `PRESENT_SRC`, present.
-
-use std::rc::Rc;
+//! The per-frame logic in [`render_frame`] hands the extracted camera and the
+//! scene's instance list to [`Renderer::render_to_swapchain`] — the renderer
+//! owns the swapchain and all present plumbing internally.
 
 use ash::vk;
 use bevy_ecs::prelude::*;
@@ -24,11 +22,9 @@ use super::egui_paint::EguiPaint;
 use super::egui_support::ExtractedEgui;
 use super::state::*;
 use super::surface;
-use crate::vulkan_abstraction::image::swapchain::{Surface, Swapchain};
 use crate::camera::Camera;
 use crate::error::{ErrorSource, SrResult};
-use crate::vulkan_abstraction::{self, CmdBuffer, Core, Semaphore};
-use crate::{MAX_FRAMES_IN_FLIGHT, Renderer};
+use crate::{Renderer, SwapchainFrame};
 
 // ---------------------------------------------------------------------------
 // Extract (main world -> render world)
@@ -124,18 +120,22 @@ fn ensure_renderer_impl(state: &mut SunrayRenderState, windows: &SunrayWindows, 
         }
     }
 
-    // (Re)load the scene once the renderer exists.
+    // (Re)load the scene once the renderer exists. The instance list the load
+    // returns is kept here (caller side) and passed to the renderer each frame.
     if state.renderer.is_some() && scene.generation != state.loaded_scene_generation {
         if let Some(path) = scene.gltf_path.clone() {
-            match state.renderer.as_mut().unwrap().load_gltf(&path) {
-                Ok(ids) => log::info!("sunray: loaded {} entities from {path}", ids.len()),
-                Err(e) => log::error!("sunray: load_gltf({path}) failed: {e}"),
+            // Free the previous scene's assets so reloading doesn't leak.
+            if let Some(prev_group) = state.scene_group.take() {
+                state.scene_instances.clear();
+                state.renderer.as_mut().unwrap().unload_scene(prev_group)?;
             }
-            // load_gltf() clears image-dependent data, which drops the blit
-            // CmdBuffers whose fences we stored; null them so render_frame
-            // doesn't wait on destroyed handles.
-            for f in state.img_rendered_fences.iter_mut() {
-                *f = vk::Fence::null();
+            match state.renderer.as_mut().unwrap().load_gltf(&path) {
+                Ok((group, instances)) => {
+                    log::info!("sunray: loaded {} unique BLASes from {path}", instances.len());
+                    state.scene_group = Some(group);
+                    state.scene_instances = instances;
+                }
+                Err(e) => log::error!("sunray: load_gltf({path}) failed: {e}"),
             }
         }
         state.loaded_scene_generation = scene.generation;
@@ -166,71 +166,20 @@ fn create_renderer_for_window(
         state.image_format
     };
 
-    let (mut renderer, surface) = Renderer::new_with_surface(size, format, instance_exts, &create_surface)?;
-    let surface = Surface::new(renderer.core().entry(), renderer.core().instance(), surface);
-    let swapchain = Swapchain::new(Rc::clone(renderer.core()), surface.inner(), size)?;
-
-    renderer.build_image_dependent_data(swapchain.images())?;
-
-    let core = renderer.core().clone();
-    let img_acquired_sems = (0..MAX_FRAMES_IN_FLIGHT)
-        .map(|_| Semaphore::new(core.clone()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let img_rendered_fences = vec![vk::Fence::null(); MAX_FRAMES_IN_FLIGHT];
-    let ready_to_present_sems = swapchain
-        .images()
-        .iter()
-        .map(|_| Semaphore::new(core.clone()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let present_barrier_cmd_bufs = build_present_barrier_cmd_bufs(&core, swapchain.images())?;
+    // The renderer creates and owns the surface + swapchain internally.
+    let renderer = Renderer::new_with_surface(size, format, instance_exts, &create_surface)?;
 
     state.renderer = Some(renderer);
-    state.surface = Some(surface);
-    state.swapchain = Some(swapchain);
     state.owner = Some(entity);
     state.image_format = format;
-    state.img_acquired_sems = img_acquired_sems;
-    state.img_rendered_fences = img_rendered_fences;
-    state.ready_to_present_sems = ready_to_present_sems;
-    state.present_barrier_cmd_bufs = present_barrier_cmd_bufs;
 
     Ok(())
 }
 
 fn resize_impl(state: &mut SunrayRenderState, size: (u32, u32)) -> SrResult<()> {
-    state.renderer.as_mut().unwrap().resize(size)?;
-
-    let core = state.renderer.as_ref().unwrap().core().clone();
-    let surface_khr = state.surface.as_ref().unwrap().inner();
-
-    // Refresh cached surface caps, then decide if the swapchain extent changed.
-    {
-        let surface = state.surface.as_ref().unwrap();
-        core.device()
-            .update_surface_support_details(surface.inner(), surface.instance());
-    }
-    let new_extent = Swapchain::get_extent(size, &core.device().surface_support_details());
-    if state.swapchain.as_ref().unwrap().extent() == new_extent {
-        return Ok(());
-    }
-
-    // The present-barrier CmdBuffers reference the old images; null their fences
-    // before rebuilding.
-    for f in state.img_rendered_fences.iter_mut() {
-        *f = vk::Fence::null();
-    }
-
-    state.swapchain.as_mut().unwrap().rebuild(surface_khr, size)?;
-
-    let images = state.swapchain.as_ref().unwrap().images().to_vec();
-    state.present_barrier_cmd_bufs = build_present_barrier_cmd_bufs(&core, &images)?;
-    state.ready_to_present_sems = images
-        .iter()
-        .map(|_| Semaphore::new(core.clone()))
-        .collect::<Result<Vec<_>, _>>()?;
-    state.renderer.as_mut().unwrap().build_image_dependent_data(&images)?;
-
-    Ok(())
+    // The renderer resizes its internal images and rebuilds its swapchain
+    // (and everything tied to the swapchain images) itself.
+    state.renderer.as_mut().unwrap().resize(size)
 }
 
 /// Acquire image, push camera, render, paint egui (if enabled), present.
@@ -259,127 +208,51 @@ fn render_frame_impl(state: &mut SunrayRenderState, camera: &ExtractedCamera, eg
     // Split borrows over the distinct fields we touch this frame.
     let SunrayRenderState {
         renderer,
-        swapchain,
-        img_acquired_sems,
-        img_rendered_fences,
-        ready_to_present_sems,
-        present_barrier_cmd_bufs,
-        frame_count,
+        scene_instances,
         egui_paint,
         ..
     } = &mut *state;
     let renderer = renderer.as_mut().unwrap();
-    let swapchain = swapchain.as_ref().unwrap();
 
-    let core = renderer.core().clone();
-
-    if camera.present {
-        let cam = Camera::new(
+    // The camera is a per-frame input handed to the renderer — nothing is
+    // stored on the renderer side.
+    let cam = if camera.present {
+        Camera::new(
             na::Point3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
             na::Point3::new(camera.target[0], camera.target[1], camera.target[2]),
             camera.fov_y_degrees,
-        );
-        renderer.set_camera(cam)?;
-    }
-    
-    
+        )
+    } else {
+        Camera::default()
+    };
 
-    let frame_index = (*frame_count as usize) % MAX_FRAMES_IN_FLIGHT;
-    let img_acquired_sem = img_acquired_sems[frame_index].inner();
-    let img_rendered_fence = img_rendered_fences[frame_index];
-    vulkan_abstraction::wait_fence(core.device(), img_rendered_fence)?;
-
-    let img_index = acquire_next_image(swapchain, img_acquired_sem)?;
-    let swapchain_image = swapchain.images()[img_index];
-
-    img_rendered_fences[frame_index] = renderer.render_to_image(swapchain_image, img_acquired_sem)?;
-
-    let ready_sem = ready_to_present_sems[img_index].inner();
-
-    // Finalize the swapchain image -> PRESENT_SRC, signaling `ready_sem`. Both
-    // paths run on the graphics queue *after* render_to_image's blit (same-queue
-    // submission order + the layout barrier provide the dependency on the blit).
     if let Some(extracted) = egui {
         // Lazily build the egui GPU backend now that the swapchain (and its
         // color format) exists. The egui pass also performs the PRESENT_SRC
-        // transition, so it replaces the plain present barrier.
+        // transition, so it replaces the renderer's plain present barrier.
         if egui_paint.is_none() {
-            *egui_paint = Some(EguiPaint::new(core.clone(), swapchain.format(), swapchain.images().len())?);
+            let swapchain = renderer.swapchain().unwrap();
+            *egui_paint = Some(EguiPaint::new(
+                renderer.core().clone(),
+                swapchain.format(),
+                swapchain.images().len(),
+            )?);
         }
-        let image_view = swapchain.image_views()[img_index];
-        let extent = swapchain.extent();
-        egui_paint
-            .as_mut()
-            .unwrap()
-            .paint_frame(swapchain_image, image_view, extent, img_index, extracted, ready_sem)?;
+        let paint = egui_paint.as_mut().unwrap();
+        let mut finalize = |frame: &SwapchainFrame| -> SrResult<()> {
+            paint.paint_frame(
+                frame.image,
+                frame.image_view,
+                frame.extent,
+                frame.image_index,
+                extracted,
+                frame.ready_to_present_sem,
+            )
+        };
+        renderer.render_to_swapchain_with(&cam, scene_instances, Some(&mut finalize))?;
     } else {
-        // No egui: the pre-recorded GENERAL -> PRESENT_SRC barrier.
-        let barrier_fence = present_barrier_cmd_bufs[img_index].fence_mut().submit()?;
-        let barrier_cmd_inner = present_barrier_cmd_bufs[img_index].inner();
-        core.graphics_queue()
-            .submit_async(barrier_cmd_inner, &[], &[], &[ready_sem], barrier_fence)?;
+        renderer.render_to_swapchain(&cam, scene_instances)?;
     }
 
-    present(&core, swapchain, img_index, ready_sem)?;
-
-    *frame_count += 1;
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn acquire_next_image(swapchain: &Swapchain, signal_sem: vk::Semaphore) -> SrResult<usize> {
-    let (image_index, suboptimal) = unsafe {
-        swapchain
-            .device()
-            .acquire_next_image(swapchain.inner(), u64::MAX, signal_sem, vk::Fence::null())
-    }?;
-    if suboptimal {
-        log::warn!("VkAcquireNextImageKHR: swapchain suboptimal for the surface");
-    }
-    Ok(image_index as usize)
-}
-
-fn present(core: &Rc<Core>, swapchain: &Swapchain, img_index: usize, wait_sem: vk::Semaphore) -> SrResult<()> {
-    let swapchains = [swapchain.inner()];
-    let image_indices = [img_index as u32];
-    let wait_semaphores = [wait_sem];
-    let present_info = vk::PresentInfoKHR::default()
-        .wait_semaphores(&wait_semaphores)
-        .swapchains(&swapchains)
-        .image_indices(&image_indices);
-
-    let queue = core.graphics_queue().inner();
-    unsafe { swapchain.device().queue_present(queue, &present_info) }?;
-    Ok(())
-}
-
-/// One pre-recorded GENERAL -> PRESENT_SRC barrier command buffer per swapchain
-/// image (matches `examples/window/main.rs`).
-fn build_present_barrier_cmd_bufs(core: &Rc<Core>, images: &[vk::Image]) -> SrResult<Vec<CmdBuffer>> {
-    images
-        .iter()
-        .map(|image| -> SrResult<CmdBuffer> {
-            let cmd_buf = CmdBuffer::new(Rc::clone(core))?;
-            unsafe {
-                let begin_info = vk::CommandBufferBeginInfo::default();
-                core.device().inner().begin_command_buffer(cmd_buf.inner(), &begin_info)?;
-                vulkan_abstraction::cmd_image_memory_barrier(
-                    core,
-                    cmd_buf.inner(),
-                    *image,
-                    vk::PipelineStageFlags2::TRANSFER,
-                    vk::PipelineStageFlags2::ALL_COMMANDS,
-                    vk::AccessFlags2::TRANSFER_WRITE,
-                    vk::AccessFlags2::empty(),
-                    vk::ImageLayout::GENERAL,
-                    vk::ImageLayout::PRESENT_SRC_KHR,
-                );
-                core.device().inner().end_command_buffer(cmd_buf.inner())?;
-            }
-            Ok(cmd_buf)
-        })
-        .collect()
 }

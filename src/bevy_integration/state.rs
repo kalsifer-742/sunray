@@ -14,11 +14,11 @@
 use std::collections::HashMap;
 
 use ash::vk;
+use bevy_asset::UntypedAssetId;
 use bevy_ecs::prelude::*;
 use bevy_window::RawHandleWrapper;
 
-use crate::vulkan_abstraction::image::swapchain::{Surface, Swapchain};
-use crate::{Renderer, vulkan_abstraction};
+use crate::Renderer;
 
 /// Main-world resource: which scene to load. Set [`gltf_path`](Self::request)
 /// and the render world will (re)load it when the generation changes.
@@ -78,23 +78,21 @@ pub struct ExtractedScene {
     pub generation: u64,
 }
 
-/// The renderer + per-window GPU objects. **NonSend** (see module docs).
+/// The renderer (which owns its surface + swapchain internally). **NonSend**
+/// (see module docs).
 #[derive(Default)]
 pub struct SunrayRenderState {
-    pub renderer: Option<Renderer>,
-    pub surface: Option<Surface>,
-    pub swapchain: Option<Swapchain>,
-    /// Window entity that owns the renderer/surface/swapchain (single-window).
+    pub renderer: Option<Renderer<UntypedAssetId>>,
+    /// Window entity that owns the renderer (single-window).
     pub owner: Option<Entity>,
 
-    // Per-frame synchronization, mirroring `examples/window/main.rs`.
-    pub img_acquired_sems: Vec<vulkan_abstraction::Semaphore>,
-    pub img_rendered_fences: Vec<vk::Fence>,
-    pub ready_to_present_sems: Vec<vulkan_abstraction::Semaphore>,
-    /// One pre-recorded GENERAL -> PRESENT_SRC barrier per swapchain image.
-    pub present_barrier_cmd_bufs: Vec<vulkan_abstraction::CmdBuffer>,
+    /// Per-frame instance list of the currently loaded scene, returned by
+    /// `load_gltf` and handed to `render_to_swapchain` each frame. Lives here
+    /// (the caller side) — the renderer retains nothing about instances.
+    pub scene_instances: Vec<(UntypedAssetId, Vec<vk::TransformMatrixKHR>)>,
+    /// Asset group of the currently loaded scene (for bulk unload on reload).
+    pub scene_group: Option<u64>,
 
-    pub frame_count: u64,
     pub loaded_scene_generation: u64,
     pub image_format: vk::Format,
 

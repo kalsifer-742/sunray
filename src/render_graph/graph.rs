@@ -14,6 +14,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use vk_sync_fork as vk_sync;
 
+
+
 /// Pick the right `vk::ImageAspectFlags` for a given format. Used when building
 /// image subresource ranges for layout transitions in `emit_barriers`.
 fn aspect_for(format: vk::Format) -> vk::ImageAspectFlags {
@@ -395,6 +397,7 @@ pub struct RenderGraph {
     /// having to re-thread `Core` through every call.
     core: Rc<Core>,
 }
+//TODO per frame global data uploaded each frame like transforms and the camera, these can then live in the descriptor heap based on kajiya DYNAMIC_CONSTANTS_BUFFER
 //TODO Reintroduce the typestate of the render graph,as it is intended to work like this, the setup phase is where you can add stuff and so on, when you want to run it you compile it once done than you can return to the setup phase, this should empty out reset the cmdbuffer and allow to add again resources, this should make sure the resources in use are
 //   not overwritten though while still allowing new resources to be added,also while on a built state it should be able to handle n frames in flight with internal sync to minimize the wait idle time and allow multiple frame to be run concurrently, this
 impl RenderGraph {

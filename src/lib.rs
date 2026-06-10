@@ -20,6 +20,7 @@ pub mod bevy_integration;
 pub use camera::*;
 use error::*;
 pub use scene::*;
+pub use crate::vulkan_abstraction::DiagnosticTool;
 
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 use std::hash::Hash;
@@ -27,8 +28,10 @@ use crate::render_graph::graph::{AnyRenderPass, BufferDesc, Handle, ImageDesc, R
 use crate::render_graph::pass_builder::{
     ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
 };
-use crate::utils::{env_var_as_bool, na_mat4_to_vk_transform};
+use crate::utils::env_var_as_bool;
+use crate::vulkan_abstraction::image::swapchain::{Surface, Swapchain};
 use crate::vulkan_abstraction::{PostprocessPushConstant, Reservoir, ReservoirGI};
+use crate::vulkan_abstraction::swapchain::{SwapchainData, SwapchainFrame};
 use ash::vk;
 use vk_sync_fork as vk_sync;
 
@@ -42,19 +45,14 @@ pub const EXPOSURE: f32 = 1.0;
 /// `ResourceManager`. `group` ties together every asset created by one
 /// `load_scene` call so a whole scene can be deallocated in bulk (see
 /// [`Renderer::unload_scene`]); `index` is unique within the group.
+///
+/// Scene loading generates these and converts them into the renderer's actual
+/// key type via `K: From<ResourceKey>` — use `ResourceKey` itself when no
+/// third party (e.g. Bevy's asset system) supplies its own ids.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ResourceKey {
     pub group: u64,
     pub index: u64,
-}
-
-/// CPU-side retained entity backing the deprecated entity API: each one turns
-/// into a per-frame `(ResourceKey, transform)` instance when `render_to_image`
-/// collects the instance list. New code should pass instances to
-/// [`Renderer::render`] directly instead.
-struct RetainedEntity {
-    blas_key: ResourceKey,
-    transform: vk::TransformMatrixKHR,
 }
 
 /// The number of concurrent frames that are processed (both by CPU and GPU).
@@ -68,8 +66,9 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 //TODO add a list of callbacks to call at the end of frames for cleanup or at start for setup
 //TODO deferred deallocation for buffers and acceleration structures
-//TODO generic over the key
-//TODO the renderer should internalize the swapchain maybe
+//TODO validate max_frame_in_flight against the swapchain
+
+
 /// Per-output-image data. The render graph now owns the intermediate G-buffer /
 /// RT-output images as internal (transient) resources, so the only image that
 /// still lives here is the post-process result, which the external blit copies
@@ -79,28 +78,24 @@ struct ImageDependentData {
     postprocess_result_image: Arc<vulkan_abstraction::Image>,
 }
 
+
 pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::SurfaceKHR>;
 
-pub use crate::vulkan_abstraction::DiagnosticTool;
 
 
-pub struct Renderer<ResourceKey : Hash + Eq + Copy> {
+pub struct Renderer<K: Hash + Eq + Copy = ResourceKey> {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
-    resource_manager: vulkan_abstraction::ResourceManager<ResourceKey>,
+    resource_manager: vulkan_abstraction::ResourceManager<K>,
 
+    /// Swapchain + present plumbing, present when constructed with a surface
+    /// (`new_with_surface`) — given at startup, owned internally.
+    swapchain_data: Option<SwapchainData>,
 
-
-    /// Retained entities backing the deprecated entity API (collected into the
-    /// per-frame instance list by `render_to_image`).
-    entities: HashMap<u64, RetainedEntity>,
-    next_entity_id: u64,
     /// Next `ResourceKey::group`; one group per `load_scene` call.
     next_group: u64,
     /// Group → every key created for that scene load, for bulk deallocation.
-    scene_groups: HashMap<u64, Vec<ResourceKey>>,
-    /// Camera stored by the deprecated `set_camera`, used by `render_to_image`.
-    camera: Camera,
+    scene_groups: HashMap<u64, Vec<K>>,
 
     // Heap-mode ray-tracing SPIR-V (one blob per stage).
     // `RaytracingRenderPassBuilder::generate_render`, which interns the pipeline
@@ -172,21 +167,21 @@ pub struct Renderer<ResourceKey : Hash + Eq + Copy> {
 
 
 }
-impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
+impl<K: Hash + Eq + Copy> Renderer<K> {
     pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
-        Ok(Self::new_impl(image_extent, image_format, &[], None)?.0)
+        Self::new_impl(image_extent, image_format, &[], None)
     }
 
     // It's necessary to pass a fn to create the surface, because it depends on instance, device depends on it (if present), and both device and
-    // instance are created and owned inside Renderer (in Core) so this was deemed a good approach to allow the user to build their own surface
+    // instance are created and owned inside Renderer (in Core) so this was deemed a good approach to allow the user to build their own surface.
+    // The swapchain for that surface is created here too and kept internal — drive it with `render_to_swapchain`.
     pub fn new_with_surface(
         image_extent: (u32, u32),
         image_format: vk::Format,
         instance_exts: &'static [*const i8],
         create_surface: &CreateSurfaceFn,
-    ) -> SrResult<(Self, vk::SurfaceKHR)> {
-        let (r, s) = Self::new_impl(image_extent, image_format, instance_exts, Some(create_surface))?;
-        Ok((r, s.unwrap()))
+    ) -> SrResult<Self> {
+        Self::new_impl(image_extent, image_format, instance_exts, Some(create_surface))
     }
 
     fn new_impl(
@@ -194,7 +189,7 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
         image_format: vk::Format,
         instance_exts: &'static [*const i8],
         create_surface: Option<&CreateSurfaceFn>,
-    ) -> SrResult<(Self, Option<vk::SurfaceKHR>)> {
+    ) -> SrResult<Self> {
         let with_validation_layer = env_var_as_bool(ENABLE_VALIDATION_LAYER_ENV_VAR).unwrap_or(IS_DEBUG_BUILD);
         let with_gpuav = env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
         // Map the ENABLE_NVIDIA_AFTERMATH env var (legacy) onto the new
@@ -217,6 +212,7 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
 
         let core = Rc::new(core);
 
+        let window_extent = image_extent;
         let image_extent = utils::tuple_to_extent3d(image_extent);
 
         //must be filled by loading a scene
@@ -289,17 +285,22 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
         let render_graph = RenderGraph::new(Rc::clone(&core))?;
         let render_graph_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(core.device()))?;
 
+        // The swapchain abstraction is owned internally and built at startup
+        // from the surface the caller's closure created.
+        let swapchain_data = match surface {
+            Some(surface_khr) => {
+                let surface = Surface::new(core.entry(), core.instance(), surface_khr);
+                Some(SwapchainData::new(&core, surface, window_extent)?)
+            }
+            None => None,
+        };
 
-
-        Ok((
-            Self {
+        let mut renderer = Self {
                 image_dependant_data,
 
-                entities: HashMap::new(),
-                next_entity_id: 0,
+                swapchain_data,
                 next_group: 0,
                 scene_groups: HashMap::new(),
-                camera: Camera::default(),
 
                 render_graph,
                 render_graph_fence,
@@ -338,9 +339,16 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
                 start_of_frame_callbacks: vec![],
                 resize_callbacks: vec![],
                 end_of_frame_callbacks: vec![],
-            },
-            surface,
-        ))
+        };
+
+        // The pre-recorded blit into each swapchain image must exist before the
+        // first `render_to_swapchain` call.
+        if let Some(sc) = &renderer.swapchain_data {
+            let images = sc.swapchain.images().to_vec();
+            renderer.build_image_dependent_data(&images)?;
+        }
+
+        Ok(renderer)
     }
 
     /// Allocate a ping-pong pair of GPU-only buffers holding `num_pixels`
@@ -387,8 +395,14 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
             "ReSTIR GI Reservoir Buffer B",
         )
     }
-    //TODO this needs to be changes to a subscription based approach where all the necessary methods to recreate the necessary image dependant data are rebuilt 
+    //TODO this needs to be changes to a subscription based approach where all the necessary methods to recreate the necessary image dependant data are rebuilt
     pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
+        self.resize_internal_images(image_extent)?;
+        self.resize_swapchain(image_extent)?;
+        Ok(())
+    }
+
+    fn resize_internal_images(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
         let new_extent = utils::tuple_to_extent3d(image_extent);
         if new_extent == self.image_extent {
             return Ok(());
@@ -472,8 +486,48 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
         Ok(())
     }
 
+    /// Rebuild the internal swapchain (and everything tied to its images) when
+    /// the surface extent changed. No-op without a surface.
+    fn resize_swapchain(&mut self, window_extent: (u32, u32)) -> SrResult<()> {
+        let Some(sc) = self.swapchain_data.as_mut() else {
+            return Ok(());
+        };
+
+        self.core
+            .device()
+            .update_surface_support_details(sc.surface.inner(), sc.surface.instance());
+        let new_extent = Swapchain::get_extent(window_extent, &self.core.device().surface_support_details());
+        if sc.swapchain.extent() == new_extent {
+            return Ok(());
+        }
+
+        unsafe { self.core.device().inner().device_wait_idle() }?;
+
+        let surface_khr = sc.surface.inner();
+        sc.swapchain.rebuild(surface_khr, window_extent)?;
+        let (present_barrier_cmd_bufs, ready_to_present_sems) = SwapchainData::build_per_image_objects(&self.core, &sc.swapchain)?;
+        sc.present_barrier_cmd_bufs = present_barrier_cmd_bufs;
+        sc.ready_to_present_sems = ready_to_present_sems;
+        let images = sc.swapchain.images().to_vec();
+
+        // The blit command buffers (and their fences, which the in-flight slots
+        // hold) reference the old images.
+        self.clear_image_dependent_data();
+        self.build_image_dependent_data(&images)?;
+
+        Ok(())
+    }
+
     pub fn clear_image_dependent_data(&mut self) {
         self.image_dependant_data.clear();
+        // The in-flight fence slots hold the blit fences that were just
+        // destroyed with their CmdBuffers; null them so the next
+        // `render_to_swapchain` doesn't wait on stale handles.
+        if let Some(sc) = self.swapchain_data.as_mut() {
+            for fence in sc.img_rendered_fences.iter_mut() {
+                *fence = vk::Fence::null();
+            }
+        }
     }
 
     pub fn build_image_dependent_data(&mut self, images: &[vk::Image]) -> SrResult<()> {
@@ -569,25 +623,27 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
         Ok(())
     }
 
-    pub fn load_gltf(&mut self, path: &str) -> SrResult<Vec<vulkan_abstraction::EntityId>> {
+    /// Load a glTF file's default scene. See [`Self::load_scene`] for the
+    /// return contract.
+    pub fn load_gltf(&mut self, path: &str) -> SrResult<(u64, Vec<(K, Vec<vk::TransformMatrixKHR>)>)>
+    where
+        K: From<ResourceKey>,
+    {
         let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
         let (default_scene, scene_data) = gltf.create_default_scene()?;
         self.load_scene(&default_scene, scene_data)
     }
 
-    pub fn load_scene(&mut self, scene: &Scene, scene_data: SceneData) -> SrResult<Vec<vulkan_abstraction::EntityId>> {
-        Ok(self.load_scene_grouped(scene, scene_data)?.1)
-    }
-
-    /// Load a scene's assets into the resource manager and spawn one retained
-    /// entity per scene instance. Returns the asset group id (usable with
-    /// [`Self::unload_scene`] to free everything this call created in bulk)
-    /// alongside the spawned entity ids.
-    pub fn load_scene_grouped(
-        &mut self,
-        scene: &Scene,
-        scene_data: SceneData,
-    ) -> SrResult<(u64, Vec<vulkan_abstraction::EntityId>)> {
+    /// Load a scene's assets into the resource manager. Returns the asset
+    /// group index (usable with [`Self::unload_scene`] to free everything this
+    /// call created in bulk) and the scene's instances as the
+    /// `(blas key, world transforms)` vector. The instance list is *not*
+    /// retained anywhere — the caller owns it, mutates it, and passes it to
+    /// [`Self::render`] / [`Self::render_to_swapchain`] every frame.
+    pub fn load_scene(&mut self, scene: &Scene, scene_data: SceneData) -> SrResult<(u64, Vec<(K, Vec<vk::TransformMatrixKHR>)>)>
+    where
+        K: From<ResourceKey>,
+    {
         // Wait for all in-flight GPU work before invalidating descriptor sets that reference
         // buffers which will be reallocated (e.g. emissive_indirection_gpu).
         unsafe { self.core.device().inner().device_wait_idle() }?;
@@ -603,13 +659,13 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
             images,
         } = scene.load_into_gpu(&self.core, scene_data)?;
 
-        let mut group_keys: Vec<ResourceKey> = Vec::new();
+        let mut group_keys: Vec<K> = Vec::new();
         let mut next_index = 0u64;
         let mut make_key = || {
-            let key = ResourceKey {
+            let key = K::from(ResourceKey {
                 group,
                 index: next_index,
-            };
+            });
             next_index += 1;
             group_keys.push(key);
             key
@@ -621,104 +677,32 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
         drop(make_key);
         self.scene_groups.insert(group, group_keys);
 
-        let mut entity_ids = Vec::with_capacity(instances.len());
+        // Group the per-instance transforms by BLAS key, preserving order.
+        let mut grouped: Vec<(K, Vec<vk::TransformMatrixKHR>)> = blas_keys.iter().map(|&k| (k, Vec::new())).collect();
         for (blas_index, transform) in instances {
-            let id = self.next_entity_id;
-            self.next_entity_id += 1;
-            self.entities.insert(
-                id,
-                RetainedEntity {
-                    blas_key: blas_keys[blas_index],
-                    transform,
-                },
-            );
-            entity_ids.push(vulkan_abstraction::EntityId(id));
+            grouped[blas_index].1.push(transform);
         }
 
-        self.image_dependant_data = HashMap::new();
-        Ok((group, entity_ids))
+        self.clear_image_dependent_data();
+        if let Some(sc) = &self.swapchain_data {
+            let images = sc.swapchain.images().to_vec();
+            self.build_image_dependent_data(&images)?;
+        }
+
+        Ok((group, grouped))
     }
 
-    /// Free every asset created by the `load_scene_grouped` call that returned
-    /// `group`, along with the retained entities spawned from it. Allows
-    /// loading a scene repeatedly without leaking GPU memory.
+    /// Free every asset created by the `load_scene` call that returned `group`.
+    /// Allows loading a scene repeatedly without leaking GPU memory. Instances
+    /// referencing the freed keys must no longer be passed to `render`.
     pub fn unload_scene(&mut self, group: u64) -> SrResult<()> {
         unsafe { self.core.device().inner().device_wait_idle() }?;
         if let Some(keys) = self.scene_groups.remove(&group) {
-            self.entities.retain(|_, entity| entity.blas_key.group != group);
             for key in &keys {
                 self.resource_manager.remove(key);
             }
         }
         Ok(())
-    }
-
-    /// Group the retained entities into the per-frame `(blas key, transforms)`
-    /// instance list `ResourceManager::prepare_frame` consumes.
-    fn collect_retained_instances(&self) -> Vec<(ResourceKey, Vec<vk::TransformMatrixKHR>)> {
-        let mut by_key: HashMap<ResourceKey, Vec<vk::TransformMatrixKHR>> = HashMap::new();
-        for entity in self.entities.values() {
-            by_key.entry(entity.blas_key).or_default().push(entity.transform);
-        }
-        by_key.into_iter().collect()
-    }
-
-    /// Spawn a new retained instance sharing the BLAS of `src` with a new transform.
-    /// The instance shows up in the next frame — the TLAS is rebuilt per frame.
-    #[deprecated(note = "pass instances to `render` instead")]
-    pub fn duplicate_entity(
-        &mut self,
-        src: vulkan_abstraction::EntityId,
-        transform: nalgebra::Matrix4<f32>,
-    ) -> SrResult<vulkan_abstraction::EntityId> {
-        let blas_key = self
-            .entities
-            .get(&src.0)
-            .map(|e| e.blas_key)
-            .ok_or_else(|| SrError::new_custom(format!("duplicate_entity: no entity {}", src.0)))?;
-
-        let id = self.next_entity_id;
-        self.next_entity_id += 1;
-        self.entities.insert(
-            id,
-            RetainedEntity {
-                blas_key,
-                transform: na_mat4_to_vk_transform(transform),
-            },
-        );
-        Ok(vulkan_abstraction::EntityId(id))
-    }
-
-    /// Remove a retained entity from the scene (effective from the next frame).
-    #[deprecated(note = "pass instances to `render` instead")]
-    pub fn destroy_entity(&mut self, id: vulkan_abstraction::EntityId) -> SrResult<()> {
-        self.entities.remove(&id.0);
-        Ok(())
-    }
-
-    /// Update a retained entity's world transform (effective from the next frame).
-    #[deprecated(note = "pass instances to `render` instead")]
-    pub fn set_entity_transform(&mut self, id: vulkan_abstraction::EntityId, transform: nalgebra::Matrix4<f32>) -> SrResult<()> {
-        if let Some(entity) = self.entities.get_mut(&id.0) {
-            entity.transform = na_mat4_to_vk_transform(transform);
-        }
-        Ok(())
-    }
-
-    /// Store the camera `render_to_image` renders with. The matrices are
-    /// uploaded per frame inside `render`.
-    #[deprecated(note = "pass the camera to `render` instead")]
-    pub fn set_camera(&mut self, camera: crate::Camera) -> SrResult<()> {
-        self.camera = camera;
-        Ok(())
-    }
-
-    /// Render to dst_image with the camera stored by `set_camera` and the
-    /// retained entities as the instance list. See [`Self::render`].
-    pub fn render_to_image(&mut self, dst_image: vk::Image, wait_sem: vk::Semaphore) -> SrResult<vk::Fence> {
-        let camera = self.camera;
-        let instances = self.collect_retained_instances();
-        self.render(dst_image, wait_sem, &camera, &instances)
     }
 
     /// Render to dst_image. All per-frame inputs are parameters: the camera and
@@ -731,7 +715,7 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
         dst_image: vk::Image,
         wait_sem: vk::Semaphore,
         camera: &Camera,
-        instances: &[(ResourceKey, Vec<vk::TransformMatrixKHR>)],
+        instances: &[(K, Vec<vk::TransformMatrixKHR>)],
     ) -> SrResult<vk::Fence> {
         // Waiting for device idle serializes the per-frame uploads (matrices
         // UBO, transforms, instance buffer, TLAS rebuild) against in-flight GPU
@@ -804,6 +788,109 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
             .submit_async(blit_cmd, wait_sems, wait_dst_stages, &[], signal_fence)?;
 
         Ok(signal_fence)
+    }
+
+    /// Read-only access to the internal swapchain (present only when the
+    /// renderer was built with a surface). Useful for overlay passes that need
+    /// the swapchain format / image count.
+    pub fn swapchain(&self) -> Option<&Swapchain> {
+        self.swapchain_data.as_ref().map(|sc| &sc.swapchain)
+    }
+
+    /// Render one frame to the internal swapchain and present it: waits the
+    /// in-flight fence, acquires an image, calls [`Self::render`], transitions
+    /// the image to `PRESENT_SRC` with the pre-recorded barrier, and presents.
+    /// All per-frame inputs (camera + instances) come from the caller.
+    pub fn render_to_swapchain(
+        &mut self,
+        camera: &Camera,
+        instances: &[(K, Vec<vk::TransformMatrixKHR>)],
+    ) -> SrResult<()> {
+        self.render_to_swapchain_with(camera, instances, None)
+    }
+
+    /// Like [`Self::render_to_swapchain`], but lets the caller replace the
+    /// final GENERAL -> PRESENT_SRC transition with its own pass (e.g. an egui
+    /// overlay drawn straight onto the swapchain image). The `finalize` closure
+    /// must leave the image in `PRESENT_SRC_KHR` and signal
+    /// [`SwapchainFrame::ready_to_present_sem`]; the renderer presents after.
+    pub fn render_to_swapchain_with(
+        &mut self,
+        camera: &Camera,
+        instances: &[(K, Vec<vk::TransformMatrixKHR>)],
+        finalize: Option<&mut dyn FnMut(&SwapchainFrame) -> SrResult<()>>,
+    ) -> SrResult<()> {
+        let (frame_index, img_acquired_sem, img_rendered_fence) = {
+            let sc = self
+                .swapchain_data
+                .as_mut()
+                .ok_or_else(|| SrError::new_custom("render_to_swapchain: renderer was built without a surface".to_string()))?;
+            let frame_index = (sc.frame_count as usize) % MAX_FRAMES_IN_FLIGHT;
+            sc.frame_count += 1;
+            (
+                frame_index,
+                sc.img_acquired_sems[frame_index].inner(),
+                sc.img_rendered_fences[frame_index],
+            )
+        };
+
+        // Wait for the frame that used this in-flight slot MAX_FRAMES_IN_FLIGHT
+        // frames ago before reusing its semaphore.
+        vulkan_abstraction::wait_fence(self.core.device(), img_rendered_fence)?;
+
+        let frame = {
+            let sc = self.swapchain_data.as_ref().unwrap();
+            let (image_index, suboptimal) = unsafe {
+                sc.swapchain
+                    .device()
+                    .acquire_next_image(sc.swapchain.inner(), u64::MAX, img_acquired_sem, vk::Fence::null())
+            }?;
+            if suboptimal {
+                log::warn!("VkAcquireNextImageKHR: swapchain is suboptimal for the surface");
+            }
+            let image_index = image_index as usize;
+            SwapchainFrame {
+                image: sc.swapchain.images()[image_index],
+                image_view: sc.swapchain.image_views()[image_index],
+                extent: sc.swapchain.extent(),
+                image_index,
+                ready_to_present_sem: sc.ready_to_present_sems[image_index].inner(),
+            }
+        };
+
+        let render_fence = self.render(frame.image, img_acquired_sem, camera, instances)?;
+        self.swapchain_data.as_mut().unwrap().img_rendered_fences[frame_index] = render_fence;
+
+        match finalize {
+            Some(finalize) => finalize(&frame)?,
+            None => {
+                let sc = self.swapchain_data.as_mut().unwrap();
+                let barrier_cmd_buf = &mut sc.present_barrier_cmd_bufs[frame.image_index];
+                let barrier_fence = barrier_cmd_buf.fence_mut().submit()?;
+                let barrier_cmd = barrier_cmd_buf.inner();
+                self.core.graphics_queue().submit_async(
+                    barrier_cmd,
+                    &[],
+                    &[],
+                    std::slice::from_ref(&frame.ready_to_present_sem),
+                    barrier_fence,
+                )?;
+            }
+        }
+
+        // Present, waiting on the PRESENT_SRC transition.
+        let sc = self.swapchain_data.as_ref().unwrap();
+        let swapchains = [sc.swapchain.inner()];
+        let image_indices = [frame.image_index as u32];
+        let wait_semaphores = [frame.ready_to_present_sem];
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&wait_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+        let queue = self.core.graphics_queue().inner();
+        unsafe { sc.swapchain.device().queue_present(queue, &present_info) }?;
+
+        Ok(())
     }
 
     /// Build + compile the unified render graph for this frame: ray tracing
@@ -1317,7 +1404,11 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
         Ok(())
     }
 
-    pub fn render_to_host_memory(&mut self) -> SrResult<Vec<u8>> {
+    pub fn render_to_host_memory(
+        &mut self,
+        camera: &Camera,
+        instances: &[(K, Vec<vk::TransformMatrixKHR>)],
+    ) -> SrResult<Vec<u8>> {
         let mut dst_image = vulkan_abstraction::Image::new(
             Rc::clone(&self.core),
             self.image_extent,
@@ -1334,7 +1425,7 @@ impl<ResourceKey : Hash + Eq + Copy> Renderer<ResourceKey> {
         // and the first ReSTIR audition is just one RIS candidate per pixel.
         const WARMUP_FRAMES: u32 = 16;
         for _ in 0..WARMUP_FRAMES {
-            let wait_fence = self.render_to_image(dst_image.inner(), vk::Semaphore::null())?;
+            let wait_fence = self.render(dst_image.inner(), vk::Semaphore::null(), camera, instances)?;
             vulkan_abstraction::wait_fence(self.core.device(), wait_fence)?;
         }
 
@@ -1464,7 +1555,7 @@ const ENABLE_NVIDIA_AFTERMATH_VAR_NAME: &str = "ENABLE_NVIDIA_AFTERMATH"; // doe
 const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
 const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 
-impl Drop for Renderer {
+impl<K: Hash + Eq + Copy> Drop for Renderer<K> {
     fn drop(&mut self) {
         match self.core().graphics_queue().wait_idle() {
             Ok(()) => {}

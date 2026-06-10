@@ -6,10 +6,10 @@
 //! resource, accessed only from the (single-threaded) render SubApp.
 
 use std::rc::Rc;
-
+use std::sync::Arc;
 use ash::{khr, vk};
 
-use crate::{error::*, vulkan_abstraction};
+use crate::{error::*, vulkan_abstraction, Renderer, MAX_FRAMES_IN_FLIGHT};
 
 /// RAII wrapper that destroys the `vk::SurfaceKHR` on drop.
 pub struct Surface {
@@ -229,5 +229,102 @@ impl Drop for Swapchain {
         if self.swapchain != vk::SwapchainKHR::null() {
             unsafe { self.swapchain_device.destroy_swapchain(self.swapchain, None) };
         }
+    }
+}
+
+
+/// Swapchain + present plumbing owned by the renderer when it was constructed
+/// with a surface (`new_with_surface`). Kept internal — callers drive frames
+/// through [`Renderer::render_to_swapchain`] and never touch the swapchain
+/// directly (except read-only via [`Renderer::swapchain`], e.g. for an overlay
+/// pass that needs the image format).
+pub(crate) struct SwapchainData {
+    pub(crate) swapchain: Swapchain,
+    pub(crate) surface: Surface,
+
+    /// One per in-flight frame: signaled by acquire, waited by the render blit.
+    pub(crate) img_acquired_sems: Vec<vulkan_abstraction::Semaphore>,
+    /// One per in-flight frame: the blit fence of the frame that last used this slot.
+    pub(crate) img_rendered_fences: Vec<vk::Fence>,
+    /// One per swapchain image: signaled when the image is PRESENT_SRC, waited by present.
+    pub(crate) ready_to_present_sems: Vec<vulkan_abstraction::Semaphore>,
+    /// One pre-recorded GENERAL -> PRESENT_SRC barrier per swapchain image.
+    pub(crate) present_barrier_cmd_bufs: Vec<vulkan_abstraction::CmdBuffer>,
+
+    pub(crate) frame_count: u64,
+}
+
+/// Everything an external present-finalize pass (e.g. an egui overlay) needs
+/// about the swapchain image of the current frame. The pass must leave the
+/// image in `PRESENT_SRC_KHR` and signal `ready_to_present_sem`; the renderer
+/// presents right after.
+pub struct SwapchainFrame {
+    pub image: vk::Image,
+    pub image_view: vk::ImageView,
+    pub extent: vk::Extent2D,
+    pub image_index: usize,
+    pub ready_to_present_sem: vk::Semaphore,
+}
+
+impl SwapchainData {
+    pub(crate) fn new(core: &Rc<vulkan_abstraction::Core>, surface: Surface, window_extent: (u32, u32)) -> SrResult<Self> {
+        let swapchain = Swapchain::new(Rc::clone(core), surface.inner(), window_extent)?;
+
+        let img_acquired_sems = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(core)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let img_rendered_fences = vec![vk::Fence::null(); MAX_FRAMES_IN_FLIGHT];
+        let (present_barrier_cmd_bufs, ready_to_present_sems) = Self::build_per_image_objects(core, &swapchain)?;
+
+        Ok(Self {
+            swapchain,
+            surface,
+            img_acquired_sems,
+            img_rendered_fences,
+            ready_to_present_sems,
+            present_barrier_cmd_bufs,
+            frame_count: 0,
+        })
+    }
+
+    /// Per-swapchain-image objects: the pre-recorded GENERAL -> PRESENT_SRC
+    /// barrier command buffers and the present-wait semaphores. Rebuilt
+    /// whenever the swapchain (and so its image list) is rebuilt.
+    pub(crate) fn build_per_image_objects(
+        core: &Rc<vulkan_abstraction::Core>,
+        swapchain: &Swapchain,
+    ) -> SrResult<(Vec<vulkan_abstraction::CmdBuffer>, Vec<vulkan_abstraction::Semaphore>)> {
+        let present_barrier_cmd_bufs = swapchain
+            .images()
+            .iter()
+            .map(|image| -> SrResult<vulkan_abstraction::CmdBuffer> {
+                let cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(core))?;
+                unsafe {
+                    let begin_info = vk::CommandBufferBeginInfo::default();
+                    core.device().inner().begin_command_buffer(cmd_buf.inner(), &begin_info)?;
+                    vulkan_abstraction::cmd_image_memory_barrier(
+                        core,
+                        cmd_buf.inner(),
+                        *image,
+                        vk::PipelineStageFlags2::TRANSFER,
+                        vk::PipelineStageFlags2::ALL_COMMANDS,
+                        vk::AccessFlags2::TRANSFER_WRITE,
+                        vk::AccessFlags2::empty(),
+                        vk::ImageLayout::GENERAL,
+                        vk::ImageLayout::PRESENT_SRC_KHR,
+                    );
+                    core.device().inner().end_command_buffer(cmd_buf.inner())?;
+                }
+                Ok(cmd_buf)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let ready_to_present_sems = swapchain
+            .images()
+            .iter()
+            .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(core)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((present_barrier_cmd_bufs, ready_to_present_sems))
     }
 }

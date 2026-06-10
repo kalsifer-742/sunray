@@ -63,7 +63,7 @@ macro_rules! include_bytes_align_as {
     }};
 }
 
-pub(crate) fn na_mat4_to_vk_transform(m: nalgebra::Matrix4<f32>) -> vk::TransformMatrixKHR {
+pub fn na_mat4_to_vk_transform(m: nalgebra::Matrix4<f32>) -> vk::TransformMatrixKHR {
     // VkTransformMatrixKHR is a row-major 3x4 affine, flattened to [f32; 12].
     vk::TransformMatrixKHR {
         matrix: [

@@ -1,19 +1,16 @@
 use std::collections::HashSet;
 use std::io;
 use std::io::Read;
-use std::rc::Rc;
 
 use ash::vk;
-use log::info;
 use nalgebra as na;
 use rand::random_range;
 use std::time::Instant;
-use sunray::vulkan_abstraction::{swapchain, EntityId};
 use sunray::{
-    MAX_FRAMES_IN_FLIGHT,
+    ResourceKey,
     camera::Camera,
     error::{ErrorSource, SrResult},
-    vulkan_abstraction,
+    utils::na_mat4_to_vk_transform,
 };
 use winit::{
     application::ApplicationHandler,
@@ -24,20 +21,11 @@ use winit::{
     window::{CursorGrabMode, Window},
 };
 
-mod surface;
 mod utils;
 
 struct AppResources {
-    pub swapchain: swapchain::Swapchain,
-    #[allow(unused)]
-    pub surface: surface::Surface,
-    pub img_rendered_fences: Vec<vk::Fence>,
-    pub img_barrier_to_present_cmd_bufs: Vec<vulkan_abstraction::CmdBuffer>, // must delete before ready_to_present_sems
-    pub img_acquired_sems: Vec<vulkan_abstraction::Semaphore>,
-
+    /// The renderer owns the surface, the swapchain, and all present plumbing.
     pub renderer: sunray::Renderer,
-
-    pub ready_to_present_sems: Vec<vulkan_abstraction::Semaphore>,
 }
 
 struct App {
@@ -57,9 +45,10 @@ struct App {
     mouse_captured: bool,
     last_frame_time: Option<Instant>,
 
-    // --- RUNTIME RESOURCE TEST ---
-    scene_entities: Vec<sunray::vulkan_abstraction::EntityId>,
-    spawned_entity: Option<sunray::vulkan_abstraction::EntityId>,
+    // --- PER-FRAME SCENE STATE (owned by the caller, handed to `render_to_swapchain`) ---
+    scene_instances: Vec<(ResourceKey, Vec<vk::TransformMatrixKHR>)>,
+    /// `(blas entry, transform entry)` of the duplicate spawned by the runtime test.
+    spawned_instance: Option<(usize, usize)>,
 }
 
 impl Default for App {
@@ -80,8 +69,8 @@ impl Default for App {
             mouse_captured: false,
             last_frame_time: None,
 
-            scene_entities: Vec::new(),
-            spawned_entity: None,
+            scene_instances: Vec::new(),
+            spawned_instance: None,
         }
     }
 }
@@ -99,137 +88,24 @@ impl App {
             crate::utils::create_surface(entry, instance, display_handle, window_handle, None)
         };
 
-        // build sunray renderer and surface
-        let (mut renderer, surface) =
-            sunray::Renderer::new_with_surface(size, vk::Format::R8G8B8A8_SRGB, instance_exts, &create_surface)?;
+        // Build the sunray renderer; it creates and owns the surface, the
+        // swapchain, and all present plumbing internally.
+        let mut renderer = sunray::Renderer::new_with_surface(size, vk::Format::R8G8B8A8_SRGB, instance_exts, &create_surface)?;
 
-        self.scene_entities = renderer.load_gltf("examples/assets/Room.glb")?;
-        log::info!("Loaded {} entities from scene", self.scene_entities.len());
+        // The scene's instance list belongs to the caller: keep it here and
+        // pass it to `render_to_swapchain` every frame.
+        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/Room.glb")?;
+        self.scene_instances = scene_instances;
+        log::info!("Loaded {} unique BLASes from scene", self.scene_instances.len());
 
-        //take ownership of the surface
-        let surface = surface::Surface::new(renderer.core().entry(), renderer.core().instance(), surface);
-
-        let swapchain = swapchain::Swapchain::new(Rc::clone(renderer.core()), surface.inner(), size)?;
-
-        renderer.build_image_dependent_data(swapchain.images())?;
-
-        let core = renderer.core();
-
-        let img_barrier_to_present_cmd_bufs = swapchain
-            .images()
-            .iter()
-            .map(|image| -> SrResult<vulkan_abstraction::CmdBuffer> {
-                let cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&core))?;
-
-                unsafe {
-                    let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default();
-
-                    core.device()
-                        .inner()
-                        .begin_command_buffer(cmd_buf.inner(), &cmd_buf_begin_info)?;
-
-                    vulkan_abstraction::cmd_image_memory_barrier(
-                        &core,
-                        cmd_buf.inner(),
-                        *image,
-                        vk::PipelineStageFlags2::TRANSFER,
-                        vk::PipelineStageFlags2::ALL_COMMANDS,
-                        vk::AccessFlags2::TRANSFER_WRITE,
-                        vk::AccessFlags2::empty(),
-                        vk::ImageLayout::GENERAL,
-                        vk::ImageLayout::PRESENT_SRC_KHR,
-                    );
-
-                    core.device().inner().end_command_buffer(cmd_buf.inner())?;
-                }
-                Ok(cmd_buf)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let img_acquired_sems = (0..MAX_FRAMES_IN_FLIGHT)
-            .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(&core)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let img_rendered_fences = vec![vk::Fence::null(); MAX_FRAMES_IN_FLIGHT];
-
-        let ready_to_present_sems = swapchain
-            .images()
-            .iter()
-            .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(&core)))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.resources = Some(AppResources {
-            swapchain,
-            surface,
-            img_rendered_fences,
-            img_acquired_sems,
-            ready_to_present_sems,
-            img_barrier_to_present_cmd_bufs,
-            renderer,
-        });
+        self.resources = Some(AppResources { renderer });
 
         Ok(())
     }
 
     fn resize(&mut self, size: (u32, u32)) -> SrResult<()> {
-        self.res_mut().renderer.resize(size)?;
-
-        self.res()
-            .renderer
-            .core()
-            .device()
-            .update_surface_support_details(self.res().surface.inner(), self.res().surface.instance());
-
-        let curr_size = self.res().swapchain.extent();
-        let new_size = swapchain::Swapchain::get_extent(size, &self.res().renderer.core().device().surface_support_details());
-
-        if curr_size == new_size {
-            return Ok(());
-        }
-
-        let core = Rc::clone(self.res().renderer.core());
-
-        for fence in self.res_mut().img_rendered_fences.iter_mut() {
-            *fence = vk::Fence::null();
-        }
-
-        let surface = self.res().surface.inner();
-
-        self.res_mut().swapchain.rebuild(surface, size)?;
-
-        self.res_mut().img_barrier_to_present_cmd_bufs = self
-            .res()
-            .swapchain
-            .images()
-            .iter()
-            .map(|image| -> SrResult<vulkan_abstraction::CmdBuffer> {
-                let cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&core))?;
-
-                unsafe {
-                    let cmd_buf_begin_info = vk::CommandBufferBeginInfo::default();
-
-                    core.device()
-                        .inner()
-                        .begin_command_buffer(cmd_buf.inner(), &cmd_buf_begin_info)?;
-
-                    vulkan_abstraction::cmd_image_memory_barrier(
-                        &core,
-                        cmd_buf.inner(),
-                        *image,
-                        vk::PipelineStageFlags2::TRANSFER,
-                        vk::PipelineStageFlags2::ALL_COMMANDS,
-                        vk::AccessFlags2::TRANSFER_WRITE,
-                        vk::AccessFlags2::empty(),
-                        vk::ImageLayout::GENERAL,
-                        vk::ImageLayout::PRESENT_SRC_KHR,
-                    );
-
-                    core.device().inner().end_command_buffer(cmd_buf.inner())?;
-                }
-                Ok(cmd_buf)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(())
+        // The renderer resizes its internal images and rebuilds its swapchain itself.
+        self.res_mut().renderer.resize(size)
     }
 
     fn time_elapsed(&self) -> f32 {
@@ -238,43 +114,6 @@ impl App {
             .unwrap()
             .as_millis() as f32
             / 1000.0
-    }
-
-    fn acquire_next_image(&self, signal_sem: vk::Semaphore) -> SrResult<usize> {
-        let image_index = {
-            let (image_index, swapchain_suboptimal_for_surface) = unsafe {
-                self.res().swapchain.device().acquire_next_image(
-                    self.res().swapchain.inner(),
-                    u64::MAX,
-                    signal_sem,
-                    vk::Fence::null(),
-                )
-            }?;
-
-            if swapchain_suboptimal_for_surface {
-                log::warn!("VkAcquireNextImageKHR: swapchain is supobtimal for the surface");
-            }
-
-            image_index as usize
-        };
-
-        Ok(image_index)
-    }
-
-    fn present(&self, img_index: usize, ready_to_present_sem: vk::Semaphore) -> SrResult<()> {
-        let swapchains = [self.res().swapchain.inner()];
-        let image_indices = [img_index as u32];
-        let wait_semaphores = [ready_to_present_sem];
-        let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(&wait_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-
-        let queue = self.res().renderer.core().graphics_queue().inner();
-
-        unsafe { self.res().swapchain.device().queue_present(queue, &present_info) }?;
-
-        Ok(())
     }
 
     fn draw(&mut self) -> sunray::error::SrResult<()> {
@@ -330,27 +169,15 @@ impl App {
             .set_target(target)
             .set_fov_y(45.0);
 
-        self.res_mut().renderer.set_camera(camera)?;
+        //self.update_runtime_test();
 
-        //self.update_runtime_test()?;
-
-        let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
-
-        let img_acquired_sem = self.res().img_acquired_sems[frame_index].inner();
-        let img_rendered_fence = self.res().img_rendered_fences[frame_index];
-        vulkan_abstraction::wait_fence(self.res().renderer.core().device(), img_rendered_fence)?;
-        let img_index = self.acquire_next_image(img_acquired_sem)?;
-
-        let swapchain_image = self.res().swapchain.images()[img_index];
-
-        self.res_mut().img_rendered_fences[frame_index] =
-            self.res_mut().renderer.render_to_image(swapchain_image, img_acquired_sem)?;
-
-        let img_barrier_to_present_cmd_buf = &mut self.res_mut().img_barrier_to_present_cmd_bufs[img_index];
-        let img_barrier_done_fence = img_barrier_to_present_cmd_buf.fence_mut().submit()?;
-
-        let img_barrier_to_present_cmd_buf_inner = img_barrier_to_present_cmd_buf.inner();
-        let ready_to_present_sem = self.res().ready_to_present_sems[img_index].inner();
+        // The camera and the instance list are per-frame inputs: the renderer
+        // retains nothing about them across frames.
+        self.resources
+            .as_mut()
+            .unwrap()
+            .renderer
+            .render_to_swapchain(&camera, &self.scene_instances)?;
 
         self.frames_since_check += 1;
 
@@ -367,85 +194,47 @@ impl App {
             }
         }
 
-        self.res().renderer.core().graphics_queue().submit_async(
-            img_barrier_to_present_cmd_buf_inner,
-            &[],
-            &[],
-            &[ready_to_present_sem],
-            img_barrier_done_fence,
-        )?;
-
-        self.present(img_index, ready_to_present_sem)?;
-
         self.frame_count += 1;
         self.window.as_ref().unwrap().request_redraw();
         Ok(())
     }
 
-    /// Exercises runtime add / move / remove of entities each frame.
-    fn update_runtime_test(&mut self) -> SrResult<()> {
+    /// Exercises runtime move / add / remove of instances by mutating the
+    /// caller-owned instance list — no renderer involvement at all.
+    #[allow(unused)]
+    fn update_runtime_test(&mut self) {
         let frame = self.frame_count;
+        if self.scene_instances.is_empty() {
+            return;
+        }
 
-        // if !self.scene_entities.is_empty() {
-        //     let id = self.scene_entities.pop().unwrap().0;
-        //     return self.res_mut().renderer.destroy_entity(EntityId(id));
-        // }
-
-        // Animate the first loaded entity: orbit around Y every frame.
-        let src = self.scene_entities.first();
-        if let Some(src) = src {
-            let src = *src;
+        // Animate the first instance: orbit around Y every frame.
+        if let Some(first_transform) = self.scene_instances[0].1.first_mut() {
             let angle = frame as f32 * 0.0001;
             let (s, c) = angle.sin_cos();
             let radius = 3.0_f32;
             let translation = na::Translation3::new(c * radius, 0.0, s * radius);
             let rotation = na::UnitQuaternion::from_axis_angle(&na::Vector3::y_axis(), angle);
-            let transform = (translation * rotation).to_homogeneous();
-            self.res_mut().renderer.set_entity_transform(src, transform)?;
-            self.res_mut().renderer.rebuild_tlas()?;
+            *first_transform = na_mat4_to_vk_transform((translation * rotation).to_homogeneous());
         }
 
-        // At frame 120 spawn a duplicate of the first entity offset to the side.
-        if frame % 120 == 1 {
-            let src = self.scene_entities[random_range(0..self.scene_entities.len())];
-
+        // At frame 120 spawn a duplicate of a random BLAS offset to the side.
+        if frame % 120 == 1 && self.spawned_instance.is_none() {
+            let blas_entry = random_range(0..self.scene_instances.len());
             let offset = na::Translation3::new(4.0, 0.0, 0.0).to_homogeneous();
-            match self.res_mut().renderer.duplicate_entity(src, offset) {
-                Ok(id) => {
-                    self.spawned_entity = Some(id);
-                    // duplicate_entity calls clear_image_dependent_data(), which drops the
-                    // CmdBuffers whose fences were returned by render_to_image. Those
-                    // VkFence handles are now destroyed; null them out so draw()'s
-                    // wait_fence() skips the stale handles next frame.
-                    for fence in self.res_mut().img_rendered_fences.iter_mut() {
-                        *fence = vk::Fence::null();
-                    }
-                    log::info!("[runtime test] spawned duplicate entity {:?}", id);
-                }
-                Err(e) => log::error!("[runtime test] duplicate_entity failed: {e}"),
-            }
+            let transforms = &mut self.scene_instances[blas_entry].1;
+            transforms.push(na_mat4_to_vk_transform(offset));
+            self.spawned_instance = Some((blas_entry, transforms.len() - 1));
+            log::info!("[runtime test] spawned duplicate instance of BLAS entry {blas_entry}");
         }
 
         // At frame 240 remove the spawned duplicate.
         if frame % 240 == 1 {
-            if let Some(id) = self.spawned_entity.take() {
-                match self.res_mut().renderer.destroy_entity(id) {
-                    Ok(()) => {
-                        // duplicate_entity calls clear_image_dependent_data(), which drops the
-                        // CmdBuffers whose fences were returned by render_to_image. Those
-                        // VkFence handles are now destroyed; null them out so draw()'s
-                        // wait_fence() skips the stale handles next frame.
-                        for fence in self.res_mut().img_rendered_fences.iter_mut() {
-                            *fence = vk::Fence::null();
-                        }
-                        log::info!("[runtime test] removed entity {:?}", id)
-                    }
-                    Err(e) => log::error!("[runtime test] destroy_entity failed: {e}"),
-                }
+            if let Some((blas_entry, transform_entry)) = self.spawned_instance.take() {
+                self.scene_instances[blas_entry].1.remove(transform_entry);
+                log::info!("[runtime test] removed duplicate instance of BLAS entry {blas_entry}");
             }
         }
-
-        Ok(())
     }
 
     fn handle_event(&mut self, event_loop: &event_loop::ActiveEventLoop, event: winit::event::WindowEvent) -> SrResult<()> {

@@ -34,3 +34,22 @@ pub use camera::SunrayCamera;
 pub use egui_support::{EguiContext, EguiFrameOutput, ExtractedEgui};
 pub use plugin::{SunrayEguiPlugin, SunrayRenderPlugin};
 pub use state::{ExtractedCamera, ExtractedScene, SunrayRenderState, SunrayScene, SunrayWindows};
+
+/// Marker type whose `TypeId` brands renderer-generated asset ids, keeping
+/// them distinct from ids of real Bevy assets.
+struct SunrayGeneratedAsset;
+
+/// The Bevy integration keys the renderer by [`bevy_asset::UntypedAssetId`]
+/// (untyped because one key space spans BLASes *and* images — a single typed
+/// `AssetId<A>` couldn't cover both). Scene loads that aren't driven by Bevy's
+/// asset system (e.g. `load_gltf`) generate deterministic UUID ids from the
+/// renderer's [`crate::ResourceKey`]; assets extracted from Bevy later can use
+/// their real `AssetId<A>.untyped()` in the same key space.
+impl From<crate::ResourceKey> for bevy_asset::UntypedAssetId {
+    fn from(key: crate::ResourceKey) -> Self {
+        bevy_asset::UntypedAssetId::Uuid {
+            type_id: std::any::TypeId::of::<SunrayGeneratedAsset>(),
+            uuid: bevy_asset::uuid::Uuid::from_u64_pair(key.group, key.index),
+        }
+    }
+}

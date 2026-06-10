@@ -1,9 +1,6 @@
 use crate::vulkan_abstraction::Material;
 use ash::vk;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EntityId(pub u64);
-
 /// Per-BLAS data uploaded to GPU and read by shaders. Stored in the meshes-info
 /// arena buffer; the slot index is what every instance of that BLAS passes as
 /// `gl_InstanceCustomIndexEXT`, so instances sharing a BLAS share one entry.
