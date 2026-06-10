@@ -5,40 +5,34 @@ use std::rc::Rc;
 use ash::vk;
 
 use crate::render_graph::graph::SamplerDesc;
-use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, HostAccessibleBuffer, Material};
-use crate::{CameraMatrices, error::SrResult, vulkan_abstraction};
+use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, Material};
+use crate::{error::SrResult, vulkan_abstraction};
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
 //TODO handle growable
 
-//TODO there is structural decision to make on what to save and how cause raster needs a different way to store the geometry data probabibly with a features set constable?
-/// Owns the GPU-side scene resources. Split in two halves:
-///
-/// * **Stable assets**, keyed by the caller-provided `K` (e.g. one key per
-///   BLAS / image): geometry + material data lives in arena buffers whose
-///   slots survive across frames.
-/// * **Per-frame state**, supplied each frame through [`Self::prepare_frame`]:
-///   the camera matrices and the instance list `(key, transforms)`. The
-///   instance buffer / TLAS / flat transform buffer / emissive indirection are
-///   derived from those parameters every frame — nothing about instances is
-///   retained here.
-pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
-
-    //TODO this is still to be moved 
-    matrices_uniform_buffer: vulkan_abstraction::UniformBuffer<CameraMatrices>,
-    /// Flat per-instance transforms in instance order; `EmissiveIndirectionEntry::entity_id`
-    /// indexes into this buffer.
-    transforms: vulkan_abstraction::StagingBuffer<vk::TransformMatrixKHR>,
-    instances_buffer: vulkan_abstraction::StagingBuffer<vk::AccelerationStructureInstanceKHR>,
-    
-    
-    tlas: vulkan_abstraction::TLAS,
+/// The raw per-frame data resolved from the caller's `(key, transforms)`
+/// instance list. The renderer uploads these into CpuToGpu buffers created on
+/// the spot each frame (and deferred-freed through the end-of-frame
+/// callbacks) — nothing per-frame is retained in the manager.
+pub(crate) struct FrameInstanceData {
+    pub as_instances: Vec<vk::AccelerationStructureInstanceKHR>,
+    /// Flat per-instance transforms in instance order;
+    /// `EmissiveIndirectionEntry::entity_id` indexes into this list.
+    pub transforms: Vec<vk::TransformMatrixKHR>,
     /// Dense `(emissive triangle slot, instance index)` table for NEE sampling.
-    /// Recreated only when the entries actually change (the shader reads its
-    /// length via `GetDimensions`, so the buffer must be exactly sized).
-    emissive_indirection_gpu: vulkan_abstraction::GpuOnlyBuffer,
-    emissive_indirection_cache: Vec<vulkan_abstraction::gltf::EmissiveIndirectionEntry>,
+    pub emissive_entries: Vec<vulkan_abstraction::gltf::EmissiveIndirectionEntry>,
+}
+
+//TODO there is structural decision to make on what to save and how cause raster needs a different way to store the geometry data probabibly with a features set constable?
+/// Owns the *stable* GPU-side scene resources, keyed by the caller-provided
+/// `K` (one key per BLAS / image): geometry + material data lives in arena
+/// buffers whose slots survive across frames, plus the TLAS (rebuilt per frame
+/// from the renderer's local instance buffer). Per-frame data only passes
+/// through [`Self::frame_instance_data`] — it is never stored here.
+pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
+    tlas: vulkan_abstraction::TLAS,
 
     // ── Stable per-asset GPU data, keyed by `K`.
     /// Per-BLAS mesh info (vertex/index BDA + material). The slot index is the
@@ -65,8 +59,6 @@ pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
 
 impl<K: Hash + Eq + Copy> ResourceManager<K> {
     pub fn new_empty(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
-        let matrices_uniform_buffer = vulkan_abstraction::UniformBuffer::new(Rc::clone(&core), 1 as vk::DeviceSize)?;
-
         // SHADER_DEVICE_ADDRESS so the heap path can compute the buffer's BDA
         // when allocating a storage-buffer descriptor (`Buffer::storage_slot`
         // internally calls `vkGetBufferDeviceAddress`).
@@ -88,23 +80,19 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
             "blas emissive triangles",
         )?;
 
-        let transforms = vulkan_abstraction::StagingBuffer::new(
+        // Temporary one-element buffer for the initial empty TLAS build (the
+        // build is synchronous, so dropping it right after is fine). Per-frame
+        // instance buffers are created by the renderer each frame.
+        let mut empty_instances_buffer = vulkan_abstraction::StagingBuffer::<vk::AccelerationStructureInstanceKHR>::new(
             Rc::clone(&core),
-            10000 as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "Per-frame instance transforms",
-        )?;
-
-        let mut instances_buffer = vulkan_abstraction::StagingBuffer::new(
-            Rc::clone(&core),
-            10000 as vk::DeviceSize,
+            1,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-            "Cpu side instances of blases",
+            "empty TLAS build instances",
         )?;
-        
-        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[], &mut instances_buffer)?;
+
+        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[], &mut empty_instances_buffer)?;
 
         let default_sampler = vulkan_abstraction::Sampler::new(
             Rc::clone(&core),
@@ -117,12 +105,7 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
         )?;
 
         Ok(Self {
-            matrices_uniform_buffer,
-            transforms,
-            instances_buffer,
             tlas,
-            emissive_indirection_gpu: vulkan_abstraction::Buffer::new_null(Rc::clone(&core)),
-            emissive_indirection_cache: Vec::new(),
 
             meshes_info,
             blas_emissive_triangles,
@@ -196,141 +179,74 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
         Ok(())
     }
 
-    // ─── Per-frame state ─────────────────────────────────────────────────────
+    // ─── Per-frame data ──────────────────────────────────────────────────────
 
-    /// Upload everything that is decided per frame: the camera matrices and the
-    /// instance list. `instances` pairs each BLAS key with the world transforms
-    /// of its instances this frame; the instance buffer, the TLAS, the flat
-    /// transform buffer, and the emissive indirection table are all derived
-    /// from it here. The caller must guarantee no frame is in flight (the
-    /// renderer's `device_wait_idle` covers this).
-    pub fn prepare_frame(
-        &mut self,
-        matrices: CameraMatrices,
-        instances: &[(K, Vec<vk::TransformMatrixKHR>)],
-    ) -> SrResult<()> {
-        self.set_matrices(matrices)?;
-
+    /// Resolve the caller's per-frame `(key, transforms)` instance list into
+    /// the raw arrays the frame needs: TLAS instances (custom index = the
+    /// BLAS's stable mesh-info slot), the flat transform list (instance
+    /// order), and the emissive indirection entries. Pure resolution — the
+    /// renderer uploads the results into frame-local CpuToGpu buffers; nothing
+    /// is stored here.
+    pub fn frame_instance_data(&self, instances: &[(K, Vec<vk::TransformMatrixKHR>)]) -> SrResult<FrameInstanceData> {
         let mut as_instances: Vec<vk::AccelerationStructureInstanceKHR> = Vec::new();
+        let mut transforms: Vec<vk::TransformMatrixKHR> = Vec::new();
         let mut emissive_entries: Vec<vulkan_abstraction::gltf::EmissiveIndirectionEntry> = Vec::new();
         let no_emissive: Vec<u32> = Vec::new();
 
-        {
-            let transforms_mem = self.transforms.map_mut()?;
+        for (key, instance_transforms) in instances {
+            let Some(blas) = self.blases.get(key) else {
+                return Err(crate::error::SrError::new_custom(
+                    "frame_instance_data: instance references a BLAS key that was never loaded".to_string(),
+                ));
+            };
+            let mesh_info_slot = self.mesh_info_slots[key];
+            let emissive_slots = self.emissive_triangle_slots.get(key).unwrap_or(&no_emissive);
 
-            for (key, instance_transforms) in instances {
-                let Some(blas) = self.blases.get(key) else {
-                    return Err(crate::error::SrError::new_custom(
-                        "prepare_frame: instance references a BLAS key that was never loaded".to_string(),
-                    ));
-                };
-                let mesh_info_slot = self.mesh_info_slots[key];
-                let emissive_slots = self.emissive_triangle_slots.get(key).unwrap_or(&no_emissive);
+            let blas_device_handle = unsafe {
+                self.core
+                    .acceleration_structure_device()
+                    .get_acceleration_structure_device_address(
+                        &vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(blas.inner()),
+                    )
+            };
 
-                let blas_device_handle = unsafe {
-                    self.core
-                        .acceleration_structure_device()
-                        .get_acceleration_structure_device_address(
-                            &vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(blas.inner()),
-                        )
-                };
+            for transform in instance_transforms {
+                let instance_index = transforms.len();
 
-                for transform in instance_transforms {
-                    let instance_index = as_instances.len();
-                    
+                transforms.push(*transform);
 
-                    transforms_mem[instance_index] = *transform;
+                as_instances.push(vk::AccelerationStructureInstanceKHR {
+                    transform: *transform,
+                    instance_custom_index_and_mask: vk::Packed24_8::new(mesh_info_slot, 0xFF),
+                    instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                        0, // hit_group_offset = 0, same hit group for the whole scene
+                        vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+                    ),
+                    acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                        device_handle: blas_device_handle,
+                    },
+                });
 
-                    as_instances.push(vk::AccelerationStructureInstanceKHR {
-                        transform: *transform,
-                        instance_custom_index_and_mask: vk::Packed24_8::new(mesh_info_slot, 0xFF),
-                        instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-                            0, // hit_group_offset = 0, same hit group for the whole scene
-                            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-                        ),
-                        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                            device_handle: blas_device_handle,
-                        },
+                for &tri_slot in emissive_slots {
+                    emissive_entries.push(vulkan_abstraction::gltf::EmissiveIndirectionEntry {
+                        blas_tri_index: tri_slot,
+                        entity_id: instance_index as u32,
                     });
-
-                    for &tri_slot in emissive_slots {
-                        emissive_entries.push(vulkan_abstraction::gltf::EmissiveIndirectionEntry {
-                            blas_tri_index: tri_slot,
-                            entity_id: instance_index as u32,
-                        });
-                    }
                 }
             }
         }
 
-        {
-            let mapped = self.instances_buffer.map_mut()?;
-            mapped[..as_instances.len()].copy_from_slice(&as_instances);
-        }
-        self.tlas
-            .rebuild_from_buffer(as_instances.len() as u32, &self.instances_buffer)?;
-
-        self.update_emissive_indirection(emissive_entries)?;
-
-        Ok(())
+        Ok(FrameInstanceData {
+            as_instances,
+            transforms,
+            emissive_entries,
+        })
     }
 
-    fn set_matrices(
-        &mut self,
-        CameraMatrices {
-            view_inverse,
-            proj_inverse,
-            view_proj,
-            prev_view_proj,
-        }: CameraMatrices,
-    ) -> SrResult<()> {
-        // nalgebra's Matrix4 is column-major in memory. HLSL/Slang's
-        // `float4x4(v0, v1, v2, v3)` constructor reads each float4 as a ROW.
-        // Transposing here means each on-disk float4 (which the shader reads as
-        // a member of `Matrices`) is a ROW of the intended matrix, so the
-        // shader's `float4x4(m.vi0, m.vi1, m.vi2, m.vi3)` reconstructs the
-        // matrix correctly without any per-shader `transpose()` call.
-        let mem = self.matrices_uniform_buffer.map_mut()?;
-        mem[0] = CameraMatrices {
-            view_inverse: view_inverse.transpose(),
-            proj_inverse: proj_inverse.transpose(),
-            view_proj: view_proj.transpose(),
-            prev_view_proj: prev_view_proj.transpose(),
-        };
-        Ok(())
-    }
-
-    /// Recreate the dense emissive indirection buffer if the entries changed.
-    /// The shader reads `num_lights` from the buffer's size (`GetDimensions`),
-    /// so the buffer must be exactly sized — it can't be a persistent
-    /// max-capacity allocation.
-    fn update_emissive_indirection(
-        &mut self,
-        entries: Vec<vulkan_abstraction::gltf::EmissiveIndirectionEntry>,
-    ) -> SrResult<()> {
-        if entries == self.emissive_indirection_cache && !self.emissive_indirection_gpu.is_null() {
-            return Ok(());
-        }
-
-        // A heap descriptor for a zero-sized buffer is invalid; keep a dummy
-        // entry when the scene has no emissive geometry (the shader sees
-        // num_lights through entry count of real scenes only).
-        let dummy = [vulkan_abstraction::gltf::EmissiveIndirectionEntry {
-            blas_tri_index: 0,
-            entity_id: 0,
-        }];
-        let data: &[vulkan_abstraction::gltf::EmissiveIndirectionEntry] =
-            if entries.is_empty() { &dummy } else { &entries };
-
-        self.emissive_indirection_gpu = vulkan_abstraction::GpuOnlyBuffer::new_from_data(
-            Rc::clone(&self.core),
-            data,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            "emissive indirection",
-        )?;
-        self.emissive_indirection_cache = entries;
-
-        Ok(())
+    /// Rebuild the TLAS from instances already written into `instances_buffer`
+    /// (the renderer's frame-local buffer). Synchronous.
+    pub fn rebuild_tlas(&mut self, instance_count: u32, instances_buffer: &impl Buffer) -> SrResult<()> {
+        self.tlas.rebuild_from_buffer(instance_count, instances_buffer)
     }
 
     // ─── Asset management ────────────────────────────────────────────────────
@@ -454,13 +370,6 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
         &self.tlas
     }
 
-    /// Buffer-device-address of the matrices uniform buffer. The Slang RT
-    /// shaders read matrices via a `Matrices*` BDA pointer rather than a
-    /// heap descriptor — see `shaders/rt_types.slang::RaytracingPC.matrices`.
-    pub fn matrices_buffer_address(&self) -> vk::DeviceAddress {
-        self.matrices_uniform_buffer.get_device_address()
-    }
-
     // Each call lazily allocates a `StorageBuffer` descriptor slot on first use.
     pub fn meshes_info_storage_slot(&self) -> u32 {
         self.meshes_info.raw().storage_slot()
@@ -468,14 +377,6 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
 
     pub fn emissive_triangles_storage_slot(&self) -> u32 {
         self.blas_emissive_triangles.raw().storage_slot()
-    }
-
-    pub fn emissive_indirection_storage_slot(&self) -> u32 {
-        self.emissive_indirection_gpu.raw().storage_slot()
-    }
-
-    pub fn entity_transforms_storage_slot(&self) -> u32 {
-        self.transforms.raw().storage_slot()
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────

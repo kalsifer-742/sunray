@@ -22,16 +22,18 @@ use error::*;
 pub use scene::*;
 pub use crate::vulkan_abstraction::DiagnosticTool;
 
-use std::{collections::HashMap, rc::Rc, sync::Arc};
 use std::hash::Hash;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::{collections::HashMap, rc::Rc, sync::Arc};
+
 use crate::render_graph::graph::{AnyRenderPass, BufferDesc, Handle, ImageDesc, RenderGraph};
 use crate::render_graph::pass_builder::{
     ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
 };
 use crate::utils::env_var_as_bool;
 use crate::vulkan_abstraction::image::swapchain::{Surface, Swapchain};
-use crate::vulkan_abstraction::{PostprocessPushConstant, Reservoir, ReservoirGI};
 use crate::vulkan_abstraction::swapchain::{SwapchainData, SwapchainFrame};
+use crate::vulkan_abstraction::{Buffer, HostAccessibleBuffer, PostprocessPushConstant, Reservoir, ReservoirGI};
 use ash::vk;
 use vk_sync_fork as vk_sync;
 
@@ -159,13 +161,40 @@ pub struct Renderer<K: Hash + Eq + Copy = ResourceKey> {
     /// Fence signaled when the render graph's submission completes.
     render_graph_fence: vulkan_abstraction::Fence,
 
+    /// Timeline semaphore signaled with the **absolute frame count** when a
+    /// frame's GPU work (including the final blit) completes. This replaces
+    /// per-frame fences as the "wait for render end" primitive: waiting for
+    /// frame N is `frame_timeline.wait(N)`.
+    frame_timeline: vulkan_abstraction::TimelineSemaphore,
+    /// Last frame value the watcher thread observed on `frame_timeline`.
+    completed_frame: Arc<AtomicU64>,
+    /// Tells the watcher thread to exit (set in `Drop`).
+    frame_watcher_shutdown: Arc<AtomicBool>,
+    /// Thread (spawned at construction) that waits the frame timeline and
+    /// publishes `completed_frame`. The callbacks themselves run on the render
+    /// thread (they capture `Rc`-based GPU resources, which are `!Send`) —
+    /// `render` drains the ones whose frame the watcher reported complete.
+    frame_watcher: Option<std::thread::JoinHandle<()>>,
 
     //TODO these would love #![feature(unboxed_closures)]
-    start_of_frame_callbacks: Vec<Box<dyn FnOnce()>>,
-    resize_callbacks: Vec<Box<dyn FnOnce()>>,
-    end_of_frame_callbacks: Vec<Box<dyn FnOnce()>>,
+    //these are ordered,the u64 is the absolute frame on which to execute and the actual callback
+    start_of_frame_callbacks: Vec<(u64, Box<dyn FnOnce()>)>,
+    /// Persistent (FnMut) callbacks invoked on every `resize`.
+    resize_callbacks: Vec<Box<dyn FnMut()>>,
+    /// Run on the render thread once the tagged frame has *completed on the
+    /// GPU* (per `completed_frame`). The per-frame CpuToGpu buffers `render`
+    /// creates are deallocated through here.
+    end_of_frame_callbacks: Vec<(u64, Box<dyn FnOnce()>)>,
+}
 
-
+/// Per-frame GPU inputs of the unified graph that live in frame-local buffers
+/// (created on the spot in `render`, deferred-freed via the end-of-frame
+/// callbacks): the camera matrices UBO address and the heap slots of the flat
+/// transform / emissive indirection buffers.
+struct FrameGpuData {
+    matrices_address: vk::DeviceAddress,
+    entity_transforms_slot: u32,
+    emissive_indirection_slot: u32,
 }
 impl<K: Hash + Eq + Copy> Renderer<K> {
     pub fn new(image_extent: (u32, u32), image_format: vk::Format) -> SrResult<Self> {
@@ -285,6 +314,46 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
         let render_graph = RenderGraph::new(Rc::clone(&core))?;
         let render_graph_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(core.device()))?;
 
+        // Frame timeline: signaled with the absolute frame count when each
+        // frame's GPU work completes. Starts at 0 = "frame 0 (nothing) done".
+        let frame_timeline = vulkan_abstraction::TimelineSemaphore::new(Rc::clone(&core), 0)?;
+        let completed_frame = Arc::new(AtomicU64::new(0));
+        let frame_watcher_shutdown = Arc::new(AtomicBool::new(false));
+
+        // Watcher thread: waits the timeline value-by-value and publishes the
+        // last completed frame. It only *observes* — the end-of-frame callbacks
+        // run on the render thread because they capture `Rc`-based (!Send) GPU
+        // resources. `ash::Device` is Send + Sync, so the raw waits are fine here.
+        let frame_watcher = {
+            let device = core.device().inner().clone();
+            let timeline = frame_timeline.inner();
+            let completed = Arc::clone(&completed_frame);
+            let shutdown = Arc::clone(&frame_watcher_shutdown);
+            std::thread::Builder::new()
+                .name("sunray-frame-watcher".to_string())
+                .spawn(move || {
+                    let mut next_frame = 1u64;
+                    while !shutdown.load(Ordering::Acquire) {
+                        let semaphores = [timeline];
+                        let values = [next_frame];
+                        let wait_info = vk::SemaphoreWaitInfo::default().semaphores(&semaphores).values(&values);
+                        // Short timeout so shutdown is honored promptly.
+                        match unsafe { device.wait_semaphores(&wait_info, 100_000_000 /* 100ms */) } {
+                            Ok(()) => {
+                                completed.store(next_frame, Ordering::Release);
+                                next_frame += 1;
+                            }
+                            Err(vk::Result::TIMEOUT) => continue,
+                            Err(e) => {
+                                log::error!("sunray frame watcher: vkWaitSemaphores failed with {e:?}; exiting");
+                                break;
+                            }
+                        }
+                    }
+                })
+                .map_err(|e| SrError::new_custom(format!("failed to spawn frame watcher thread: {e}")))?
+        };
+
         // The swapchain abstraction is owned internally and built at startup
         // from the surface the caller's closure created.
         let swapchain_data = match surface {
@@ -304,6 +373,11 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
 
                 render_graph,
                 render_graph_fence,
+
+                frame_timeline,
+                completed_frame,
+                frame_watcher_shutdown,
+                frame_watcher: Some(frame_watcher),
 
                 reservoir_buffers,
 
@@ -395,10 +469,67 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
             "ReSTIR GI Reservoir Buffer B",
         )
     }
+    // ─── Frame / resize callbacks ───────────────────────────────────────────
+
+    /// Schedule `callback` to run on the CPU at the start of the next frame
+    /// (before any per-frame upload).
+    pub fn add_start_of_frame_callback(&mut self, callback: impl FnOnce() + 'static) {
+        let next_frame = *self.core.absolute_frame_count.borrow() as u64 + 1;
+        self.start_of_frame_callbacks.push((next_frame, Box::new(callback)));
+    }
+
+    /// Schedule `callback` to run once the next rendered frame has *completed
+    /// on the GPU* (per the frame timeline). This is the deferred-deallocation
+    /// hook: dropping a GPU resource inside the callback is safe because the
+    /// frame that used it is provably done.
+    pub fn add_end_of_frame_callback(&mut self, callback: impl FnOnce() + 'static) {
+        let next_frame = *self.core.absolute_frame_count.borrow() as u64 + 1;
+        self.end_of_frame_callbacks.push((next_frame, Box::new(callback)));
+    }
+
+    /// Register a persistent callback invoked on every [`Self::resize`].
+    pub fn add_resize_callback(&mut self, callback: impl FnMut() + 'static) {
+        self.resize_callbacks.push(Box::new(callback));
+    }
+
+    /// Run the start-of-frame callbacks due for `upcoming_frame` (kept ordered
+    /// by frame).
+    fn run_start_of_frame_callbacks(&mut self, upcoming_frame: u64) {
+        let mut i = 0;
+        while i < self.start_of_frame_callbacks.len() {
+            if self.start_of_frame_callbacks[i].0 <= upcoming_frame {
+                let (_, callback) = self.start_of_frame_callbacks.remove(i);
+                callback();
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Run the end-of-frame callbacks whose frame the watcher thread reported
+    /// complete on the GPU (deferred deallocation of per-frame resources).
+    fn run_due_end_of_frame_callbacks(&mut self) {
+        let completed = self.completed_frame.load(Ordering::Acquire);
+        let mut i = 0;
+        while i < self.end_of_frame_callbacks.len() {
+            if self.end_of_frame_callbacks[i].0 <= completed {
+                let (_, callback) = self.end_of_frame_callbacks.remove(i);
+                callback();
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     //TODO this needs to be changes to a subscription based approach where all the necessary methods to recreate the necessary image dependant data are rebuilt
     pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
         self.resize_internal_images(image_extent)?;
         self.resize_swapchain(image_extent)?;
+
+        for callback in self.resize_callbacks.iter_mut() {
+            callback();
+        }
+
         Ok(())
     }
 
@@ -519,15 +650,10 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
     }
 
     pub fn clear_image_dependent_data(&mut self) {
+        // No fence bookkeeping needed: the in-flight slots hold frame-timeline
+        // *values*, which stay valid forever (unlike the destroyed blit fences
+        // this used to have to null out).
         self.image_dependant_data.clear();
-        // The in-flight fence slots hold the blit fences that were just
-        // destroyed with their CmdBuffers; null them so the next
-        // `render_to_swapchain` doesn't wait on stale handles.
-        if let Some(sc) = self.swapchain_data.as_mut() {
-            for fence in sc.img_rendered_fences.iter_mut() {
-                *fence = vk::Fence::null();
-            }
-        }
     }
 
     pub fn build_image_dependent_data(&mut self, images: &[vk::Image]) -> SrResult<()> {
@@ -708,32 +834,129 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
     /// Render to dst_image. All per-frame inputs are parameters: the camera and
     /// the instance list (`(blas key, world transforms of its instances)` —
     /// keys come from scene loading). The user may also pass a Semaphore which the user should signal when the image is
-    /// ready to be written to (for example after being acquired from a swapchain) and a Fence will be returned
-    /// that will be signaled when the rendering is finished (which can be used to know when the Semaphore has no pending operations left).
+    /// ready to be written to (for example after being acquired from a swapchain).
+    ///
+    /// Returns the frame's **absolute frame number**: the frame timeline
+    /// semaphore is signaled with it when the frame's GPU work (including the
+    /// final blit) completes, so "wait for this render to end" is
+    /// `wait_frame(value)` — there is no per-frame fence to track.
     pub fn render(
         &mut self,
         dst_image: vk::Image,
         wait_sem: vk::Semaphore,
         camera: &Camera,
         instances: &[(K, Vec<vk::TransformMatrixKHR>)],
-    ) -> SrResult<vk::Fence> {
-        // Waiting for device idle serializes the per-frame uploads (matrices
-        // UBO, transforms, instance buffer, TLAS rebuild) against in-flight GPU
-        // work. Minimum viable fix — the proper long-term fix is per-frame
-        // buffers (double/triple buffering) so we never overwrite bytes a
-        // running frame might still read.
+    ) -> SrResult<u64> {
+        // ── Start of frame: scheduled callbacks + deferred deallocation of the
+        // per-frame resources of frames the timeline reported complete.
+        let upcoming_frame = *self.core.absolute_frame_count.borrow() as u64 + 1;
+        self.run_start_of_frame_callbacks(upcoming_frame);
+        self.run_due_end_of_frame_callbacks();
+
+        // Waiting for device idle serializes the per-frame work (TLAS rebuild,
+        // arena copy flush) against in-flight GPU work. Minimum viable fix —
+        // the frame-local buffers below don't need it (each frame gets fresh
+        // ones), but the TLAS and arena buffers are still shared across frames.
         unsafe {
             self.core.device().inner().device_wait_idle()?;
         }
 
+        self.resource_manager.start_of_frame()?;
+
+        // ── Per-frame GPU data: CpuToGpu buffers created on the spot, local to
+        // this frame. They're moved into an end-of-frame callback at the end of
+        // this function and freed once the frame timeline passes this frame.
         let mut matrices = camera.as_matrices(self.image_extent);
         // Inject the history matrix saved from the last frame; save the current
         // one to use as history NEXT frame.
         matrices.prev_view_proj = self.prev_view_proj;
         self.prev_view_proj = matrices.view_proj;
 
-        self.resource_manager.prepare_frame(matrices, instances)?;
-        self.resource_manager.start_of_frame()?;
+        // nalgebra's Matrix4 is column-major in memory. HLSL/Slang's
+        // `float4x4(v0, v1, v2, v3)` constructor reads each float4 as a ROW.
+        // Transposing here means each on-disk float4 (which the shader reads as
+        // a member of `Matrices`) is a ROW of the intended matrix, so the
+        // shader's `float4x4(m.vi0, m.vi1, m.vi2, m.vi3)` reconstructs the
+        // matrix correctly without any per-shader `transpose()` call.
+        let mut matrices_buffer =
+            vulkan_abstraction::UniformBuffer::<CameraMatrices>::new(Rc::clone(&self.core), 1 as vk::DeviceSize)?;
+        // Destructure-copy first: `CameraMatrices` is `repr(C, packed)`, so
+        // taking references to its fields (which a method call would) is UB.
+        let CameraMatrices {
+            view_inverse,
+            proj_inverse,
+            view_proj,
+            prev_view_proj,
+        } = matrices;
+        matrices_buffer.map_mut()?[0] = CameraMatrices {
+            view_inverse: view_inverse.transpose(),
+            proj_inverse: proj_inverse.transpose(),
+            view_proj: view_proj.transpose(),
+            prev_view_proj: prev_view_proj.transpose(),
+        };
+
+        let frame_data = self.resource_manager.frame_instance_data(instances)?;
+        let instance_count = frame_data.as_instances.len() as u32;
+
+        // Empty slices would produce null buffers (and so invalid heap
+        // descriptors / build inputs); pad each with one dummy element. The
+        // TLAS build reads 0 instances from the dummy and the shader sees the
+        // dummy emissive entry only through the (matching, pre-rework) "no
+        // lights" behavior.
+        let mut as_instances = frame_data.as_instances;
+        if as_instances.is_empty() {
+            as_instances.push(vk::AccelerationStructureInstanceKHR {
+                transform: vk::TransformMatrixKHR {
+                    matrix: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                },
+                instance_custom_index_and_mask: vk::Packed24_8::new(0, 0),
+                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, 0),
+                acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: 0 },
+            });
+        }
+        let mut transforms = frame_data.transforms;
+        if transforms.is_empty() {
+            transforms.push(vk::TransformMatrixKHR {
+                matrix: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            });
+        }
+        let mut emissive_entries = frame_data.emissive_entries;
+        if emissive_entries.is_empty() {
+            emissive_entries.push(vulkan_abstraction::gltf::EmissiveIndirectionEntry {
+                blas_tri_index: 0,
+                entity_id: 0,
+            });
+        }
+
+        let instances_buffer = vulkan_abstraction::StagingBuffer::new_from_data(
+            Rc::clone(&self.core),
+            &as_instances,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            "per-frame TLAS instances",
+        )?;
+        let transforms_buffer = vulkan_abstraction::StagingBuffer::new_from_data(
+            Rc::clone(&self.core),
+            &transforms,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            "per-frame instance transforms",
+        )?;
+        // Exactly sized: the shader reads num_lights via `GetDimensions`.
+        let emissive_indirection_buffer = vulkan_abstraction::StagingBuffer::new_from_data(
+            Rc::clone(&self.core),
+            &emissive_entries,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            "per-frame emissive indirection",
+        )?;
+
+        self.resource_manager.rebuild_tlas(instance_count, &instances_buffer)?;
+
+        let frame_gpu_data = FrameGpuData {
+            matrices_address: matrices_buffer.get_device_address(),
+            entity_transforms_slot: transforms_buffer.raw().storage_slot(),
+            emissive_indirection_slot: emissive_indirection_buffer.raw().storage_slot(),
+        };
 
         if !self.image_dependant_data.contains_key(&dst_image) {
             self.build_image_dependent_data(&[dst_image])?;
@@ -755,7 +978,12 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
         // accumulation, the 8 a-trous denoise passes, and postprocess. Every pass
         // is heap + Slang; the intermediate G-buffer / RT-output images are
         // graph-internal (transient) resources.
-        self.build_unified_graph(&postprocess_out, result_extent)?;
+        self.build_unified_graph(&postprocess_out, result_extent, &frame_gpu_data)?;
+
+        // build_unified_graph advanced the absolute frame count: that's this
+        // frame's number on the frame timeline.
+        let frame_value = *self.core.absolute_frame_count.borrow() as u64;
+        debug_assert_eq!(frame_value, upcoming_frame);
 
         // The graph submission must wait on any pending transfer work (e.g. the
         // TLAS build) before the RT pass runs.
@@ -773,6 +1001,8 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
         self.render_graph_fence.wait()?;
 
         // === Blit postprocess result -> caller's target (outside the graph) ===
+        // The blit submission signals the frame timeline with this frame's
+        // absolute number — that's the frame's "render end" signal.
         let single_stage = [vk::PipelineStageFlags::ALL_GRAPHICS];
         let (wait_sems, wait_dst_stages): (&[vk::Semaphore], &[vk::PipelineStageFlags]) = if wait_sem == vk::Semaphore::null() {
             (&[], &[])
@@ -781,13 +1011,35 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
         };
 
         let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
-        let signal_fence = idd.blit_cmd_buf.fence_mut().submit()?;
+        let blit_fence = idd.blit_cmd_buf.fence_mut().submit()?;
         let blit_cmd = idd.blit_cmd_buf.inner();
-        self.core
-            .graphics_queue()
-            .submit_async(blit_cmd, wait_sems, wait_dst_stages, &[], signal_fence)?;
+        self.core.graphics_queue().submit_async_with_timeline(
+            blit_cmd,
+            wait_sems,
+            wait_dst_stages,
+            (self.frame_timeline.inner(), frame_value),
+            blit_fence,
+        )?;
 
-        Ok(signal_fence)
+        // ── End of frame: the frame-local buffers stay alive until the GPU is
+        // done with this frame, then get dropped on the render thread.
+        self.end_of_frame_callbacks.push((
+            frame_value,
+            Box::new(move || {
+                drop(matrices_buffer);
+                drop(instances_buffer);
+                drop(transforms_buffer);
+                drop(emissive_indirection_buffer);
+            }),
+        ));
+
+        Ok(frame_value)
+    }
+
+    /// Block until frame `frame_value` (as returned by [`Self::render`]) has
+    /// completed on the GPU.
+    pub fn wait_frame(&self, frame_value: u64) -> SrResult<()> {
+        self.frame_timeline.wait(frame_value)
     }
 
     /// Read-only access to the internal swapchain (present only when the
@@ -820,7 +1072,7 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
         instances: &[(K, Vec<vk::TransformMatrixKHR>)],
         finalize: Option<&mut dyn FnMut(&SwapchainFrame) -> SrResult<()>>,
     ) -> SrResult<()> {
-        let (frame_index, img_acquired_sem, img_rendered_fence) = {
+        let (frame_index, img_acquired_sem, img_rendered_frame) = {
             let sc = self
                 .swapchain_data
                 .as_mut()
@@ -830,13 +1082,13 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
             (
                 frame_index,
                 sc.img_acquired_sems[frame_index].inner(),
-                sc.img_rendered_fences[frame_index],
+                sc.img_rendered_frames[frame_index],
             )
         };
 
-        // Wait for the frame that used this in-flight slot MAX_FRAMES_IN_FLIGHT
-        // frames ago before reusing its semaphore.
-        vulkan_abstraction::wait_fence(self.core.device(), img_rendered_fence)?;
+        // Wait (on the frame timeline) for the frame that used this in-flight
+        // slot MAX_FRAMES_IN_FLIGHT frames ago before reusing its semaphore.
+        self.frame_timeline.wait(img_rendered_frame)?;
 
         let frame = {
             let sc = self.swapchain_data.as_ref().unwrap();
@@ -858,8 +1110,8 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
             }
         };
 
-        let render_fence = self.render(frame.image, img_acquired_sem, camera, instances)?;
-        self.swapchain_data.as_mut().unwrap().img_rendered_fences[frame_index] = render_fence;
+        let rendered_frame = self.render(frame.image, img_acquired_sem, camera, instances)?;
+        self.swapchain_data.as_mut().unwrap().img_rendered_frames[frame_index] = rendered_frame;
 
         match finalize {
             Some(finalize) => finalize(&frame)?,
@@ -900,7 +1152,12 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
     /// cross-frame accumulation ping-pong, the denoise ping-pong, and the
     /// post-process output are imported.
     //TODO finni
-    fn build_unified_graph(&mut self, postprocess_out: &Arc<vulkan_abstraction::Image>, extent: vk::Extent3D) -> SrResult<()> {
+    fn build_unified_graph(
+        &mut self,
+        postprocess_out: &Arc<vulkan_abstraction::Image>,
+        extent: vk::Extent3D,
+        frame_gpu_data: &FrameGpuData,
+    ) -> SrResult<()> {
         let frame_count = self.relative_frame_count;
         let width = extent.width;
         let height = extent.height;
@@ -911,16 +1168,18 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
 
         let pack = |i: u32| -> [u32; 2] { [i, 0] };
 
-        // Non-image fields of the RT push constant, resolved from the renderer's
-        // state now. The five RT-output image slots are filled inside the closure
-        // from the graph's transient resources (they're created per frame).
+        // Non-image fields of the RT push constant: stable slots come from the
+        // resource manager, the per-frame ones (matrices address, transforms /
+        // emissive indirection slots) from this frame's local buffers. The five
+        // RT-output image slots are filled inside the closure from the graph's
+        // transient resources (they're created per frame).
         let rt_pc_base = vulkan_abstraction::RaytracingHeapPushConstant {
             tlas: self.resource_manager.tlas().device_address(),
-            matrices: self.resource_manager.matrices_buffer_address(),
+            matrices: frame_gpu_data.matrices_address,
             meshes_info: pack(self.resource_manager.meshes_info_storage_slot()),
             emissive_triangles: pack(self.resource_manager.emissive_triangles_storage_slot()),
-            emissive_indirection: pack(self.resource_manager.emissive_indirection_storage_slot()),
-            entity_transforms: pack(self.resource_manager.entity_transforms_storage_slot()),
+            emissive_indirection: pack(frame_gpu_data.emissive_indirection_slot),
+            entity_transforms: pack(frame_gpu_data.entity_transforms_slot),
             blue_noise_tex: pack(self.blue_noise_image.sampled_slot()),
             blue_noise_sampler: pack(self.blue_noise_sampler.slot()),
             reservoirs: [
@@ -1425,8 +1684,8 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
         // and the first ReSTIR audition is just one RIS candidate per pixel.
         const WARMUP_FRAMES: u32 = 16;
         for _ in 0..WARMUP_FRAMES {
-            let wait_fence = self.render(dst_image.inner(), vk::Semaphore::null(), camera, instances)?;
-            vulkan_abstraction::wait_fence(self.core.device(), wait_fence)?;
+            let frame = self.render(dst_image.inner(), vk::Semaphore::null(), camera, instances)?;
+            self.wait_frame(frame)?;
         }
 
         dst_image.get_raw_image_data_with_no_padding()
@@ -1534,18 +1793,7 @@ impl<K: Hash + Eq + Copy> Renderer<K> {
     pub fn core(&self) -> &Rc<vulkan_abstraction::Core> {
         &self.core
     }
-    
-    /// No-op: the TLAS is rebuilt from the per-frame instance list inside `render`.
-    #[deprecated(note = "the TLAS is rebuilt per frame; this does nothing")]
-    pub fn rebuild_blasses(&mut self) -> SrResult<()> {
-        Ok(())
-    }
 
-    /// No-op: the TLAS is rebuilt from the per-frame instance list inside `render`.
-    #[deprecated(note = "the TLAS is rebuilt per frame; this does nothing")]
-    pub fn rebuild_tlas(&mut self) -> SrResult<()> {
-        Ok(())
-    }
 }
 
 // useful environment variables, set to 1 or 0
@@ -1557,6 +1805,14 @@ const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 
 impl<K: Hash + Eq + Copy> Drop for Renderer<K> {
     fn drop(&mut self) {
+        // Stop the frame watcher before any Vulkan object it touches (the
+        // timeline semaphore, the device) can be destroyed by the field drops
+        // that follow this body.
+        self.frame_watcher_shutdown.store(true, Ordering::Release);
+        if let Some(handle) = self.frame_watcher.take() {
+            let _ = handle.join();
+        }
+
         match self.core().graphics_queue().wait_idle() {
             Ok(()) => {}
             Err(e) => match e.get_source() {
@@ -1565,6 +1821,12 @@ impl<K: Hash + Eq + Copy> Drop for Renderer<K> {
                 }
                 _ => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
             },
+        }
+
+        // The queue is idle: every pending frame is complete, so all deferred
+        // deallocation callbacks can run now.
+        for (_, callback) in self.end_of_frame_callbacks.drain(..) {
+            callback();
         }
     }
 }

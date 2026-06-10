@@ -6,10 +6,10 @@
 //! resource, accessed only from the (single-threaded) render SubApp.
 
 use std::rc::Rc;
-use std::sync::Arc;
+
 use ash::{khr, vk};
 
-use crate::{error::*, vulkan_abstraction, Renderer, MAX_FRAMES_IN_FLIGHT};
+use crate::{MAX_FRAMES_IN_FLIGHT, error::*, vulkan_abstraction};
 
 /// RAII wrapper that destroys the `vk::SurfaceKHR` on drop.
 pub struct Surface {
@@ -244,8 +244,10 @@ pub(crate) struct SwapchainData {
 
     /// One per in-flight frame: signaled by acquire, waited by the render blit.
     pub(crate) img_acquired_sems: Vec<vulkan_abstraction::Semaphore>,
-    /// One per in-flight frame: the blit fence of the frame that last used this slot.
-    pub(crate) img_rendered_fences: Vec<vk::Fence>,
+    /// One per in-flight frame: the frame-timeline value of the frame that
+    /// last used this slot (0 = never used). Waited through the renderer's
+    /// frame timeline before the slot's semaphore is reused.
+    pub(crate) img_rendered_frames: Vec<u64>,
     /// One per swapchain image: signaled when the image is PRESENT_SRC, waited by present.
     pub(crate) ready_to_present_sems: Vec<vulkan_abstraction::Semaphore>,
     /// One pre-recorded GENERAL -> PRESENT_SRC barrier per swapchain image.
@@ -273,14 +275,14 @@ impl SwapchainData {
         let img_acquired_sems = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(core)))
             .collect::<Result<Vec<_>, _>>()?;
-        let img_rendered_fences = vec![vk::Fence::null(); MAX_FRAMES_IN_FLIGHT];
+        let img_rendered_frames = vec![0u64; MAX_FRAMES_IN_FLIGHT];
         let (present_barrier_cmd_bufs, ready_to_present_sems) = Self::build_per_image_objects(core, &swapchain)?;
 
         Ok(Self {
             swapchain,
             surface,
             img_acquired_sems,
-            img_rendered_fences,
+            img_rendered_frames,
             ready_to_present_sems,
             present_barrier_cmd_bufs,
             frame_count: 0,

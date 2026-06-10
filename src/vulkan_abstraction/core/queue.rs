@@ -72,6 +72,52 @@ impl Queue {
         Ok(())
     }
 
+    /// Like [`Self::submit_async`], but additionally signals a timeline
+    /// semaphore with a specific value when the submission completes (used by
+    /// the renderer to mark the absolute frame count on its frame timeline).
+    pub fn submit_async_with_timeline(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        wait_semaphores: &[vk::Semaphore],
+        wait_dst_stages: &[vk::PipelineStageFlags],
+        signal_timeline: (vk::Semaphore, u64),
+        signal_fence: vk::Fence,
+    ) -> SrResult<()> {
+        if cfg!(debug_assertions) && wait_semaphores.len() != wait_dst_stages.len() {
+            return Err(SrError::new_custom(
+                "Incorrect parameters to Queue::submit_async_with_timeline: wait_semaphores.len() != wait_dst_stages.len()"
+                    .to_string(),
+            ));
+        }
+
+        let wait_semaphore_infos: Vec<vk::SemaphoreSubmitInfo> = wait_semaphores
+            .iter()
+            .zip(wait_dst_stages.iter())
+            .map(|(sem, stage)| {
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(*sem)
+                    // PipelineStageFlags bit values are compatible with the matching subset of PipelineStageFlags2.
+                    .stage_mask(vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64))
+            })
+            .collect();
+
+        let signal_semaphore_infos = [vk::SemaphoreSubmitInfo::default()
+            .semaphore(signal_timeline.0)
+            .value(signal_timeline.1)
+            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
+
+        let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer)];
+
+        let submit_info = vk::SubmitInfo2::default()
+            .wait_semaphore_infos(&wait_semaphore_infos)
+            .command_buffer_infos(&cmd_buf_infos)
+            .signal_semaphore_infos(&signal_semaphore_infos);
+
+        unsafe { self.device.inner().queue_submit2(self.queue, &[submit_info], signal_fence) }?;
+
+        Ok(())
+    }
+
     pub fn submit_sync(&self, command_buffer: vk::CommandBuffer) -> SrResult<()> {
         let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer)];
         let submit_info = vk::SubmitInfo2::default().command_buffer_infos(&cmd_buf_infos);
