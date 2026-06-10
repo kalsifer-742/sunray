@@ -19,8 +19,7 @@ use std::ffi::CStr;
 use std::rc::Rc;
 
 #[rustfmt::skip]
-#[allow(unused)]
-pub struct Core { 
+pub struct Core {
     //TODO core is completely single thread
     //TODO core gets distributed way too often when only the device is needed most of the time
     
@@ -29,7 +28,7 @@ pub struct Core {
 
     acceleration_structure_device: khr::acceleration_structure::Device,
     ray_tracing_pipeline_device: khr::ray_tracing_pipeline::Device,
-    descriptor_heap_device: ext::descriptor_heap::Device, //TODO don't know where to put these params as the almost seem more fit into the descriptor heap
+    descriptor_heap_device: ext::descriptor_heap::Device, //TODO don't know where to put these params as the almost seem more fit into the descriptor heap and this whole thing could even go in resource manager
     descriptor_heap_instance: ext::descriptor_heap::Instance,
     descriptor_heap: RefCell<vulkan_abstraction::DescriptorHeap>,
     //queue needs mutability for .present()

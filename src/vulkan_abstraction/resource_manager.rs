@@ -1,66 +1,65 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::OnceLock;
-use crate::vulkan_abstraction::{
-    ArenaBuffer, BLAS, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents,
-};
+use crate::vulkan_abstraction::{ArenaBuffer, BLAS, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents, Texture};
 use crate::{CameraMatrices, MAX_TLAS_INSTANCES, error::SrResult, vulkan_abstraction};
 use ash::vk;
 use rand::RngExt;
+use crate::render_graph::graph::SamplerDesc;
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
-const FALLBACK_SAMPLER: OnceLock<vulkan_abstraction::Sampler> = OnceLock::new();
-pub(crate) struct ResourceManager {
-    //TODO ring buffer for cameras and instances_buffer
-    // TODo ring buffering this would be needed for cpu stuff too if they were ever uses outside of gpu data build
-    // Camera
+//TODO handle growable
+
+//TODO there is structural decision to make on what to save and how cause raster needs a different way to store the geometry data probabibly with a features set constable?
+//TODO this needs to handle the extraction system
+pub(crate) struct ResourceManager<KeyType : Hash + Eq>  {
+    //TODO these 3 are to be sent each frame
     matrices_uniform_buffer: vulkan_abstraction::UniformBuffer<vulkan_abstraction::MatricesBufferContents>,
-
-    entities: vulkan_abstraction::ArenaKeyMappedBuffer<vulkan_abstraction::EntityGpuData>,
-    // GPU-side: dedicated transform buffer (stride = 48 bytes = VkTransformMatrixKHR), indexed by the same arena slot.
-    // Binding 12 reads this as entity_transform_t[slot] in shaders.
     transforms: vulkan_abstraction::ArenaKeyMappedBuffer<vk::TransformMatrixKHR>,
-    // CPU-side metadata per entity (blas_index, transform — needed for TLAS rebuild & emissive indirection)
-    entity_data: HashMap<u64, vulkan_abstraction::Entity>,
-
-    // Acceleration structures
-    blases: HashMap<u64, vulkan_abstraction::BLAS>,
-    tlas: vulkan_abstraction::TLAS,
-
     instances_buffer: vulkan_abstraction::StagingBuffer<vk::AccelerationStructureInstanceKHR>,
 
-    /// instance index to entity this is needed to get O(1) reverse search on blas instance removal
-    instance_to_entity: HashMap<u64, u64>,
 
-    // Emissive lighting — local-space triangles stored per-BLAS (arena ring buffer)
+
+    tlas: vulkan_abstraction::TLAS,
+    entities_gpu: vulkan_abstraction::ArenaKeyMappedBuffer<vulkan_abstraction::EntityGpuData>,
     blas_emissive_triangles: vulkan_abstraction::ArenaGpuBuffer<vulkan_abstraction::gltf::EmissiveTriangle>,
-    // Dense indirection buffer for NEE sampling: (blas_tri_index, entity_arena_slot) pairs
     emissive_indirection_gpu: vulkan_abstraction::GpuOnlyBuffer,
 
-    // Textures
-    textures: Vec<(vk::Sampler, vk::ImageView)>,
 
+    entities: std::collections::HashSet<KeyType>,
+
+    blases: HashMap<KeyType, vulkan_abstraction::BLAS>,
+    emissive_triangle_ranges: HashMap<KeyType, std::collections::HashSet<u32>> ,
+    entity_to_blas_instance: HashMap<KeyType, u32>,
+    images: HashMap<KeyType, vulkan_abstraction::Image>,
+
+    //TODO this are the explicit slots into the heap
+    textures: Vec< (u32 , u32) >,
+
+    // Samplers loaded from scene
+    //TODO this needs to be reworked to a finite set of reused samplers, since they don't need to be unique to each texture and when adding them I need to look at what I already have by hashing the desc there is now intent for now to remove them so this can only grow
+    samplers : HashMap<SamplerDesc, vulkan_abstraction::Sampler > ,
     // Heap-mode texture indirection buffer. 1024 entries of `[u32; 4]` =
     // `(image_heap_slot, 0, sampler_heap_slot, 0)`. The two padding words
     // make each entry match Slang's `TextureEntry { DescriptorHandle image;
     // DescriptorHandle sampler; }` layout where each `DescriptorHandle`
     // lowers to a `uint2`. The Slang RT shaders dereference this via
     // `pc.textures_lookup[texture_index]`.
+    //TODO this is useless now cause it can be optimized away thanks to descriptors heap and just use the existing information inside entity gpu data
     textures_lookup_buffer: vulkan_abstraction::GpuOnlyBuffer,
 
-    // Samplers loaded from scene
-    samplers: Vec<vulkan_abstraction::Sampler>,
 
-    // Owned images with unique IDs (includes scene images)
-    images: HashMap<u64, vulkan_abstraction::Image>,
 
-    // Fallback and default textures/samplers //TODO these need to become a global OnceLock
+    // Fallback and default textures/samplers
     fallback_texture_image: vulkan_abstraction::Image,
     fallback_texture_sampler: vulkan_abstraction::Sampler,
     default_sampler: vulkan_abstraction::Sampler,
 
     //these are action to be done at the start or end of frame together with queued free slots for arena buffers
+    //TODO this is to be moved to start of frame stuff with proper callbacks
     buffer_copies_queued: Vec<(vk::Buffer, vk::Buffer, vk::BufferCopy)>,
 
     core: Rc<vulkan_abstraction::Core>,
@@ -74,6 +73,8 @@ impl ResourceManager {
         // SHADER_DEVICE_ADDRESS so the heap path can compute the buffer's BDA
         // when allocating a storage-buffer descriptor (`Buffer::storage_slot`
         // internally calls `vkGetBufferDeviceAddress`).
+
+
         let entities = vulkan_abstraction::ArenaKeyMappedBuffer::new(
             core.clone(),
             ARENA_CAPACITY,
@@ -150,7 +151,7 @@ impl ResourceManager {
         Ok(Self {
             matrices_uniform_buffer,
 
-            entities,
+            ,
             transforms,
             entity_data: HashMap::new(),
 
@@ -158,7 +159,7 @@ impl ResourceManager {
             tlas,
             instances_buffer,
 
-            instance_to_entity: Default::default(),
+            : Default::default(),
             blas_emissive_triangles: vulkan_abstraction::ArenaGpuBuffer::new(
                 core.clone(),
                 ARENA_CAPACITY,
@@ -188,12 +189,10 @@ impl ResourceManager {
         })
     }
 
-    pub fn empty_out(self) -> SrResult<Self> {
-        Self::new_empty(self.core)
-    }
 
-    pub fn start_of_frame(&mut self) -> SrResult<()> {
-        self.entities.process_pending_frees();
+
+    pub fn start_of_frame(&mut self) -> SrResult<()> { //TODO this can be moved to a render pass at the start of each frame
+        self..process_pending_frees();
         self.blas_emissive_triangles.process_pending_frees();
         self.transforms.process_pending_frees();
 
@@ -243,7 +242,7 @@ impl ResourceManager {
 
             device.end_command_buffer(cmd_buf)?;
         }
-        
+
         graphics_queue.submit_sync(cmd_buf)?;
         unsafe { device.free_command_buffers(cmd_pool.inner(), &[cmd_buf]) };
 
@@ -299,8 +298,8 @@ impl ResourceManager {
         let id = Self::generate(&self.entity_data);
 
         let gpu_data = Self::build_entity_gpu_data(&self.blases[&blas_index], material);
-        let (slot, copy_region) = self.entities.insert(id, &gpu_data)?;
-        self.copy_commands_queue(self.entities.inner_staging(), self.entities.inner(), copy_region);
+        let (slot, copy_region) = self..insert(id, &gpu_data)?;
+        self.copy_commands_queue(self..inner_staging(), self..inner(), copy_region);
 
         let (_, xform_copy) = self.transforms.insert(id, &transform)?;
         self.copy_commands_queue(self.transforms.inner_staging(), self.transforms.inner(), xform_copy);
@@ -312,7 +311,7 @@ impl ResourceManager {
             material: Material::from(material),
             blas_instance_index: slot as u64,
         };
-        self.instance_to_entity.insert(slot as u64, id);
+        self..insert(slot as u64, id);
         self.entity_data.insert(id, entity);
 
         Ok(vulkan_abstraction::EntityId(id))
@@ -321,8 +320,8 @@ impl ResourceManager {
     /// Destroy an entity, freeing its arena slots. The TLAS must be rebuilt by the caller.
     pub fn destroy_entity(&mut self, id: vulkan_abstraction::EntityId) {
         if let Some(entity) = self.entity_data.remove(&id.0) {
-            self.instance_to_entity.remove(&entity.blas_instance_index);
-            self.entities.remove(id.0);
+            self..remove(&entity.blas_instance_index);
+            self..remove(id.0);
             self.transforms.remove(id.0);
         }
     }
@@ -372,7 +371,7 @@ impl ResourceManager {
 
         for (&entity_id, entity) in &self.entity_data {
             let blas = &self.blases[&entity.blas_index];
-            let arena_slot = self.entities.get_slot(entity_id).unwrap_or(0);
+            let arena_slot = self..get_slot(entity_id).unwrap_or(0);
             for range in blas.emissive_triangle_ranges() {
                 for tri_idx in range.clone() {
                     entries.push(vulkan_abstraction::gltf::EmissiveIndirectionEntry {
@@ -593,8 +592,8 @@ impl ResourceManager {
             index_buffer: self.blases[&blas_index].index_buffer().get_device_address(),
             material,
         };
-        let (slot, copy_region) = self.entities.insert(id, &gpu_data)?;
-        self.copy_commands_queue(self.entities.inner_staging(), self.entities.inner(), copy_region);
+        let (slot, copy_region) = self..insert(id, &gpu_data)?;
+        self.copy_commands_queue(self..inner_staging(), self..inner(), copy_region);
 
         let (_, xform_copy) = self.transforms.insert(id, &transform)?;
         self.copy_commands_queue(self.transforms.inner_staging(), self.transforms.inner(), xform_copy);
@@ -606,7 +605,7 @@ impl ResourceManager {
             material,
             blas_instance_index: slot as u64,
         };
-        self.instance_to_entity.insert(slot as u64, id);
+        self..insert(slot as u64, id);
         self.entity_data.insert(id, entity);
 
         Ok(vulkan_abstraction::EntityId(id))
@@ -619,7 +618,7 @@ impl ResourceManager {
     }
 
     pub fn get_meshes_info_storage_buffer(&self) -> vk::Buffer {
-        self.entities.inner()
+        self..inner()
     }
 
     pub fn get_emissive_triangles_storage_buffer(&self) -> vk::Buffer {
@@ -643,7 +642,7 @@ impl ResourceManager {
     // call lazily allocates a `StorageBuffer` descriptor slot on first use.
     pub fn meshes_info_storage_slot(&self) -> u32 {
         use vulkan_abstraction::Buffer;
-        self.entities.raw().storage_slot()
+        self.entities_gpu.raw().storage_slot()
     }
 
     pub fn emissive_triangles_storage_slot(&self) -> u32 {

@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::rc::Rc;
 
 use ash::vk;
@@ -24,12 +23,7 @@ struct SamplerParams {
 pub struct Sampler {
     core: Rc<vulkan_abstraction::Core>,
     params: SamplerParams,
-    /// Lazily-allocated heap slot for this sampler.
-    slot: Cell<Option<DescriptorSlot>>,
-    /// TEMPORARY shim: legacy descriptor-set writes still want a `vk::Sampler` handle. Lazily
-    /// created on first `inner()` call so heap-only callers don't pay for the round-trip.
-    /// Remove once every pass binds via heap.
-    legacy_handle: Cell<vk::Sampler>,
+    slot: DescriptorSlot,
 }
 
 impl Sampler {
@@ -64,40 +58,17 @@ impl Sampler {
             mipmap_mode,
             max_anisotropy: core.device().properties().limits.max_sampler_anisotropy,
         };
+        let slot = core.descriptor_heap_mut().alloc_sampler_slot();
+        core.descriptor_heap_mut()
+            .write_sampler(slot, &params.to_create_info())
+            .expect("descriptor heap write_sampler failed");
 
-        Ok(Self {
-            core,
-            params,
-            slot: Cell::new(None),
-            legacy_handle: Cell::new(vk::Sampler::null()),
-        })
-    }
-
-    /// TEMPORARY shim: returns a real `vk::Sampler` for legacy descriptor-set writers.
-    /// Remove once every pass uses the heap.
-    pub fn inner(&self) -> vk::Sampler {
-        let cur = self.legacy_handle.get();
-        if cur != vk::Sampler::null() {
-            return cur;
-        }
-        let info = self.params.to_create_info();
-        let handle = unsafe { self.core.device().inner().create_sampler(&info, None) }
-            .expect("vkCreateSampler failed in legacy Sampler::inner shim");
-        self.legacy_handle.set(handle);
-        handle
+        Ok(Self { core, params, slot })
     }
 
     /// Heap slot for this sampler in the sampler heap. Allocated and written on first call.
     pub fn slot(&self) -> u32 {
-        if let Some(s) = self.slot.get() {
-            return s.shader_index();
-        }
-        let mut heap = self.core.descriptor_heap_mut();
-        let slot = heap.alloc_sampler_slot();
-        heap.write_sampler(slot, &self.params.to_create_info())
-            .expect("descriptor heap write_sampler failed");
-        self.slot.set(Some(slot));
-        slot.shader_index()
+        self.slot.shader_index()
     }
 }
 
@@ -124,13 +95,7 @@ impl SamplerParams {
 
 impl Drop for Sampler {
     fn drop(&mut self) {
-        if let Some(s) = self.slot.get() {
-            self.core.descriptor_heap_mut().free(s);
-        }
-        let legacy = self.legacy_handle.get();
-        if legacy != vk::Sampler::null() {
-            unsafe { self.core.device().inner().destroy_sampler(legacy, None) };
-        }
+        self.core.descriptor_heap_mut().free(self.slot);
     }
 }
 

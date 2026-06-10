@@ -82,6 +82,7 @@ public struct Material {
 // CPU layout in `EntityGpuData` (`#[repr(C, packed)]`) is unchanged: it still
 // embeds the `Material` struct so the bytes line up; only the shader-side view
 // is flattened. Field order/sizes mirror `Material` exactly.
+// TODO issue the problem to the slang repo
 public struct MeshInfo {
     public VertexAttributes* vertices;                          // 0
     public uint* indices;                                       // 8

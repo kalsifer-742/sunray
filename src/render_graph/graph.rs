@@ -160,7 +160,7 @@ impl ResourceDesc for BufferDesc {
     type Resource = RawBuffer;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct SamplerDesc {
     pub min_filter: vk::Filter,
     pub mag_filter: vk::Filter,

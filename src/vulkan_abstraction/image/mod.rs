@@ -36,7 +36,9 @@ pub struct Image {
     /// the `vk::Image` + view but skips `Allocator::free`.
     owns_memory: bool,
 }
-
+//TODO no more lazy slot allocation 
+//TODO why are the written slot always read optimal
+//TODO transform the struct internal value to desc
 impl Resource for Image {
     type Desc = ImageDesc;
 

@@ -4527,6 +4527,7 @@ dependencies = [
  "ash 0.38.0+1.4.352",
  "bevy_a11y",
  "bevy_app",
+ "bevy_asset",
  "bevy_diagnostic",
  "bevy_ecs",
  "bevy_input",

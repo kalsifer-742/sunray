@@ -63,6 +63,7 @@ pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::S
 
 pub use crate::vulkan_abstraction::DiagnosticTool;
 
+
 pub struct Renderer {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 

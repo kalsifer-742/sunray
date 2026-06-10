@@ -58,6 +58,8 @@ bevy_platform = { version = "0.19.0-rc.2", optional = true }
 bevy_a11y = { version = "0.19.0-rc.2", optional = true }
 bevy_diagnostic = { version = "0.19.0-rc.2", optional = true }
 bevy_log = { version = "0.19.0-rc.2", optional = true }
+bevy_asset = { version = "0.19.0-rc.2", optional = true }
+
 # egui core only — NOT bevy_egui and NOT a paint backend. We do input mapping +
 # tessellation ourselves (Option C in docs/bevy_integration.md). `egui-ash-renderer`
 # is intentionally avoided: it bundles a descriptor-set + GLSL/SPIR-V raster
@@ -72,6 +74,7 @@ default = [ ]
 nvidia-aftermath = ["dep:aftermath-rs"]
 # Enables `sunray::bevy_integration` (the Bevy plugin) and the `bevy_app` example.
 bevy = [
+    "dep:bevy_asset",
     "dep:bevy_app",
     "dep:bevy_ecs",
     "dep:bevy_render",
