@@ -6,7 +6,7 @@ use ash::vk;
 
 use crate::render_graph::graph::SamplerDesc;
 use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents};
-use crate::{CameraMatrices, MAX_TLAS_INSTANCES, error::SrResult, vulkan_abstraction};
+use crate::{CameraMatrices, error::SrResult, vulkan_abstraction};
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
@@ -90,19 +90,20 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
 
         let transforms = vulkan_abstraction::StagingBuffer::new(
             Rc::clone(&core),
-            MAX_TLAS_INSTANCES as vk::DeviceSize,
+            10000 as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             "Per-frame instance transforms",
         )?;
 
         let mut instances_buffer = vulkan_abstraction::StagingBuffer::new(
             Rc::clone(&core),
-            MAX_TLAS_INSTANCES as vk::DeviceSize,
+            10000 as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             "Cpu side instances of blases",
         )?;
+        
         let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[], &mut instances_buffer)?;
 
         let default_sampler = vulkan_abstraction::Sampler::new(
@@ -236,11 +237,7 @@ impl<K: Hash + Eq + Copy> ResourceManager<K> {
 
                 for transform in instance_transforms {
                     let instance_index = as_instances.len();
-                    if instance_index >= MAX_TLAS_INSTANCES {
-                        return Err(crate::error::SrError::new_custom(format!(
-                            "prepare_frame: more than MAX_TLAS_INSTANCES ({MAX_TLAS_INSTANCES}) instances"
-                        )));
-                    }
+                    
 
                     transforms_mem[instance_index] = *transform;
 

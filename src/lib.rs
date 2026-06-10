@@ -1,3 +1,4 @@
+
 pub mod camera;
 pub mod error;
 pub mod render_graph;
@@ -36,7 +37,6 @@ pub const DENOISE_PASSES: u32 = 8;
 //TODO finello
 pub const EXPOSURE: f32 = 1.0;
 
-const MAX_TLAS_INSTANCES: usize = 10_000;
 
 /// Key identifying a GPU asset (BLAS or image) inside the renderer's
 /// `ResourceManager`. `group` ties together every asset created by one
@@ -62,12 +62,13 @@ struct RetainedEntity {
 /// Apparently 2 is the most common choice. Empirically it seems like the performance doesn't really
 /// get any better with a higher number, but it does get measurably worse with only 1.
 ///
-/// TODO this feature is actually not doing what it is supposed and needs to be reworked,
+/// TODO this feature is actually not doing what it is supposed and needs to be reworked, do not go over 2 I think it will crash
 /// the render graph is incapable of starting a second frame with a current frame still ongoing
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 //TODO add a list of callbacks to call at the end of frames for cleanup or at start for setup
 //TODO deferred deallocation for buffers and acceleration structures
+//TODO generic over the key
 
 /// Per-output-image data. The render graph now owns the intermediate G-buffer /
 /// RT-output images as internal (transient) resources, so the only image that
@@ -87,6 +88,8 @@ pub struct Renderer {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
 
     resource_manager: vulkan_abstraction::ResourceManager<ResourceKey>,
+
+
 
     /// Retained entities backing the deprecated entity API (collected into the
     /// per-frame instance list by `render_to_image`).
@@ -160,6 +163,12 @@ pub struct Renderer {
     pub render_graph: RenderGraph,
     /// Fence signaled when the render graph's submission completes.
     render_graph_fence: vulkan_abstraction::Fence,
+
+
+    //TODO these would love #![feature(unboxed_closures)]
+    start_of_frame_callbacks: Vec<Box<dyn FnOnce()>>,
+    resize_callbacks: Vec<Box<dyn FnOnce()>>,
+    end_of_frame_callbacks: Vec<Box<dyn FnOnce()>>,
 
 
 }
@@ -325,6 +334,10 @@ impl Renderer {
 
 
                 core,
+
+                start_of_frame_callbacks: vec![],
+                resize_callbacks: vec![],
+                end_of_frame_callbacks: vec![],
             },
             surface,
         ))
