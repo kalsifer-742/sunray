@@ -1,13 +1,11 @@
-
 pub mod camera;
 pub mod error;
+pub mod finello_pathtracing_pipeline;
 pub mod render_graph;
 pub mod scene;
 pub mod shader_compiler;
 pub mod utils;
 pub mod vulkan_abstraction;
-pub mod finello_pathtracing_pipeline;
-
 
 /// Bevy 0.19 plugin that drives this renderer from inside a Bevy `App`.
 ///
@@ -17,10 +15,10 @@ pub mod finello_pathtracing_pipeline;
 #[cfg(feature = "bevy")]
 pub mod bevy_integration;
 
+pub use crate::vulkan_abstraction::DiagnosticTool;
 pub use camera::*;
 use error::*;
 pub use scene::*;
-pub use crate::vulkan_abstraction::DiagnosticTool;
 
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,7 +39,6 @@ use vk_sync_fork as vk_sync;
 pub const DENOISE_PASSES: u32 = 8;
 //TODO finello
 pub const EXPOSURE: f32 = 1.0;
-
 
 /// Key identifying a GPU asset (BLAS or image) inside the renderer's
 /// `ResourceManager`. `group` ties together every asset created by one
@@ -70,7 +67,6 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //TODO deferred deallocation for buffers and acceleration structures
 //TODO validate max_frame_in_flight against the swapchain
 
-
 /// Per-output-image data. The render graph now owns the intermediate G-buffer /
 /// RT-output images as internal (transient) resources, so the only image that
 /// still lives here is the post-process result, which the external blit copies
@@ -80,10 +76,7 @@ struct ImageDependentData {
     postprocess_result_image: Arc<vulkan_abstraction::Image>,
 }
 
-
 pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::SurfaceKHR>;
-
-
 
 pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
     image_dependant_data: HashMap<vk::Image, ImageDependentData>,
@@ -115,19 +108,16 @@ pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
     ///The first pass after raytracing merges the previous frame on the next one to reduce bias
     temporal_accumulation_spirv: &'static [u8],
     ///The denoise pass is run after the temporal accumulation to reduce noise even more (a-trous filter)
-    denoise_spirv:&'static [u8],
+    denoise_spirv: &'static [u8],
     ///An extra pass to handle post-processing like exposure and color correction. Should be mathematically easy to calculate
     postprocess_spirv: &'static [u8],
-
 
     // this is about the frame being worked on by the cpu
     image_extent: vk::Extent3D,
     image_format: vk::Format,
-    
 
     blue_noise_image: vulkan_abstraction::Image,
     blue_noise_sampler: vulkan_abstraction::Sampler,
-
 
     core: Rc<vulkan_abstraction::Core>,
 
@@ -149,9 +139,7 @@ pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
     /// contract as reservoir_buffers above, but storing surface samples (x2) instead of light samples.
     reservoir_gi_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
 
-
-
-    prev_view_proj: nalgebra::Matrix4<f32>, //used to calculate motion vectors 
+    prev_view_proj: nalgebra::Matrix4<f32>, //used to calculate motion vectors
 
     /// Persistent render graph.
     /// Re-populated each frame (passes / imports change because the ping-pong
@@ -340,7 +328,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
                         let values = [next_frame];
                         let wait_info = vk::SemaphoreWaitInfo::default().semaphores(&semaphores).values(&values);
                         // Short timeout so shutdown is honored promptly.
-                        match unsafe { device.wait_semaphores(&wait_info, 100_000_000 /* 100ms */) } {
+                        match unsafe {
+                            device.wait_semaphores(&wait_info, 100_000_000 /* 100ms */)
+                        } {
                             Ok(()) => {
                                 completed.store(next_frame, Ordering::Release);
                                 next_frame += 1;
@@ -367,54 +357,51 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         };
 
         let mut renderer = Self {
-                image_dependant_data,
+            image_dependant_data,
 
-                swapchain_data,
-                next_group: 0,
-                scene_groups: HashMap::new(),
+            swapchain_data,
+            next_group: 0,
+            scene_groups: HashMap::new(),
 
-                render_graph,
-                render_graph_fence,
+            render_graph,
+            render_graph_fence,
 
-                frame_timeline,
-                completed_frame,
-                frame_watcher_shutdown,
-                frame_watcher: Some(frame_watcher),
+            frame_timeline,
+            completed_frame,
+            frame_watcher_shutdown,
+            frame_watcher: Some(frame_watcher),
 
-                reservoir_buffers,
+            reservoir_buffers,
 
-                ray_gen_ris_spirv,
-                ray_gen_final_spirv,
-                ray_miss_spirv,
-                closest_hit_spirv,
-                any_hit_spirv,
-                denoise_spirv,
-                temporal_accumulation_spirv,
-                postprocess_spirv,
+            ray_gen_ris_spirv,
+            ray_gen_final_spirv,
+            ray_miss_spirv,
+            closest_hit_spirv,
+            any_hit_spirv,
+            denoise_spirv,
+            temporal_accumulation_spirv,
+            postprocess_spirv,
 
-                prev_view_proj: nalgebra::zero(),
+            prev_view_proj: nalgebra::zero(),
 
-                image_extent,
-                image_format,
+            image_extent,
+            image_format,
 
+            accumulation_images,
+            denoising_images,
+            relative_frame_count: 0,
 
+            blue_noise_image,
+            blue_noise_sampler,
 
-                accumulation_images,
-                denoising_images,
-                relative_frame_count: 0,
+            resource_manager,
+            reservoir_gi_buffers,
 
-                blue_noise_image,
-                blue_noise_sampler,
+            core,
 
-                resource_manager,
-                reservoir_gi_buffers,
-
-
-                core,
-
-                start_of_frame_callbacks: vec![],
-                resize_callbacks: vec![],
-                end_of_frame_callbacks: vec![],
+            start_of_frame_callbacks: vec![],
+            resize_callbacks: vec![],
+            end_of_frame_callbacks: vec![],
         };
 
         // The pre-recorded blit into each swapchain image must exist before the
@@ -638,7 +625,8 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
         let surface_khr = sc.surface.inner();
         sc.swapchain.rebuild(surface_khr, window_extent)?;
-        let (present_barrier_cmd_bufs, ready_to_present_sems) = SwapchainData::build_per_image_objects(&self.core, &sc.swapchain)?;
+        let (present_barrier_cmd_bufs, ready_to_present_sems) =
+            SwapchainData::build_per_image_objects(&self.core, &sc.swapchain)?;
         sc.present_barrier_cmd_bufs = present_barrier_cmd_bufs;
         sc.ready_to_present_sems = ready_to_present_sems;
         let images = sc.swapchain.images().to_vec();
@@ -859,21 +847,20 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
                 "load_mesh: an asset is already registered under this key".to_string(),
             ));
         }
-        if vertices.is_empty() || indices.is_empty() || indices.len() % 3 != 0 {
+        if vertices.is_empty() || indices.is_empty() || !indices.len().is_multiple_of(3) {
             return Err(SrError::new_custom(format!(
                 "load_mesh: invalid mesh ({} vertices, {} indices — need non-empty vertices and a triangle-list index count)",
                 vertices.len(),
                 indices.len()
             )));
         }
-        if let Some(&max_index) = indices.iter().max() {
-            if max_index as usize >= vertices.len() {
+        if let Some(&max_index) = indices.iter().max()
+            && max_index as usize >= vertices.len() {
                 return Err(SrError::new_custom(format!(
                     "load_mesh: index {max_index} out of range for {} vertices",
                     vertices.len()
                 )));
             }
-        }
 
         let emission = [
             material.emissive_factor[0] * material.emissive_strength,
@@ -1150,11 +1137,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     /// in-flight fence, acquires an image, calls [`Self::render`], transitions
     /// the image to `PRESENT_SRC` with the pre-recorded barrier, and presents.
     /// All per-frame inputs (camera + instances) come from the caller.
-    pub fn render_to_swapchain(
-        &mut self,
-        camera: &Camera,
-        instances: &[(K, Vec<vk::TransformMatrixKHR>)],
-    ) -> SrResult<()> {
+    pub fn render_to_swapchain(&mut self, camera: &Camera, instances: &[(K, Vec<vk::TransformMatrixKHR>)]) -> SrResult<()> {
         self.render_to_swapchain_with(camera, instances, None)
     }
 
@@ -1322,9 +1305,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // Compute passes now describe themselves with their SPIR-V; the graph's
         // pipeline cache builds/reuses the pipeline. Snapshot the bytes into
         // locals so the `&mut self.render_graph` borrow below stays disjoint.
-        let taa_spirv = self.temporal_accumulation_spirv.clone();
-        let denoise_spirv = self.denoise_spirv.clone();
-        let postprocess_spirv = self.postprocess_spirv.clone();
+        let taa_spirv = self.temporal_accumulation_spirv;
+        let denoise_spirv = self.denoise_spirv;
+        let postprocess_spirv = self.postprocess_spirv;
 
         let accum_arc0 = Arc::clone(&self.accumulation_images[0]);
         let accum_arc1 = Arc::clone(&self.accumulation_images[1]);
@@ -1441,7 +1424,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // 2. Temporal accumulation.
         Self::add_temporal_pass(
             rg,
-            &taa_spirv,
+            taa_spirv,
             raw_color_h.clone(),
             motion_h.clone(),
             accum_history_h,
@@ -1454,7 +1437,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // 3. Denoise (8 a-trous passes). Pass 0 reads the TAA output (accum_target).
         Self::add_denoise_passes(
             rg,
-            &denoise_spirv,
+            denoise_spirv,
             accum_target_h,
             depth_h,
             normal_h,
@@ -1471,7 +1454,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         let denoise_input_h = if final_idx == 0 { denoise_a_h } else { denoise_b_h };
         Self::add_postprocess_pass(
             rg,
-            &postprocess_spirv,
+            postprocess_spirv,
             denoise_input_h,
             postprocess_out_h,
             width,
@@ -1890,7 +1873,6 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     pub fn core(&self) -> &Rc<vulkan_abstraction::Core> {
         &self.core
     }
-
 }
 
 // useful environment variables, set to 1 or 0

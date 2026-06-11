@@ -14,8 +14,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use vk_sync_fork as vk_sync;
 
-
-
 /// Pick the right `vk::ImageAspectFlags` for a given format. Used when building
 /// image subresource ranges for layout transitions in `emit_barriers`.
 fn aspect_for(format: vk::Format) -> vk::ImageAspectFlags {

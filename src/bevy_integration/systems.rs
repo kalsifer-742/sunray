@@ -20,9 +20,9 @@ use nalgebra as na;
 
 use super::asset::{ExtractedMeshAssets, SunrayMeshInstance};
 use super::camera::{SunrayCamera, eye_target_fov};
-use super::instance::{SunrayInstance, transform_matrix_khr};
 use super::egui_paint::EguiPaint;
 use super::egui_support::ExtractedEgui;
+use super::instance::{SunrayInstance, transform_matrix_khr};
 use super::state::*;
 use super::surface;
 use crate::camera::Camera;

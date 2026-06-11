@@ -232,7 +232,6 @@ impl Drop for Swapchain {
     }
 }
 
-
 /// Swapchain + present plumbing owned by the renderer when it was constructed
 /// with a surface (`new_with_surface`). Kept internal — callers drive frames
 /// through [`Renderer::render_to_swapchain`] and never touch the swapchain

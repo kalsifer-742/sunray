@@ -49,11 +49,7 @@ impl Scene {
         &self.nodes
     }
 
-    pub fn load_into_gpu(
-        &self,
-        core: &Rc<vulkan_abstraction::Core>,
-        mut scene_data: crate::SceneData,
-    ) -> SrResult<LoadedScene> {
+    pub fn load_into_gpu(&self, core: &Rc<vulkan_abstraction::Core>, mut scene_data: crate::SceneData) -> SrResult<LoadedScene> {
         let mut blases = vec![];
         let mut instances = vec![];
 

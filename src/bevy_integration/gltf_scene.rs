@@ -63,7 +63,10 @@ impl Plugin for SunrayGltfPlugin {
         if !app.world().contains_resource::<Assets<bevy_image::Image>>() {
             app.init_asset::<bevy_image::Image>();
         }
-        if !app.world().contains_resource::<Assets<bevy_world_serialization::WorldAsset>>() {
+        if !app
+            .world()
+            .contains_resource::<Assets<bevy_world_serialization::WorldAsset>>()
+        {
             app.init_asset::<bevy_world_serialization::WorldAsset>();
         }
         {

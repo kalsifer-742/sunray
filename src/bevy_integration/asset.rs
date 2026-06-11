@@ -241,7 +241,9 @@ fn convert_mesh(mesh: &Mesh) -> Result<(Vec<sr_gltf::Vertex>, Vec<u32>), String>
         .attribute(Mesh::ATTRIBUTE_POSITION)
         .and_then(VertexAttributeValues::as_float3)
         .ok_or_else(|| "missing or non-Float32x3 POSITION attribute".to_string())?;
-    let normals = mesh.attribute(Mesh::ATTRIBUTE_NORMAL).and_then(VertexAttributeValues::as_float3);
+    let normals = mesh
+        .attribute(Mesh::ATTRIBUTE_NORMAL)
+        .and_then(VertexAttributeValues::as_float3);
     let uvs = mesh.attribute(Mesh::ATTRIBUTE_UV_0).and_then(|values| match values {
         VertexAttributeValues::Float32x2(values) => Some(values.as_slice()),
         _ => None,

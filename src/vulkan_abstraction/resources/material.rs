@@ -50,10 +50,7 @@ impl Material {
     /// Build the GPU material from the glTF one. `resolve` maps a glTF texture
     /// index (`Option<usize>`) to its `(image heap slot, sampler heap slot)`
     /// pair, returning `NULL_TEXTURE_INDEX` slots for `None`.
-    pub(crate) fn new(
-        material: &vulkan_abstraction::gltf::Material,
-        resolve: &impl Fn(Option<usize>) -> (u32, u32),
-    ) -> Self {
+    pub(crate) fn new(material: &vulkan_abstraction::gltf::Material, resolve: &impl Fn(Option<usize>) -> (u32, u32)) -> Self {
         let pbr = &material.pbr_metallic_roughness_properties;
         let (base_color_image, base_color_sampler) = resolve(pbr.base_color_texture_index);
         let (metallic_roughness_image, metallic_roughness_sampler) = resolve(pbr.metallic_roughness_texture_index);

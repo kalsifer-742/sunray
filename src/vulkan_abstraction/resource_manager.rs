@@ -69,8 +69,6 @@ pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
     core: Rc<vulkan_abstraction::Core>,
 }
 
-
-
 // `K: 'static` because deferred frame work is stored as boxed `FnOnce(&mut Self)`.
 impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
     pub fn new_empty(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
@@ -322,10 +320,7 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
                 Some(i) => {
                     let texture = &textures[i];
                     let image_slot = image_slots[texture.source];
-                    let sampler_slot = texture
-                        .sampler
-                        .map(|s| sampler_slots[s])
-                        .unwrap_or(default_sampler_slot);
+                    let sampler_slot = texture.sampler.map(|s| sampler_slots[s]).unwrap_or(default_sampler_slot);
                     (image_slot, sampler_slot)
                 }
                 None => (Material::NULL_TEXTURE_INDEX, Material::NULL_TEXTURE_INDEX),

@@ -601,7 +601,6 @@ pub trait ShaderDesc {}
 pub enum ShaderSource {
     //TODO supported shaders, for now pre-compiled SPIR-V is the only one supported
     //TODO the slang compiler and shaderc are to be moved inside the render_graph as he is the one allowed to compile at runtime,all other stuff is precompiled
-
     Glsl(PathBuf),
     Slang(PathBuf),
     /// Pre-compiled SPIR-V bytes — produced upstream (e.g. by the Slang

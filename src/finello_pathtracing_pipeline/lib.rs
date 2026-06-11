@@ -1,8 +1,4 @@
-pub struct PipelineData {
-
-}
+pub struct PipelineData {}
 impl PipelineData {
-    pub fn inject_pipeline(&self){
-
-    }
+    pub fn inject_pipeline(&self) {}
 }

@@ -9,7 +9,7 @@ pub use instance::*;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::Queue;
 use crate::vulkan_abstraction::diagnostics::DiagnosticTool;
-use crate::{error::*, CreateSurfaceFn};
+use crate::{CreateSurfaceFn, error::*};
 use ash::vk::Semaphore;
 use ash::{ext, khr, vk};
 use parking_lot::lock_api::MutexGuard;

@@ -46,8 +46,8 @@ use bevy_window::{Window, WindowPlugin};
 use bevy_winit::WinitPlugin;
 
 use sunray::bevy_integration::{
-    EguiContext, SunrayCamera, SunrayEguiPlugin, SunrayGltfFailed, SunrayGltfPlugin, SunrayGltfScene,
-    SunrayGltfSpawned, SunrayMaterial, SunrayMeshInstance, SunrayRenderPlugin, SunrayScene,
+    EguiContext, SunrayCamera, SunrayEguiPlugin, SunrayGltfFailed, SunrayGltfPlugin, SunrayGltfScene, SunrayGltfSpawned,
+    SunrayMaterial, SunrayMeshInstance, SunrayRenderPlugin, SunrayScene,
 };
 
 /// Directory scanned for `.glb` files; also the Bevy asset root, so the same
@@ -128,7 +128,9 @@ fn main() {
         // Ask the renderer to load this glTF once the device exists (the
         // "direct" path; the egui panel can swap/unload it at runtime).
         .insert_resource(SunrayScene::with_gltf(format!("{ASSET_DIR}/Room.glb")))
-        .insert_resource(GlbLibrary { files: scan_glb_library() })
+        .insert_resource(GlbLibrary {
+            files: scan_glb_library(),
+        })
         .insert_resource(SceneManager {
             direct: Some("Room.glb".into()),
             ..Default::default()
@@ -155,7 +157,11 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
         roughness: 0.4,
         ..Default::default()
     };
-    commands.spawn((Transform::from_xyz(2.0, 0.5, 0.0), SunrayMeshInstance { mesh: cube.clone() }, red));
+    commands.spawn((
+        Transform::from_xyz(2.0, 0.5, 0.0),
+        SunrayMeshInstance { mesh: cube.clone() },
+        red,
+    ));
     commands.spawn((Transform::from_xyz(-2.0, 0.5, 0.0), SunrayMeshInstance { mesh: cube }, red));
 
     // A small emissive cube acting as an extra light (NEE picks up its
