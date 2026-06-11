@@ -833,6 +833,101 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         Ok(())
     }
 
+    /// Build a BLAS from raw triangle-list mesh data at **runtime** and
+    /// register it under the caller-supplied `key` — the runtime equivalent of
+    /// one scene BLAS, with no glTF involved (the Bevy integration uses this to
+    /// turn `Mesh` assets into BLASes on the fly). Texture indices in
+    /// `material` cannot be resolved here (no image set accompanies the mesh),
+    /// so all texture references are treated as absent; the scalar/color
+    /// factors still apply.
+    ///
+    /// Emissive triangles for NEE are derived from the index list when the
+    /// material's emission (`emissive_factor * emissive_strength`) is non-zero.
+    /// The mesh is renderable by instances passed to [`Self::render`] from the
+    /// upcoming frame on (its mesh-info arena copy is flushed by the
+    /// start-of-frame callback the copy queue schedules); no GPU wait is
+    /// needed to add it.
+    pub fn load_mesh(
+        &mut self,
+        key: K,
+        vertices: &[vulkan_abstraction::gltf::Vertex],
+        indices: &[u32],
+        material: &vulkan_abstraction::gltf::Material,
+    ) -> SrResult<()> {
+        if self.resource_manager.contains(&key) {
+            return Err(SrError::new_custom(
+                "load_mesh: an asset is already registered under this key".to_string(),
+            ));
+        }
+        if vertices.is_empty() || indices.is_empty() || indices.len() % 3 != 0 {
+            return Err(SrError::new_custom(format!(
+                "load_mesh: invalid mesh ({} vertices, {} indices — need non-empty vertices and a triangle-list index count)",
+                vertices.len(),
+                indices.len()
+            )));
+        }
+        if let Some(&max_index) = indices.iter().max() {
+            if max_index as usize >= vertices.len() {
+                return Err(SrError::new_custom(format!(
+                    "load_mesh: index {max_index} out of range for {} vertices",
+                    vertices.len()
+                )));
+            }
+        }
+
+        let emission = [
+            material.emissive_factor[0] * material.emissive_strength,
+            material.emissive_factor[1] * material.emissive_strength,
+            material.emissive_factor[2] * material.emissive_strength,
+            0.0,
+        ];
+        let emissive_triangles: Vec<vulkan_abstraction::gltf::EmissiveTriangle> = if emission[..3].iter().any(|&c| c > 0.0) {
+            indices
+                .chunks_exact(3)
+                .map(|tri| {
+                    // `Vertex` is repr(packed): copy the positions out, no refs.
+                    let p0 = vertices[tri[0] as usize].position;
+                    let p1 = vertices[tri[1] as usize].position;
+                    let p2 = vertices[tri[2] as usize].position;
+                    vulkan_abstraction::gltf::EmissiveTriangle {
+                        v0: [p0[0], p0[1], p0[2], 0.0],
+                        v1: [p1[0], p1[1], p1[2], 0.0],
+                        v2: [p2[0], p2[1], p2[2], 0.0],
+                        emission,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), vertices)?;
+        let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data(Rc::clone(&self.core), indices)?;
+        let blas = vulkan_abstraction::BLAS::new(Rc::clone(&self.core), vertex_buffer, index_buffer, false)?;
+
+        // No image set accompanies a runtime mesh: every texture reference
+        // resolves to "absent" (NULL slots ignored by the shader).
+        let resolve = |_: Option<usize>| {
+            (
+                vulkan_abstraction::Material::NULL_TEXTURE_INDEX,
+                vulkan_abstraction::Material::NULL_TEXTURE_INDEX,
+            )
+        };
+        let gpu_material = vulkan_abstraction::Material::new(material, &resolve);
+
+        self.resource_manager.add_blas(key, blas, gpu_material, &emissive_triangles)
+    }
+
+    /// Free the runtime-loaded mesh registered under `key` by [`Self::load_mesh`].
+    /// Instances referencing the key must no longer be passed to `render`.
+    //TODO defer the BLAS drop through an end-of-frame callback (tagged with the
+    //     current frame) instead of waiting the whole device idle.
+    pub fn unload_mesh(&mut self, key: &K) -> SrResult<()> {
+        unsafe { self.core.device().inner().device_wait_idle() }?;
+        self.resource_manager.remove(key);
+        Ok(())
+    }
+
     /// Render to dst_image. All per-frame inputs are parameters: the camera and
     /// the instance list (`(blas key, world transforms of its instances)` —
     /// keys come from scene loading). The user may also pass a Semaphore which the user should signal when the image is

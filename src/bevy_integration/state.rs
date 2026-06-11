@@ -84,11 +84,14 @@ pub struct ExtractedScene {
 /// state or change tracking.
 #[derive(Resource, Default)]
 pub struct ExtractedInstances {
-    /// `(BLAS index in the loaded scene, world transform)`, one per entity.
+    /// `(BLAS index in the loaded scene, world transform)`, one per
+    /// [`super::SunrayInstance`] entity. When non-empty these **replace** the
+    /// scene's baked instances (they re-place the same scene BLASes).
     pub instances: Vec<(usize, vk::TransformMatrixKHR)>,
-    /// Whether any `SunrayInstance` entity existed this frame. When true the
-    /// entity-driven list replaces the scene's baked instances.
-    pub active: bool,
+    /// `(mesh asset id, world transform)`, one per
+    /// [`super::SunrayMeshInstance`] entity (runtime-built BLAS keyed by the
+    /// asset id — see `asset.rs`). Always **additive** on top of the scene.
+    pub asset_instances: Vec<(UntypedAssetId, vk::TransformMatrixKHR)>,
 }
 
 /// The renderer (which owns its surface + swapchain internally). **NonSend**

@@ -19,6 +19,7 @@
 
 use bevy_a11y::AccessibilityPlugin;
 use bevy_app::{App, Startup, TaskPoolPlugin, Update};
+use bevy_asset::{AssetPlugin, Assets};
 use bevy_diagnostic::FrameCountPlugin;
 use bevy_ecs::prelude::*;
 use bevy_input::ButtonInput;
@@ -26,14 +27,18 @@ use bevy_input::InputPlugin;
 use bevy_input::keyboard::KeyCode;
 use bevy_input::mouse::{MouseButton, MouseMotion};
 use bevy_log::LogPlugin;
+use bevy_math::primitives::Cuboid;
 use bevy_math::{EulerRot, Quat, Vec2, Vec3};
+use bevy_render::mesh::Mesh;
 use bevy_time::{Time, TimePlugin};
 use bevy_transform::TransformPlugin;
 use bevy_transform::components::Transform;
 use bevy_window::{Window, WindowPlugin};
 use bevy_winit::WinitPlugin;
 
-use sunray::bevy_integration::{EguiContext, SunrayCamera, SunrayEguiPlugin, SunrayRenderPlugin, SunrayScene};
+use sunray::bevy_integration::{
+    EguiContext, SunrayCamera, SunrayEguiPlugin, SunrayMaterial, SunrayMeshInstance, SunrayRenderPlugin, SunrayScene,
+};
 
 /// Simple fly-camera state stored next to the camera's `Transform`.
 #[derive(Component)]
@@ -48,6 +53,9 @@ fn main() {
         .add_plugins((
             LogPlugin::default(),
             TaskPoolPlugin::default(),
+            // Assets so `SunrayMeshInstance` can reference `Mesh` assets;
+            // `SunrayRenderPlugin` registers `Assets<Mesh>` itself.
+            AssetPlugin::default(),
             FrameCountPlugin,
             TimePlugin,
             InputPlugin,
@@ -71,12 +79,37 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
     // The camera is an ordinary ECS entity: a Transform + SunrayCamera marker.
     commands.spawn((
         Transform::from_xyz(0.0, 2.0, 10.0),
         SunrayCamera { fov_y_degrees: 45.0 },
         FlyCam { yaw: 0.0, pitch: 0.0 },
+    ));
+
+    // Runtime mesh assets → BLASes built on the fly, rendered on top of the
+    // glTF scene. The material is per mesh *asset* (one BLAS each), so the two
+    // entities sharing `cube` share the red material.
+    let cube = meshes.add(Mesh::from(Cuboid::new(1.0, 1.0, 1.0)));
+    let red = SunrayMaterial {
+        base_color: [0.8, 0.15, 0.15, 1.0],
+        roughness: 0.4,
+        ..Default::default()
+    };
+    commands.spawn((Transform::from_xyz(2.0, 0.5, 0.0), SunrayMeshInstance { mesh: cube.clone() }, red));
+    commands.spawn((Transform::from_xyz(-2.0, 0.5, 0.0), SunrayMeshInstance { mesh: cube }, red));
+
+    // A small emissive cube acting as an extra light (NEE picks up its
+    // triangles through the runtime emissive-triangle path).
+    let lamp = meshes.add(Mesh::from(Cuboid::new(0.3, 0.3, 0.3)));
+    commands.spawn((
+        Transform::from_xyz(0.0, 2.5, 0.0),
+        SunrayMeshInstance { mesh: lamp },
+        SunrayMaterial {
+            emissive: [1.0, 0.9, 0.7],
+            emissive_strength: 20.0,
+            ..Default::default()
+        },
     ));
 }
 

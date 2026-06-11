@@ -381,6 +381,11 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         Ok(())
     }
 
+    /// Whether `key` currently has any asset (BLAS or image) registered.
+    pub fn contains(&self, key: &K) -> bool {
+        self.blases.contains_key(key) || self.images.contains_key(key)
+    }
+
     /// Remove whatever asset `key` refers to (BLAS and/or image). Arena slots
     /// are deferred-freed (reclaimed by a start-of-frame callback scheduled for
     /// the frame at which no in-flight frame can still read them); the BLAS /

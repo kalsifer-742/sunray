@@ -173,7 +173,9 @@
       "PowerShell(foreach \\($i in 1..2\\) { $out = cargo run --example png 2>&1 | Out-String; if \\($out -match \"DEVICE_LOST\"\\) { \"run ${i}: DEVICE_LOST\" } elseif \\($out -match \"You can find your render\"\\) { \"run ${i}: rendered OK\" } else { \"run ${i}: other failure\" } })",
       "Bash([ -s \"$f\" ])",
       "Read(//c/Users/MatGa/AppData/Local/Temp/claude/C--Users-MatGa-Documents-GitHub-Bosh-SunPathForked/0659485b-b659-407a-b254-6296424b5a6c/tasks/**)",
-      "Bash(sleep 2)"
+      "Bash(sleep 2)",
+      "Bash(echo \"started pid $!\")",
+      "Bash(break)"
     ]
   }
 }

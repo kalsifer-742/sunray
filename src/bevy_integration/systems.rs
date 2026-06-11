@@ -18,6 +18,7 @@ use bevy_transform::components::{GlobalTransform, Transform};
 use bevy_window::{PrimaryWindow, RawHandleWrapper, Window};
 use nalgebra as na;
 
+use super::asset::{ExtractedMeshAssets, SunrayMeshInstance};
 use super::camera::{SunrayCamera, eye_target_fov};
 use super::instance::{SunrayInstance, transform_matrix_khr};
 use super::egui_paint::EguiPaint;
@@ -94,13 +95,20 @@ pub(crate) fn extract_scene(mut out: ResMut<ExtractedScene>, src: Extract<Res<Su
 /// renderer's caller-owned per-frame instance-list contract.
 pub(crate) fn extract_instances(
     mut out: ResMut<ExtractedInstances>,
-    query: Extract<Query<(&SunrayInstance, &GlobalTransform)>>,
+    scene_query: Extract<Query<(&SunrayInstance, &GlobalTransform)>>,
+    mesh_query: Extract<Query<(&SunrayMeshInstance, &GlobalTransform)>>,
 ) {
     out.instances.clear();
-    out.active = false;
-    for (instance, transform) in &query {
-        out.active = true;
+    out.asset_instances.clear();
+    for (instance, transform) in &scene_query {
         out.instances.push((instance.blas_index, transform_matrix_khr(transform)));
+    }
+    // Runtime mesh-asset instances: keyed directly by the asset id (the BLAS is
+    // built by `upload_mesh_assets` once the asset is loaded — until then the
+    // instance is extracted but skipped by `render_frame`).
+    for (instance, transform) in &mesh_query {
+        out.asset_instances
+            .push((instance.mesh.id().untyped(), transform_matrix_khr(transform)));
     }
 }
 
@@ -210,12 +218,13 @@ pub(crate) fn render_frame(
     mut state: NonSendMut<SunrayRenderState>,
     camera: Res<ExtractedCamera>,
     instances: Res<ExtractedInstances>,
+    mesh_assets: Res<ExtractedMeshAssets>,
     egui: Option<Res<ExtractedEgui>>,
 ) {
     if state.renderer.is_none() {
         return;
     }
-    if let Err(e) = render_frame_impl(&mut state, &camera, &instances, egui.as_deref()) {
+    if let Err(e) = render_frame_impl(&mut state, &camera, &instances, &mesh_assets, egui.as_deref()) {
         match e.get_source() {
             ErrorSource::Vulkan(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 log::warn!("sunray render_frame (out of date — will rebuild on resize): {e}");
@@ -229,6 +238,7 @@ fn render_frame_impl(
     state: &mut SunrayRenderState,
     camera: &ExtractedCamera,
     instances: &ExtractedInstances,
+    mesh_assets: &ExtractedMeshAssets,
     egui: Option<&ExtractedEgui>,
 ) -> SrResult<()> {
     // Split borrows over the distinct fields we touch this frame.
@@ -241,27 +251,50 @@ fn render_frame_impl(
     } = &mut *state;
     let renderer = renderer.as_mut().unwrap();
 
-    // Entity-driven instances replace the scene's baked instance list when any
-    // `SunrayInstance` entity exists: group the extracted (blas_index, transform)
-    // pairs by BLAS key into the per-frame list the renderer consumes.
+    // Build the per-frame instance list the renderer consumes:
+    // - `SunrayInstance` entities re-place the scene's own BLASes, so when any
+    //   exist they REPLACE the baked scene instances;
+    // - `SunrayMeshInstance` (runtime mesh asset) entities are independent
+    //   assets and are always ADDED on top.
     let entity_instances: Vec<(UntypedAssetId, Vec<vk::TransformMatrixKHR>)>;
-    let frame_instances: &[(UntypedAssetId, Vec<vk::TransformMatrixKHR>)] = if instances.active {
-        let mut grouped: Vec<(UntypedAssetId, Vec<vk::TransformMatrixKHR>)> =
-            scene_blas_keys.iter().map(|&key| (key, Vec::new())).collect();
-        for (blas_index, transform) in &instances.instances {
-            match grouped.get_mut(*blas_index) {
-                Some((_, transforms)) => transforms.push(*transform),
-                None => log::warn!(
-                    "sunray: SunrayInstance.blas_index {blas_index} out of range ({} BLASes loaded); instance skipped",
-                    grouped.len()
-                ),
+    let frame_instances: &[(UntypedAssetId, Vec<vk::TransformMatrixKHR>)] =
+        if instances.instances.is_empty() && instances.asset_instances.is_empty() {
+            scene_instances
+        } else {
+            let mut grouped: Vec<(UntypedAssetId, Vec<vk::TransformMatrixKHR>)> = if instances.instances.is_empty() {
+                // No scene-override entities: keep the baked scene placement.
+                scene_instances.clone()
+            } else {
+                let mut grouped: Vec<(UntypedAssetId, Vec<vk::TransformMatrixKHR>)> =
+                    scene_blas_keys.iter().map(|&key| (key, Vec::new())).collect();
+                for (blas_index, transform) in &instances.instances {
+                    match grouped.get_mut(*blas_index) {
+                        Some((_, transforms)) => transforms.push(*transform),
+                        None => log::warn!(
+                            "sunray: SunrayInstance.blas_index {blas_index} out of range ({} BLASes loaded); instance skipped",
+                            grouped.len()
+                        ),
+                    }
+                }
+                grouped
+            };
+            // Runtime mesh-asset instances, grouped by asset id. Instances whose
+            // BLAS isn't built yet (asset still loading / upload pending) are
+            // skipped this frame and appear once `upload_mesh_assets` finishes.
+            let mut asset_groups: std::collections::HashMap<UntypedAssetId, usize> = std::collections::HashMap::new();
+            for (id, transform) in &instances.asset_instances {
+                if !mesh_assets.loaded.contains(id) {
+                    continue;
+                }
+                let group_index = *asset_groups.entry(*id).or_insert_with(|| {
+                    grouped.push((*id, Vec::new()));
+                    grouped.len() - 1
+                });
+                grouped[group_index].1.push(*transform);
             }
-        }
-        entity_instances = grouped;
-        &entity_instances
-    } else {
-        scene_instances
-    };
+            entity_instances = grouped;
+            &entity_instances
+        };
 
     // The camera is a per-frame input handed to the renderer — nothing is
     // stored on the renderer side.

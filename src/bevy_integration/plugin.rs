@@ -14,6 +14,7 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, ScheduleLabel};
 use bevy_render::extract_plugin::ExtractPlugin;
 use bevy_render::{ExtractSchedule, Render, RenderApp, RenderSystems};
 
+use super::asset::{ExtractedMeshAssets, extract_mesh_assets, upload_mesh_assets};
 use super::state::{ExtractedCamera, ExtractedInstances, ExtractedScene, SunrayRenderState, SunrayScene, SunrayWindows};
 use super::systems::{ensure_renderer, extract_camera, extract_instances, extract_scene, extract_windows, render_frame};
 
@@ -39,6 +40,20 @@ impl Plugin for SunrayRenderPlugin {
         // Main-world handle for requesting a scene.
         app.init_resource::<SunrayScene>();
 
+        // Runtime mesh assets: register `Assets<Mesh>` ourselves when the app
+        // has an `AssetServer` (i.e. `AssetPlugin` was added) and nothing else
+        // registered `Mesh` — there is no wgpu `MeshPlugin` in this stack, so
+        // `SunrayMeshInstance` would otherwise need manual `init_asset` calls.
+        {
+            use bevy_asset::AssetApp;
+            use bevy_render::mesh::Mesh;
+            if app.world().contains_resource::<bevy_asset::AssetServer>()
+                && !app.world().contains_resource::<bevy_asset::Assets<Mesh>>()
+            {
+                app.init_asset::<Mesh>();
+            }
+        }
+
         // Reuse Bevy's extraction machinery: creates the RenderApp SubApp,
         // ExtractSchedule, Render base schedule, SyncWorldPlugin, extract closure.
         app.add_plugins(ExtractPlugin::default());
@@ -53,6 +68,7 @@ impl Plugin for SunrayRenderPlugin {
         render_app.init_resource::<ExtractedCamera>();
         render_app.init_resource::<ExtractedScene>();
         render_app.init_resource::<ExtractedInstances>();
+        render_app.init_resource::<ExtractedMeshAssets>();
 
         // The renderer itself is NonSend (Rc-based). Seed it with the chosen format.
         render_app.world_mut().insert_non_send(SunrayRenderState {
@@ -60,14 +76,28 @@ impl Plugin for SunrayRenderPlugin {
             ..Default::default()
         });
 
-        // Extraction: window handles, camera, scene request, entity instances.
+        // Extraction: window handles, camera, scene request, entity instances,
+        // referenced mesh assets (converted CPU-side for runtime BLAS builds).
         render_app.add_systems(
             ExtractSchedule,
-            (extract_windows, extract_camera, extract_scene, extract_instances),
+            (
+                extract_windows,
+                extract_camera,
+                extract_scene,
+                extract_instances,
+                extract_mesh_assets,
+            ),
         );
 
-        // Per-frame render work, NonSend → pinned to the main thread, chained.
-        render_app.add_systems(Render, (ensure_renderer, render_frame).chain().in_set(RenderSystems::Render));
+        // Per-frame render work, NonSend → pinned to the main thread, chained:
+        // create/resize the renderer, build BLASes for newly loaded mesh
+        // assets, then render.
+        render_app.add_systems(
+            Render,
+            (ensure_renderer, upload_mesh_assets, render_frame)
+                .chain()
+                .in_set(RenderSystems::Render),
+        );
     }
 }
 

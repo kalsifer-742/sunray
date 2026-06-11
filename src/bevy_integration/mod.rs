@@ -22,6 +22,7 @@
 //!     .run();
 //! ```
 
+mod asset;
 mod camera;
 mod egui_paint;
 mod egui_support;
@@ -31,6 +32,7 @@ mod state;
 mod surface;
 mod systems;
 
+pub use asset::{ExtractedMeshAssets, SunrayMaterial, SunrayMeshInstance};
 pub use camera::SunrayCamera;
 pub use egui_support::{EguiContext, EguiFrameOutput, ExtractedEgui};
 pub use instance::SunrayInstance;
