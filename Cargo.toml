@@ -11,18 +11,106 @@ categories = ["multimedia", "graphics", "hardware-support", "game-development"]
 exclude = ["examples/assets/Lantern.glb", "examples/.gitignore", ".gitignore"]
 
 [dependencies]
-ash = { version = "0.38.0", features = ["linked"] }
-nalgebra = "0.34"
+ash = { git = "https://github.com/ash-rs/ash.git" , features = ["linked"] }
+nalgebra = "0.35.0"
 gltf = { version = "1.4.1", features = ["KHR_lights_punctual", "KHR_materials_emissive_strength", "KHR_materials_transmission", "KHR_materials_ior"] }
 log = { version = "0.4.28", features = ["release_max_level_warn"] }
-gpu-allocator = "0.28.0"
+gpu-allocator = {  git = "https://github.com/MatteoBallardin/gpu-allocator.git" }
 bytemuck = "1.24.0"
 image = "0.25.8"
+parking_lot = "0.12.5"
+vk-sync-fork = {git = "https://github.com/MatteoBallardin/vk-sync-rs.git" , branch = "1.4"}
+rand = "0.10.1"
+slotmap = "1.1.1"
+rspirv-reflect = "0.9.0"
+derive_builder = "0.20.2"
+enum-as-inner = "0.7.0"
+num = "0.4.3"
+shader-slang = "0.1.0"
+shader-slang-sys = "0.1.0"
+# Optional: enables the NVIDIA Aftermath user-space crash-dump handler.
+# Off by default — pulls in the Aftermath SDK runtime (the build script downloads
+# it via sysreq) which isn't needed for normal use. Even without the feature
+# enabled, DiagnosticTool::NvidiaAftermath still wires up the Vulkan-side
+# device-diagnostics-config + checkpoint extensions, which alone already help
+# localize a faulting dispatch.
+aftermath-rs = { git = "https://github.com/MatteoBallardin/aftermath-rs.git", optional = true }
+petgraph = "0.8.3"
+bimap = "0.6.3"
 #na = "0.32.2"
+
+# --- Bevy integration (optional, gated behind the `bevy` feature) -----------
+# Registry deps (0.19.0-rc.2). We depend on the individual crates rather than
+# the `bevy` meta-crate so the example can build the minimal plugin set
+# (Option B in docs/bevy_integration.md) and we never pull in
+# `RenderPlugin`/wgpu at *runtime*. `bevy_render` is still a compile dependency
+# because we reuse its `ExtractPlugin` + render-world scaffolding.
+bevy_app = { version =  "0.19.0-rc.2", optional = true }
+bevy_ecs = { version = "0.19.0-rc.2", optional = true }
+bevy_render = { version = "0.19.0-rc.2", optional = true }
+bevy_window = { version = "0.19.0-rc.2", optional = true }
+bevy_winit = { version = "0.19.0-rc.2", optional = true }
+bevy_input = { version = "0.19.0-rc.2", optional = true }
+bevy_time = { version = "0.19.0-rc.2", optional = true }
+bevy_transform = { version = "0.19.0-rc.2", optional = true }
+bevy_math = { version = "0.19.0-rc.2", optional = true }
+bevy_platform = { version = "0.19.0-rc.2", optional = true }
+bevy_a11y = { version = "0.19.0-rc.2", optional = true }
+bevy_diagnostic = { version = "0.19.0-rc.2", optional = true }
+bevy_log = { version = "0.19.0-rc.2", optional = true }
+bevy_asset = { version = "0.19.0-rc.2", optional = true }
+# glTF loading through Bevy's asset pipeline (`SunrayGltfPlugin`, the second
+# scene-load path next to the renderer's own `load_gltf`). `bevy_gltf` 0.19 is
+# render-stack-free (no bevy_pbr/wgpu plugins at runtime); `bevy_image` needs
+# the format features to decode textures embedded in .glb files, and
+# `bevy_world_serialization`/`bevy_image` give us the subasset types the glTF
+# loader emits, which we must `init_asset` ourselves without `RenderPlugin`.
+bevy_gltf = { version = "0.19.0-rc.2", optional = true }
+bevy_image = { version = "0.19.0-rc.2", optional = true, features = ["png", "jpeg"] }
+bevy_world_serialization = { version = "0.19.0-rc.2", optional = true }
+bevy_color = { version = "0.19.0-rc.2", optional = true }
+
+# egui core only — NOT bevy_egui and NOT a paint backend. We do input mapping +
+# tessellation ourselves (Option C in docs/bevy_integration.md). `egui-ash-renderer`
+# is intentionally avoided: it bundles a descriptor-set + GLSL/SPIR-V raster
+# pipeline, which violates this project's heap+Slang-only rule, and it pulls a
+# crates.io `ash` that clashes with our git `ash`.
+egui = { version = "0.31", optional = true }
+# Must match the version `bevy_window` re-exports (0.6).
+raw-window-handle = { version = "0.6", optional = true }
+
+[features]
+default = [ ]
+nvidia-aftermath = ["dep:aftermath-rs"]
+# Enables `sunray::bevy_integration` (the Bevy plugin) and the `bevy_app` example.
+bevy = [
+    "dep:bevy_asset",
+    "dep:bevy_gltf",
+    "dep:bevy_image",
+    "dep:bevy_world_serialization",
+    "dep:bevy_color",
+    "dep:bevy_app",
+    "dep:bevy_ecs",
+    "dep:bevy_render",
+    "dep:bevy_window",
+    "dep:bevy_winit",
+    "dep:bevy_input",
+    "dep:bevy_time",
+    "dep:bevy_transform",
+    "dep:bevy_math",
+    "dep:bevy_platform",
+    "dep:bevy_a11y",
+    "dep:bevy_diagnostic",
+    "dep:bevy_log",
+    "dep:egui",
+    "dep:raw-window-handle",
+]
 
 
 [build-dependencies]
-shaderc = "0.9"
+shaderc = "0.10.1"
+shader-slang = "0.1.0"
+shader-slang-sys = "0.1.0"
 
 [dev-dependencies]
 winit = { version = "0.30.9", features = ["rwh_05"] } #window example
@@ -34,3 +122,8 @@ name = "png"
 
 [[example]]
 name = "window"
+
+[[example]]
+name = "bevy_app"
+path = "examples/bevy_app/main.rs"
+required-features = ["bevy"]

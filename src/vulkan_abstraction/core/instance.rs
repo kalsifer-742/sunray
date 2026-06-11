@@ -3,14 +3,17 @@ use std::{
     ffi::{CStr, c_void},
 };
 
+use ash::vk::TaggedStructure;
 use ash::{ext, vk};
 
 use crate::error::SrResult;
+use crate::vulkan_abstraction::diagnostics::{DiagnosticTool, DiagnosticsContext};
 
 pub struct Instance {
     instance: ash::Instance,
     debug_utils_instance: Option<ext::debug_utils::Instance>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
+    diagnostics: DiagnosticsContext,
 }
 
 impl Instance {
@@ -95,10 +98,10 @@ impl Instance {
                 return vk::FALSE;
             }
             (vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0)
-            | (vk::DebugUtilsMessageSeverityFlagsEXT::INFO, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0) => {
-                if msg_id_name == "Loader Message" {
-                    return vk::FALSE;
-                }
+            | (vk::DebugUtilsMessageSeverityFlagsEXT::INFO, vk::DebugUtilsMessageTypeFlagsEXT::GENERAL, 0x0)
+                if msg_id_name == "Loader Message" =>
+            {
+                return vk::FALSE;
             }
             _ => {}
         }
@@ -125,12 +128,18 @@ impl Instance {
         vk::FALSE
     }
 
-    pub fn new(entry: &ash::Entry, instance_exts: &[*const i8], with_validation_layer: bool, with_gpuav: bool) -> SrResult<Self> {
+    pub fn new(
+        entry: &ash::Entry,
+        instance_exts: &[*const i8],
+        with_validation_layer: bool,
+        with_gpuav: bool,
+        diagnostics: DiagnosticTool,
+    ) -> SrResult<Self> {
         let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 4, 0));
 
         let (enable_validation_layer, layer_names) = {
             let enable_validation_layer = if with_validation_layer {
-                if Self::check_validation_layer_support(&entry)? {
+                if Self::check_validation_layer_support(entry)? {
                     log::info!("Validation layer enabled");
                     true
                 } else {
@@ -153,7 +162,7 @@ impl Instance {
 
         let supported_debug_extensions = Self::filter_supported_exts(entry, None, &Self::DEBUG_EXTENSIONS)?;
         let enable_layer_settings = enable_validation_layer
-            && Self::filter_supported_exts(entry, Some(Self::VALIDATION_LAYER_NAME), &[ext::layer_settings::NAME])?.len() > 0;
+            && !Self::filter_supported_exts(entry, Some(Self::VALIDATION_LAYER_NAME), &[ext::layer_settings::NAME])?.is_empty();
         let enable_debug_utils = enable_validation_layer && supported_debug_extensions.contains(&ext::debug_utils::NAME);
 
         let instance_extensions = {
@@ -164,7 +173,7 @@ impl Instance {
                     .chain(supported_debug_extensions.iter().map(|arr| arr.as_ptr()))
                     .collect::<Vec<*const i8>>()
             } else {
-                instance_exts.iter().copied().collect::<Vec<_>>()
+                instance_exts.to_vec()
             }
         };
 
@@ -210,19 +219,23 @@ impl Instance {
             None
         };
 
+        // Boot the diagnostic backend (e.g. Aftermath) *before* vkCreateInstance so any
+        // device loss during initialization still produces a crash dump.
+        let diagnostics_ctx = DiagnosticsContext::new(diagnostics);
+
         let instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&application_info)
             .enabled_layer_names(&layer_names)
             .enabled_extension_names(&instance_extensions);
 
         let instance_create_info = if enable_layer_settings {
-            instance_create_info.push_next(layer_settings_create_info.as_mut().unwrap())
+            instance_create_info.push(layer_settings_create_info.as_mut().unwrap())
         } else {
             instance_create_info
         };
 
         let instance_create_info = if enable_debug_utils {
-            instance_create_info.push_next(debug_messenger_create_info.as_mut().unwrap())
+            instance_create_info.push(debug_messenger_create_info.as_mut().unwrap())
         } else {
             instance_create_info
         };
@@ -230,7 +243,7 @@ impl Instance {
         let instance = unsafe { entry.create_instance(&instance_create_info, None) }?;
 
         let (debug_utils_instance, debug_messenger) = if enable_debug_utils {
-            let debug_utils_instance = ext::debug_utils::Instance::new(&entry, &instance);
+            let debug_utils_instance = ext::debug_utils::Instance::load(entry, &instance);
             let debug_messenger = unsafe {
                 debug_utils_instance.create_debug_utils_messenger(debug_messenger_create_info.as_ref().unwrap(), None)
             }?;
@@ -244,10 +257,17 @@ impl Instance {
             instance,
             debug_utils_instance,
             debug_messenger,
+            diagnostics: diagnostics_ctx,
         })
     }
     pub fn inner(&self) -> &ash::Instance {
         &self.instance
+    }
+    pub fn diagnostics(&self) -> &DiagnosticsContext {
+        &self.diagnostics
+    }
+    pub fn diagnostics_mut(&mut self) -> &mut DiagnosticsContext {
+        &mut self.diagnostics
     }
 }
 

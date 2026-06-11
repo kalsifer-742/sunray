@@ -22,54 +22,42 @@ use crate::vulkan_abstraction;
 
 pub mod fence;
 pub mod semaphore;
-
 pub use fence::*;
 pub use semaphore::*;
 
-/// # Creates a memory barrier
-///
-/// # Parameters:
-/// - `src_pipeline_stage` - The pipeline stage that must complete before the barrier
-/// - `dst_pipeline_stage` - The pipeline stage that can start after the barrier
+/// # Creates a memory barrier (sync2)
 pub unsafe fn cmd_memory_barrier(
     core: &vulkan_abstraction::Core,
     cmd_buf: vk::CommandBuffer,
-    src_pipeline_stage: vk::PipelineStageFlags,
-    dst_pipeline_stage: vk::PipelineStageFlags,
-    memory_barriers: &[vk::MemoryBarrier],
-    buffer_memory_barriers: &[vk::BufferMemoryBarrier],
-    image_memory_barriers: &[vk::ImageMemoryBarrier],
+    memory_barriers: &[vk::MemoryBarrier2],
+    buffer_memory_barriers: &[vk::BufferMemoryBarrier2],
+    image_memory_barriers: &[vk::ImageMemoryBarrier2],
 ) {
+    let dependency_info = vk::DependencyInfo::default()
+        .memory_barriers(memory_barriers)
+        .buffer_memory_barriers(buffer_memory_barriers)
+        .image_memory_barriers(image_memory_barriers);
+
     unsafe {
-        core.device().inner().cmd_pipeline_barrier(
-            cmd_buf,
-            src_pipeline_stage,
-            dst_pipeline_stage,
-            vk::DependencyFlags::empty(),
-            memory_barriers,
-            buffer_memory_barriers,
-            image_memory_barriers,
-        );
+        core.device().inner().cmd_pipeline_barrier2(cmd_buf, &dependency_info);
     }
 }
 
-/// # Creates an image memory barrier
-///
-/// # Parameters
-/// - old_layout
-/// - new_layout
+/// # Creates an image memory barrier (sync2)
 pub unsafe fn cmd_image_memory_barrier(
     core: &vulkan_abstraction::Core,
     cmd_buf: vk::CommandBuffer,
     image: vk::Image,
-    src_pipeline_stage: vk::PipelineStageFlags,
-    dst_pipeline_stage: vk::PipelineStageFlags,
-    src_access_mask: vk::AccessFlags,
-    dst_access_mask: vk::AccessFlags,
+    src_stage_mask: vk::PipelineStageFlags2,
+    dst_stage_mask: vk::PipelineStageFlags2,
+    src_access_mask: vk::AccessFlags2,
+    dst_access_mask: vk::AccessFlags2,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
 ) {
-    let image_memory_barrier = vk::ImageMemoryBarrier::default()
+    let image_memory_barrier = vk::ImageMemoryBarrier2::default()
+        .src_stage_mask(src_stage_mask)
+        .dst_stage_mask(dst_stage_mask)
         .src_access_mask(src_access_mask)
         .dst_access_mask(dst_access_mask)
         .old_layout(old_layout)
@@ -85,14 +73,6 @@ pub unsafe fn cmd_image_memory_barrier(
         );
 
     unsafe {
-        cmd_memory_barrier(
-            core,
-            cmd_buf,
-            src_pipeline_stage,
-            dst_pipeline_stage,
-            &[],
-            &[],
-            &[image_memory_barrier],
-        );
+        cmd_memory_barrier(core, cmd_buf, &[], &[], &[image_memory_barrier]);
     };
 }

@@ -1,5 +1,7 @@
 #![macro_use]
 
+use ash::vk;
+
 pub(crate) fn env_var_as_bool(name: &str) -> Option<bool> {
     match std::env::var(name) {
         Ok(s) => match s.parse::<i32>() {
@@ -59,4 +61,13 @@ macro_rules! include_bytes_align_as {
 
         &ALIGNED.bytes
     }};
+}
+
+pub fn na_mat4_to_vk_transform(m: nalgebra::Matrix4<f32>) -> vk::TransformMatrixKHR {
+    // VkTransformMatrixKHR is a row-major 3x4 affine, flattened to [f32; 12].
+    vk::TransformMatrixKHR {
+        matrix: [
+            m.m11, m.m12, m.m13, m.m14, m.m21, m.m22, m.m23, m.m24, m.m31, m.m32, m.m33, m.m34,
+        ],
+    }
 }

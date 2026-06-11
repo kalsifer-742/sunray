@@ -7,7 +7,7 @@ pub struct Surface {
 
 impl Surface {
     pub fn new(entry: &ash::Entry, instance: &ash::Instance, surface: vk::SurfaceKHR) -> Self {
-        let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
+        let surface_instance = ash::khr::surface::Instance::load(&entry, &instance);
 
         Self {
             surface_instance,

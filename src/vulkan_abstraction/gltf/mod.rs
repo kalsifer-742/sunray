@@ -158,7 +158,7 @@ impl Gltf {
             Some(children)
         };
 
-        Ok(vulkan_abstraction::gltf::Node::new(transform, mesh, children)?)
+        vulkan_abstraction::gltf::Node::new(transform, mesh, children)
     }
 
     fn process_node(
@@ -198,9 +198,8 @@ impl Gltf {
 
         for (i, primitive) in gltf_mesh.primitives().filter(|p| Self::is_primitive_supported(p)).enumerate() {
             let vertex_position_accessor_index = primitive
-                .attributes() // ATTRIBUTES are required in the spec
-                .filter(|(semantic, _)| *semantic == gltf::Semantic::Positions) // POSITION is always defined
-                .next()
+                .attributes()
+                .find(|(semantic, _)| *semantic == gltf::Semantic::Positions)
                 .unwrap()
                 .1
                 .index();
@@ -299,7 +298,7 @@ impl Gltf {
                 (material, tex_coords, local_emissive_triangles)
             };
 
-            if !primitive_data_map.contains_key(&primitive_unique_key) {
+            if let std::collections::hash_map::Entry::Vacant(e) = primitive_data_map.entry(primitive_unique_key) {
                 let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
                 let mut vertices: Vec<vulkan_abstraction::gltf::Vertex> = vec![];
@@ -323,20 +322,15 @@ impl Gltf {
                 let index_buffer = {
                     let indices = if primitive.indices().is_some() {
                         // get vertices index
-                        let indices = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
 
-                        indices
+                        reader.read_indices().unwrap().into_u32().collect::<Vec<_>>()
                     } else {
                         // if the primitive is a non-indexed geometry we create the indices
-                        let indices = (0..vertices.len() as u32 / 3).collect::<Vec<_>>();
 
-                        indices
+                        (0..vertices.len() as u32 / 3).collect::<Vec<_>>()
                     };
 
-                    let index_buffer =
-                        vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(Rc::clone(&self.core), &indices)?;
-
-                    index_buffer
+                    vulkan_abstraction::IndexBuffer::new_for_blas_from_data(Rc::clone(&self.core), &indices)?
                 };
 
                 // This could also be done with zip, but the code would be equally long and with a lot of nested tuples
@@ -354,9 +348,8 @@ impl Gltf {
                     index_buffer,
                 };
 
-                primitive_data_map.insert(primitive_unique_key, primitive_data);
+                e.insert(primitive_data);
             }
-
             primitives.push(vulkan_abstraction::gltf::Primitive {
                 unique_key: primitive_unique_key,
                 material,

@@ -1,5 +1,6 @@
 use nalgebra as na;
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     position: na::Point3<f32>,
     target: na::Point3<f32>,
@@ -15,7 +16,8 @@ impl Default for Camera {
         }
     }
 }
-
+#[derive(Clone, Copy)]
+#[repr(C, packed)]
 pub(crate) struct CameraMatrices {
     pub view_inverse: na::Matrix4<f32>,
     pub proj_inverse: na::Matrix4<f32>,
@@ -34,7 +36,7 @@ impl Camera {
         let up = &na::vector![0.0, 1.0, 0.0];
 
         //view-space: camera pov
-        let view = na::Isometry3::look_at_rh(&eye, &target, &up);
+        let view = na::Isometry3::look_at_rh(&eye, &target, up);
         //clip_space: normalised coordinates adding perspective
         let projection = na::Perspective3::new(
             extent.width as f32 / extent.height as f32,
