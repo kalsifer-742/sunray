@@ -36,6 +36,18 @@ impl SunrayScene {
         self.generation += 1;
     }
 
+    /// Request that the current scene (if any) be unloaded on the next render
+    /// frame, leaving only entity-driven instances.
+    pub fn clear(&mut self) {
+        self.gltf_path = None;
+        self.generation += 1;
+    }
+
+    /// Path of the currently requested scene, if any.
+    pub fn current(&self) -> Option<&str> {
+        self.gltf_path.as_deref()
+    }
+
     /// Convenience constructor for `App::insert_resource`.
     pub fn with_gltf<P: Into<String>>(path: P) -> Self {
         Self {

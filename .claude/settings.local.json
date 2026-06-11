@@ -175,7 +175,11 @@
       "Read(//c/Users/MatGa/AppData/Local/Temp/claude/C--Users-MatGa-Documents-GitHub-Bosh-SunPathForked/0659485b-b659-407a-b254-6296424b5a6c/tasks/**)",
       "Bash(sleep 2)",
       "Bash(echo \"started pid $!\")",
-      "Bash(break)"
+      "Bash(break)",
+      "Bash(cargo fetch *)",
+      "Bash(timeout 20 ./target/debug/examples/bevy_app.exe)",
+      "Bash(timeout 25 ./target/debug/examples/bevy_app.exe)",
+      "Bash(timeout 30 ./target/debug/examples/bevy_app.exe)"
     ]
   }
 }

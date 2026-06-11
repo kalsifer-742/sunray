@@ -16,10 +16,19 @@
 //! egui is fully wired: input + tessellation + extract + a heap+Slang GPU paint
 //! pass that overlays the egui window on top of the ray-traced frame (see
 //! docs/bevy_integration.md §6).
+//!
+//! The egui panel lists every `.glb` in `examples/assets` and can load/unload
+//! each one in two ways:
+//! - **direct** — the renderer's own glTF loader ([`SunrayScene`]); one scene
+//!   at a time, full material/texture support;
+//! - **bevy** — Bevy's asset pipeline (`bevy_gltf` via [`SunrayGltfScene`]);
+//!   async, additive (several scenes can stack), factor-only materials.
+
+use std::collections::HashMap;
 
 use bevy_a11y::AccessibilityPlugin;
 use bevy_app::{App, Startup, TaskPoolPlugin, Update};
-use bevy_asset::{AssetPlugin, Assets};
+use bevy_asset::{AssetPlugin, AssetServer, Assets};
 use bevy_diagnostic::FrameCountPlugin;
 use bevy_ecs::prelude::*;
 use bevy_input::ButtonInput;
@@ -37,14 +46,52 @@ use bevy_window::{Window, WindowPlugin};
 use bevy_winit::WinitPlugin;
 
 use sunray::bevy_integration::{
-    EguiContext, SunrayCamera, SunrayEguiPlugin, SunrayMaterial, SunrayMeshInstance, SunrayRenderPlugin, SunrayScene,
+    EguiContext, SunrayCamera, SunrayEguiPlugin, SunrayGltfFailed, SunrayGltfPlugin, SunrayGltfScene,
+    SunrayGltfSpawned, SunrayMaterial, SunrayMeshInstance, SunrayRenderPlugin, SunrayScene,
 };
+
+/// Directory scanned for `.glb` files; also the Bevy asset root, so the same
+/// file name works for both load paths. Absolute, because Bevy resolves a
+/// relative asset root against the *executable's* directory while the
+/// renderer's direct loader resolves against the CWD.
+const ASSET_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets");
 
 /// Simple fly-camera state stored next to the camera's `Transform`.
 #[derive(Component)]
 struct FlyCam {
     yaw: f32,
     pitch: f32,
+}
+
+/// The `.glb` files found in [`ASSET_DIR`] at startup.
+#[derive(Resource)]
+struct GlbLibrary {
+    files: Vec<String>,
+}
+
+/// Which library entries are loaded, and through which path.
+#[derive(Resource, Default)]
+struct SceneManager {
+    /// File currently loaded through the renderer's own glTF loader
+    /// ([`SunrayScene`]). Single slot — a new direct load replaces it.
+    direct: Option<String>,
+    /// File → root entity of scenes loaded through Bevy's asset pipeline
+    /// ([`SunrayGltfScene`]). These stack additively.
+    bevy_loaded: HashMap<String, Entity>,
+}
+
+fn scan_glb_library() -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(ASSET_DIR)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            name.to_ascii_lowercase().ends_with(".glb").then_some(name)
+        })
+        .collect();
+    files.sort();
+    files
 }
 
 fn main() {
@@ -54,8 +101,13 @@ fn main() {
             LogPlugin::default(),
             TaskPoolPlugin::default(),
             // Assets so `SunrayMeshInstance` can reference `Mesh` assets;
-            // `SunrayRenderPlugin` registers `Assets<Mesh>` itself.
-            AssetPlugin::default(),
+            // `SunrayRenderPlugin` registers `Assets<Mesh>` itself. The asset
+            // root points at the glb directory so the Bevy load path can use
+            // bare file names.
+            AssetPlugin {
+                file_path: ASSET_DIR.into(),
+                ..Default::default()
+            },
             FrameCountPlugin,
             TimePlugin,
             InputPlugin,
@@ -70,10 +122,17 @@ fn main() {
             WinitPlugin::default(),
             TransformPlugin,
         ))
-        // Our custom ash renderer + egui input/extract layer.
-        .add_plugins((SunrayRenderPlugin::default(), SunrayEguiPlugin))
-        // Ask the renderer to load this glTF once the device exists.
-        .insert_resource(SunrayScene::with_gltf("examples/assets/Room.glb"))
+        // Our custom ash renderer + egui input/extract layer + the Bevy-asset
+        // glTF load path (`SunrayGltfScene` entities).
+        .add_plugins((SunrayRenderPlugin::default(), SunrayEguiPlugin, SunrayGltfPlugin))
+        // Ask the renderer to load this glTF once the device exists (the
+        // "direct" path; the egui panel can swap/unload it at runtime).
+        .insert_resource(SunrayScene::with_gltf(format!("{ASSET_DIR}/Room.glb")))
+        .insert_resource(GlbLibrary { files: scan_glb_library() })
+        .insert_resource(SceneManager {
+            direct: Some("Room.glb".into()),
+            ..Default::default()
+        })
         .add_systems(Startup, setup)
         .add_systems(Update, (fly_cam, ui_system))
         .run();
@@ -168,11 +227,71 @@ fn fly_cam(
     }
 }
 
-fn ui_system(egui_ctx: Res<EguiContext>) {
+fn ui_system(
+    egui_ctx: Res<EguiContext>,
+    library: Res<GlbLibrary>,
+    mut manager: ResMut<SceneManager>,
+    mut scene: ResMut<SunrayScene>,
+    asset_server: Res<AssetServer>,
+    mut commands: Commands,
+    gltf_roots: Query<(Has<SunrayGltfSpawned>, Has<SunrayGltfFailed>), With<SunrayGltfScene>>,
+) {
     egui::Window::new("sunray + bevy").show(egui_ctx.ctx(), |ui| {
         ui.label("Hardware ray tracing, driven by Bevy ECS.");
-        ui.separator();
         ui.label("Right mouse: look · WASD: move · Space/Ctrl: up/down · Shift: faster");
+        ui.separator();
+
+        ui.heading("Scenes");
+        ui.label("direct: renderer's own glTF loader (one scene at a time)");
+        ui.label("bevy: AssetServer + bevy_gltf → mesh-asset BLASes (additive)");
+        ui.separator();
+
+        if library.files.is_empty() {
+            ui.label(format!("no .glb files found in {ASSET_DIR}"));
+        }
+        for file in &library.files {
+            ui.horizontal(|ui| {
+                ui.label(file);
+
+                // Direct path: single slot, renderer-side load.
+                if manager.direct.as_deref() == Some(file) {
+                    if ui.button("Unload direct").clicked() {
+                        scene.clear();
+                        manager.direct = None;
+                    }
+                } else if ui.button("Load direct").clicked() {
+                    scene.request(format!("{ASSET_DIR}/{file}"));
+                    manager.direct = Some(file.clone());
+                }
+
+                // Bevy-asset path: one root entity per file, despawn = unload.
+                if let Some(&root) = manager.bevy_loaded.get(file) {
+                    let status = match gltf_roots.get(root) {
+                        Ok((true, _)) => "loaded",
+                        Ok((_, true)) => "failed",
+                        Ok(_) => "loading…",
+                        Err(_) => "?",
+                    };
+                    if ui.button("Unload bevy").clicked() {
+                        commands.entity(root).despawn();
+                        manager.bevy_loaded.remove(file);
+                    } else {
+                        ui.label(status);
+                    }
+                } else if ui.button("Load bevy").clicked() {
+                    let root = commands
+                        .spawn((
+                            Transform::IDENTITY,
+                            SunrayGltfScene {
+                                gltf: asset_server.load(file.clone()),
+                            },
+                        ))
+                        .id();
+                    manager.bevy_loaded.insert(file.clone(), root);
+                }
+            });
+        }
+
         ui.separator();
         ui.label("This panel is painted by a heap+Slang egui pass over the RT frame.");
     });

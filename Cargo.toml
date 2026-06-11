@@ -59,6 +59,16 @@ bevy_a11y = { version = "0.19.0-rc.2", optional = true }
 bevy_diagnostic = { version = "0.19.0-rc.2", optional = true }
 bevy_log = { version = "0.19.0-rc.2", optional = true }
 bevy_asset = { version = "0.19.0-rc.2", optional = true }
+# glTF loading through Bevy's asset pipeline (`SunrayGltfPlugin`, the second
+# scene-load path next to the renderer's own `load_gltf`). `bevy_gltf` 0.19 is
+# render-stack-free (no bevy_pbr/wgpu plugins at runtime); `bevy_image` needs
+# the format features to decode textures embedded in .glb files, and
+# `bevy_world_serialization`/`bevy_image` give us the subasset types the glTF
+# loader emits, which we must `init_asset` ourselves without `RenderPlugin`.
+bevy_gltf = { version = "0.19.0-rc.2", optional = true }
+bevy_image = { version = "0.19.0-rc.2", optional = true, features = ["png", "jpeg"] }
+bevy_world_serialization = { version = "0.19.0-rc.2", optional = true }
+bevy_color = { version = "0.19.0-rc.2", optional = true }
 
 # egui core only — NOT bevy_egui and NOT a paint backend. We do input mapping +
 # tessellation ourselves (Option C in docs/bevy_integration.md). `egui-ash-renderer`
@@ -75,6 +85,10 @@ nvidia-aftermath = ["dep:aftermath-rs"]
 # Enables `sunray::bevy_integration` (the Bevy plugin) and the `bevy_app` example.
 bevy = [
     "dep:bevy_asset",
+    "dep:bevy_gltf",
+    "dep:bevy_image",
+    "dep:bevy_world_serialization",
+    "dep:bevy_color",
     "dep:bevy_app",
     "dep:bevy_ecs",
     "dep:bevy_render",
