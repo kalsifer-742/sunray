@@ -7,6 +7,7 @@ use crate::{
 
 use nalgebra as na;
 
+pub mod emissive_triangle;
 pub mod image;
 pub mod material;
 pub mod mesh;
@@ -15,6 +16,7 @@ pub mod primitive;
 pub mod texture;
 pub mod vertex;
 
+pub use emissive_triangle::*;
 pub use image::*;
 pub use material::*;
 pub use mesh::*;
@@ -156,7 +158,7 @@ impl Gltf {
             Some(children)
         };
 
-        Ok(vulkan_abstraction::gltf::Node::new(transform, mesh, children)?)
+        vulkan_abstraction::gltf::Node::new(transform, mesh, children)
     }
 
     fn process_node(
@@ -196,9 +198,8 @@ impl Gltf {
 
         for (i, primitive) in gltf_mesh.primitives().filter(|p| Self::is_primitive_supported(p)).enumerate() {
             let vertex_position_accessor_index = primitive
-                .attributes() // ATTRIBUTES are required in the spec
-                .filter(|(semantic, _)| *semantic == gltf::Semantic::Positions) // POSITION is always defined
-                .next()
+                .attributes()
+                .find(|(semantic, _)| *semantic == gltf::Semantic::Positions)
                 .unwrap()
                 .1
                 .index();
@@ -210,7 +211,7 @@ impl Gltf {
 
             let primitive_unique_key = (vertex_position_accessor_index, indices_accessor_index);
 
-            let (material, tex_coords) = {
+            let (material, tex_coords, local_emissive_triangles) = {
                 let material = primitive.material();
                 let material_pbr = primitive.material().pbr_metallic_roughness();
 
@@ -218,9 +219,13 @@ impl Gltf {
                 let metallic_factor = material_pbr.metallic_factor();
                 let roughness_factor = material_pbr.roughness_factor();
                 let emissive_factor = material.emissive_factor();
+                let emissive_strength = material.emissive_strength().unwrap_or(0.0);
                 let alpha_mode = material.alpha_mode();
                 let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
                 let double_sided = material.double_sided();
+                let transmission_factor = material.transmission().map_or(0.0, |t| t.transmission_factor());
+
+                let ior = material.ior().unwrap_or(1.5);
 
                 // The code is repeated because the type of the textures are not the same
                 // TODO: crate a macro
@@ -245,10 +250,13 @@ impl Gltf {
                     normal_texture_index,
                     occlusion_texture_index,
                     emissive_factor,
+                    emissive_strength,
                     emissive_texture_index,
                     alpha_mode,
                     alpha_cutoff,
                     double_sided,
+                    transmission_factor,
+                    ior,
                 };
 
                 let tex_coords = (
@@ -259,42 +267,70 @@ impl Gltf {
                     emissive_tex_coord_index,
                 );
 
-                (material, tex_coords)
+                let mut local_emissive_triangles = Vec::new();
+
+                let is_emissive = material.emissive_strength > 0.0 || material.emissive_factor != [0.0, 0.0, 0.0];
+
+                if is_emissive {
+                    let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
+
+                    let positions: Vec<_> = reader.read_positions().unwrap().collect();
+
+                    let indices: Vec<u32> = if let Some(iter) = reader.read_indices() {
+                        iter.into_u32().collect()
+                    } else {
+                        (0..positions.len() as u32).collect()
+                    };
+
+                    for chunk in indices.chunks_exact(3) {
+                        let p0 = positions[chunk[0] as usize];
+                        let p1 = positions[chunk[1] as usize];
+                        let p2 = positions[chunk[2] as usize];
+
+                        local_emissive_triangles.push([
+                            na::Vector4::new(p0[0], p0[1], p0[2], 1.0),
+                            na::Vector4::new(p1[0], p1[1], p1[2], 1.0),
+                            na::Vector4::new(p2[0], p2[1], p2[2], 1.0),
+                        ]);
+                    }
+                }
+
+                (material, tex_coords, local_emissive_triangles)
             };
 
-            if !primitive_data_map.contains_key(&primitive_unique_key) {
+            if let std::collections::hash_map::Entry::Vacant(e) = primitive_data_map.entry(primitive_unique_key) {
                 let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
                 let mut vertices: Vec<vulkan_abstraction::gltf::Vertex> = vec![];
 
-                // get vertices position and normal
-                std::iter::zip(reader.read_positions().unwrap(), reader.read_normals().unwrap()).for_each(
-                    |(position, normal)| {
-                        vertices.push(vulkan_abstraction::gltf::Vertex {
-                            position,
-                            normal,
-                            ..Default::default()
-                        })
-                    },
-                );
+                let positions: Vec<_> = reader.read_positions().unwrap().collect();
+                let normals: Vec<_> = reader.read_normals().unwrap().collect();
+
+                let tangents: Vec<[f32; 4]> = reader
+                    .read_tangents()
+                    .map_or_else(|| vec![[0.0, 0.0, 0.0, 0.0]; positions.len()], |iter| iter.collect());
+
+                for i in 0..positions.len() {
+                    vertices.push(vulkan_abstraction::gltf::Vertex {
+                        position: positions[i],
+                        normal: normals[i],
+                        tangent: tangents[i],
+                        ..Default::default()
+                    });
+                }
 
                 let index_buffer = {
                     let indices = if primitive.indices().is_some() {
                         // get vertices index
-                        let indices = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
 
-                        indices
+                        reader.read_indices().unwrap().into_u32().collect::<Vec<_>>()
                     } else {
                         // if the primitive is a non-indexed geometry we create the indices
-                        let indices = (0..vertices.len() as u32 / 3).collect::<Vec<_>>();
 
-                        indices
+                        (0..vertices.len() as u32 / 3).collect::<Vec<_>>()
                     };
 
-                    let index_buffer =
-                        vulkan_abstraction::IndexBuffer::new_for_blas_from_data::<u32>(Rc::clone(&self.core), &indices)?;
-
-                    index_buffer
+                    vulkan_abstraction::IndexBuffer::new_for_blas_from_data(Rc::clone(&self.core), &indices)?
                 };
 
                 // This could also be done with zip, but the code would be equally long and with a lot of nested tuples
@@ -312,12 +348,12 @@ impl Gltf {
                     index_buffer,
                 };
 
-                primitive_data_map.insert(primitive_unique_key, primitive_data);
+                e.insert(primitive_data);
             }
-
             primitives.push(vulkan_abstraction::gltf::Primitive {
                 unique_key: primitive_unique_key,
                 material,
+                local_emissive_triangles,
             });
         }
 

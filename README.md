@@ -1,11 +1,10 @@
-# sunray
+# SunPath (Sunray V2)
 
-Rust hardware ray-tracing library
+Rust hardware real time path-tracing library
 
-![prova](/docs//render.png)
-
-This project was developed by [kalsifer-742](https://github.com/kalsifer-742) and [circled-square](https://github.com/circled-square) supervised by Professor [Marco Patrignani](https://squera.github.io/) for the bachelor thesis at the University of Trento, Italy
-
+This project was developed by [Riccardo-Finello](https://github.com/riccardoFinelloUniTn) supervised by Professor [Marco Patrignani](https://squera.github.io/) for the bachelor thesis at the University of Trento, Italy
+<br>
+It's based on the [sunray](https://github.com/kalsifer-742/sunray) project developed by [kalsifer-742](https://github.com/kalsifer-742) and [circled-square](https://github.com/circled-square)
 ## Contribution
 
 If you wish to contribute to the project you may check our issues, or if you found a bug or missing feature feel free to create one. 
@@ -15,13 +14,12 @@ If you're studying at University of Trento and are looking for a thesis subject 
 to be your supervisor to work on this project and we will be available if you need help or clarifications.
 
 Thesis proposals:
-- Visual Enhancement https://github.com/kalsifer-742/sunray/issues/51
 - Library Integration https://github.com/kalsifer-742/sunray/issues/52
 
 ## Comparison
 
 |                                                                      | Active project | Non-trivial | Real-time | Fully ray-traced | Hybrid |  GPU  | HW RT | Compute | SIMD  |  BVH  | Mesh  | Materials | Denoise | Rust  | Crate |  Engine   |                         Notes |
-| :------------------------------------------------------------------- | :------------: | :---------: | :-------: | :--------------: | :----: | :---: | :---: | :-----: | :---: | :---: | :---: | :-------: | :-----: | :---: | :---: | :-------: | ----------------------------: |
+|:---------------------------------------------------------------------| :------------: | :---------: | :-------: | :--------------: |:------:| :---: | :---: | :-----: | :---: | :---: | :---: | :-------: |:-------:| :---: | :---: | :-------: | ----------------------------: |
 | [Kajiya](https://github.com/EmbarkStudios/kajiya)                    |       ❌        |      ✅      |     ✅     |        ✅         |   ✅    |   ✅   |   ✅   |    ✅    |   ❌   |   ?   |   ✅   |     ✅     |    ✅    |   ✅   |   ❌   |     ❌     |                               |
 | [Cycles](https://projects.blender.org/blender/cycles)                |       ✅        |      ✅      |     ❌     |        ✅         |   ❌    |   ✅   |   ✅   |    ✅    |   ✅   |   ✅   |   ✅   |     ✅     |    ✅    |   ❌   |  N/A  | ✅ Blender |                               |
 | [manta-ray](https://github.com/ange-yaghi/manta-ray)                 |       ❌        |      ✅      |     ❌     |        ✅         |   ❌    |   ✅   |   ❌   |    ✅    |   ✅   |   ✅   |   ✅   |     ✅     |    ✅    |   ❌   |  N/A  | ✅ Blender |                               |
@@ -40,6 +38,7 @@ Thesis proposals:
 | [andros21/rustracer](https://crates.io/crates/rustracer)             |       ❌        |      ❌      |     ❌     |        ✅         |   ❌    |   ❌   |   ❌   |    ❌    |   ❌   |   ❌   |   ❌   |     ❌     |    ❌    |   ✅   |   ✅   |     ❌     |                               |
 |                                                                      |                |             |           |                  |        |       |       |         |       |       |       |           |         |       |       |           |                               |
 | [sunray](https://github.com/Kalsifer-742/sunray)                     |       ✅        |      ✅      |     ✅     |        ✅         |   ❌    |   ✅   |   ✅   |    ❌    |   ❌   |   ✅   |   ✅   |  partial  |    ❌    |   ✅   |   ✅   |     ❌     |                               |
+| [sunPath](https://github.com/Kalsifer-742/sunray)                    |       ✅        |      ✅      |     ✅     |        ✅         |    ✅    |   ✅   |   ✅   |    ❌    |   ❌   |   ✅   |   ✅   |  partial  |    ✅     |   ✅   |   ✅   |     ❌     |                               |
 
 ## Resources
 

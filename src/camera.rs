@@ -1,5 +1,6 @@
 use nalgebra as na;
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     position: na::Point3<f32>,
     target: na::Point3<f32>,
@@ -15,10 +16,13 @@ impl Default for Camera {
         }
     }
 }
-
+#[derive(Clone, Copy)]
+#[repr(C, packed)]
 pub(crate) struct CameraMatrices {
     pub view_inverse: na::Matrix4<f32>,
     pub proj_inverse: na::Matrix4<f32>,
+    pub view_proj: na::Matrix4<f32>,
+    pub prev_view_proj: na::Matrix4<f32>,
 }
 
 impl Camera {
@@ -32,21 +36,29 @@ impl Camera {
         let up = &na::vector![0.0, 1.0, 0.0];
 
         //view-space: camera pov
-        let view = na::Isometry3::look_at_rh(&eye, &target, &up);
+        let view = na::Isometry3::look_at_rh(&eye, &target, up);
         //clip_space: normalised coordinates adding perspective
         let projection = na::Perspective3::new(
             extent.width as f32 / extent.height as f32,
-            self.fov_y * 3.14 / std::f32::consts::PI,
+            self.fov_y.to_radians(),
             0.1,   //render everything after this distance
             100.0, //discard everything after this distance
         );
 
-        let view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
-        let proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
+        let view_homogeneous = view.to_homogeneous();
+        let mut proj_homogeneous = projection.to_homogeneous();
+
+        proj_homogeneous[(1, 1)] *= -1.0;
+
+        let view_inverse = view_homogeneous.try_inverse().unwrap();
+        let proj_inverse = proj_homogeneous.try_inverse().unwrap();
+        let view_proj = proj_homogeneous * view_homogeneous;
 
         CameraMatrices {
             view_inverse,
             proj_inverse,
+            view_proj,
+            prev_view_proj: nalgebra::zero(),
         }
     }
 

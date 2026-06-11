@@ -44,17 +44,17 @@ fn render_and_save() -> SrResult<()> {
     let path = "examples/png/render.png";
     let image_extent = (1600, 1200);
     let image_format = get_vk_format(ExtendedColorType::Rgba8);
-    let mut renderer = Renderer::new(image_extent, image_format)?;
+    let mut renderer: Renderer = Renderer::new(image_extent, image_format)?;
 
-    renderer.load_gltf("examples/assets/Lantern.glb")?;
+    // The instance list is owned by the caller and handed to the renderer per frame.
+    let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/ReflectionRoom.glb")?;
 
     let camera = Camera::default()
         .set_position(na::Point3::new(13.0, 30.0, 25.0))
         .set_target(na::Point3::new(0.0, 13.0, 0.0))
         .set_fov_y(45.0);
-    renderer.set_camera(camera)?;
 
-    let image_buf = renderer.render_to_host_memory().unwrap();
+    let image_buf = renderer.render_to_host_memory(&camera, &scene_instances)?;
     render_to_file(&image_buf, image_extent, path, ImageFormat::Png);
 
     Ok(())

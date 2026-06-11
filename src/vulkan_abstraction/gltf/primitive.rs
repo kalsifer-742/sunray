@@ -10,4 +10,5 @@ pub struct PrimitiveData {
 pub struct Primitive {
     pub unique_key: PrimitiveUniqueKey,
     pub material: vulkan_abstraction::gltf::Material,
+    pub local_emissive_triangles: Vec<[nalgebra::Vector4<f32>; 3]>,
 }

@@ -15,9 +15,13 @@ pub struct CmdPool {
 }
 
 impl CmdPool {
-    pub fn new(device: Rc<vulkan_abstraction::Device>, flags: vk::CommandPoolCreateFlags) -> SrResult<Self> {
+    pub fn new(
+        device: Rc<vulkan_abstraction::Device>,
+        queue_family_index: u32,
+        flags: vk::CommandPoolCreateFlags,
+    ) -> SrResult<Self> {
         let info = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(device.queue_family_index())
+            .queue_family_index(queue_family_index)
             .flags(flags);
 
         let cmd_pool = unsafe { device.inner().create_command_pool(&info, None) }?;

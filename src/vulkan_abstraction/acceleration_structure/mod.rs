@@ -6,6 +6,7 @@ use std::rc::Rc;
 pub use blas::*;
 pub use tlas::*;
 
+use crate::vulkan_abstraction::Buffer;
 use crate::{error::*, vulkan_abstraction};
 use ash::vk;
 
@@ -13,7 +14,7 @@ pub struct AccelerationStructure {
     core: Rc<vulkan_abstraction::Core>,
     handle: vk::AccelerationStructureKHR,
     #[allow(dead_code)]
-    buffer: vulkan_abstraction::Buffer,
+    buffer: vulkan_abstraction::GpuOnlyBuffer,
     allow_update: bool,
     level: vk::AccelerationStructureTypeKHR,
     number_of_geometries: usize,
@@ -25,6 +26,7 @@ impl AccelerationStructure {
         build_range_infos: &[vk::AccelerationStructureBuildRangeInfoKHR],
         geometries: &[vk::AccelerationStructureGeometryKHR],
         allow_update: bool,
+        fast_build: bool,
     ) -> SrResult<Self> {
         assert_eq!(geometries.len(), build_range_infos.len());
 
@@ -34,14 +36,20 @@ impl AccelerationStructure {
             vk::BuildAccelerationStructureFlagsKHR::empty()
         };
 
+        let build_type = if fast_build {
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+        } else {
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+        };
+
         // parameters on how to build the acceleration structure.
         // this temporary version is used to calculate how much memory to allocate for it,
         // and the final version which is used to really build the acceleration structure will be based on it,
         // with some additional args based on the allocations that were performed.
         let incomplete_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-            .geometries(&geometries)
+            .geometries(geometries)
             // PREFER_FAST_TRACE -> prioritize trace performance over build time
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | allow_update_flag)
+            .flags(build_type | allow_update_flag)
             // BUILD as opposed to UPDATE
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .ty(level);
@@ -55,7 +63,7 @@ impl AccelerationStructure {
             core.acceleration_structure_device().get_acceleration_structure_build_sizes(
                 vk::AccelerationStructureBuildTypeKHR::DEVICE,
                 &incomplete_build_geometry_info,
-                &primitive_counts,
+                Some(primitive_counts.as_slice()),
                 &mut size_info,
             );
 
@@ -69,10 +77,9 @@ impl AccelerationStructure {
             vk::AccelerationStructureTypeKHR::GENERIC => "generic acceleration structure buffer",
             _ => "(unknown AS type) acceleration structure buffer",
         };
-        let buffer = vulkan_abstraction::Buffer::new::<u8>(
+        let buffer = vulkan_abstraction::GpuOnlyBuffer::new::<u8>(
             Rc::clone(&core),
-            acceleration_structure_size_info.acceleration_structure_size as usize,
-            gpu_allocator::MemoryLocation::GpuOnly,
+            acceleration_structure_size_info.acceleration_structure_size,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::STORAGE_BUFFER,
@@ -94,13 +101,12 @@ impl AccelerationStructure {
         }?;
 
         // the scratch buffer that will be used for building the acceleration structure (and can be dropped afterwards)
-        let scratch_buffer = vulkan_abstraction::Buffer::new_aligned::<u8>(
+        let scratch_buffer = vulkan_abstraction::GpuOnlyBuffer::new_aligned::<u8>(
             Rc::clone(&core),
-            acceleration_structure_size_info.build_scratch_size as usize,
+            acceleration_structure_size_info.build_scratch_size,
             core.device()
                 .acceleration_structure_properties()
                 .min_acceleration_structure_scratch_offset_alignment as u64,
-            gpu_allocator::MemoryLocation::GpuOnly,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
             "acceleration structure build scratch buffer",
         )?;
@@ -116,7 +122,8 @@ impl AccelerationStructure {
         // - fill with the commands to build the acceleration structure
         // - pass to the queue to be executed (thus building the acceleration structure)
         // - free
-        let build_command_buffer = vulkan_abstraction::cmd_buffer::new_command_buffer(core.cmd_pool(), core.device().inner())?;
+        let build_command_buffer =
+            vulkan_abstraction::cmd_buffer::new_command_buffer(core.graphics_cmd_pool(), core.device().inner())?;
 
         //record build_command_buffer with the commands to build the acceleration structure
         unsafe {
@@ -128,7 +135,7 @@ impl AccelerationStructure {
             core.acceleration_structure_device().cmd_build_acceleration_structures(
                 build_command_buffer,
                 &[build_geometry_info],
-                &[build_range_infos],
+                &[Some(build_range_infos)],
             );
 
             core.device().inner().end_command_buffer(build_command_buffer)?
@@ -136,13 +143,13 @@ impl AccelerationStructure {
 
         // build_command_buffer must not be in a pending state when
         // free_command_buffers is called on it
-        // NOTE: this is actually quite bad for performance if there are many acceleration structure builds/updates being done one after the other
-        core.queue().submit_sync(build_command_buffer)?;
+        // NOTE: this is actually quite bad for performance if there are many acceleration structure builds/updates being done one after the other TODO async
+        core.graphics_queue().submit_sync(build_command_buffer)?;
 
         unsafe {
             core.device()
                 .inner()
-                .free_command_buffers(core.cmd_pool().inner(), &[build_command_buffer]);
+                .free_command_buffers(core.graphics_cmd_pool().inner(), &[build_command_buffer]);
         }
 
         Ok(Self {
@@ -190,7 +197,7 @@ impl AccelerationStructure {
         // and the final version which is used to really build the acceleration structure will be based on it,
         // with some additional args based on the allocations that were performed.
         let incomplete_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-            .geometries(&geometries)
+            .geometries(geometries)
             // PREFER_FAST_TRACE -> prioritize trace performance over build time
             .flags(
                 vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
@@ -210,7 +217,7 @@ impl AccelerationStructure {
                 .get_acceleration_structure_build_sizes(
                     vk::AccelerationStructureBuildTypeKHR::DEVICE,
                     &incomplete_build_geometry_info,
-                    &primitive_counts,
+                    Some(primitive_counts.as_slice()),
                     &mut size_info,
                 );
 
@@ -218,10 +225,9 @@ impl AccelerationStructure {
         };
 
         // the scratch buffer that will be used for building the acceleration structure (and can be dropped afterwards)
-        let scratch_buffer = vulkan_abstraction::Buffer::new::<u8>(
+        let scratch_buffer = vulkan_abstraction::GpuOnlyBuffer::new::<u8>(
             Rc::clone(&self.core),
-            size_info.build_scratch_size as usize,
-            gpu_allocator::MemoryLocation::GpuOnly,
+            size_info.build_scratch_size,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
             "acceleration structure update scratch buffer",
         )?;
@@ -239,7 +245,7 @@ impl AccelerationStructure {
         // - pass to the queue to be executed (thus building the acceleration structure)
         // - free
         let build_command_buffer =
-            vulkan_abstraction::cmd_buffer::new_command_buffer(self.core.cmd_pool(), self.core.device().inner())?;
+            vulkan_abstraction::cmd_buffer::new_command_buffer(self.core.graphics_cmd_pool(), self.core.device().inner())?;
 
         //record build_command_buffer with the commands to build the acceleration structure
         unsafe {
@@ -251,7 +257,7 @@ impl AccelerationStructure {
             self.core.acceleration_structure_device().cmd_build_acceleration_structures(
                 build_command_buffer,
                 &[build_geometry_info],
-                &[build_range_infos],
+                &[Some(build_range_infos)],
             );
 
             self.core.device().inner().end_command_buffer(build_command_buffer)?
@@ -260,16 +266,16 @@ impl AccelerationStructure {
         // build_command_buffer must not be in a pending state when
         // free_command_buffers is called on it
         // NOTE: this is actually quite bad for performance if there are many acceleration structure builds/updates being done one after the other
-        self.core.queue().submit_sync(build_command_buffer)?;
+        self.core.graphics_queue().submit_sync(build_command_buffer)?;
 
         unsafe {
             self.core
                 .device()
                 .inner()
-                .free_command_buffers(self.core.cmd_pool().inner(), &[build_command_buffer]);
+                .free_command_buffers(self.core.graphics_cmd_pool().inner(), &[build_command_buffer]);
         }
 
-        log::debug!("{:?} acceleration structure updated", self.level);
+        //log::debug!("{:?} acceleration structure updated", self.level);
 
         Ok(())
     }
@@ -278,6 +284,7 @@ impl AccelerationStructure {
         &mut self,
         build_range_infos: &[vk::AccelerationStructureBuildRangeInfoKHR],
         geometries: &[vk::AccelerationStructureGeometryKHR],
+        fast_build: bool,
     ) -> SrResult<()> {
         *self = Self::new(
             Rc::clone(&self.core),
@@ -285,6 +292,7 @@ impl AccelerationStructure {
             build_range_infos,
             geometries,
             self.allow_update,
+            fast_build,
         )?;
 
         log::debug!("{:?} acceleration structure rebuilt", self.level);

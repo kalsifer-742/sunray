@@ -1,3 +1,5 @@
+use crate::render_graph;
+use crate::vulkan_abstraction::descriptor_heap;
 use ash::vk;
 use std::{backtrace::BacktraceStatus, fmt::Display};
 
@@ -8,6 +10,8 @@ pub enum ErrorSource {
     Vulkan(vk::Result),
     Gltf(gltf::Error),
     GpuAllocator(gpu_allocator::AllocationError),
+    RenderGraph(render_graph::error::GraphError),
+    DescriptorHeap(descriptor_heap::error::HeapError),
     Custom(String),
 }
 
@@ -23,11 +27,11 @@ impl SrError {
 
         Self::new(ErrorSource::Custom(error), description)
     }
-    fn new(source: ErrorSource, description: String) -> Self {
+    pub(crate) fn new(source: ErrorSource, description: String) -> Self {
         Self::new_with_backtrace(source, description, std::backtrace::Backtrace::capture())
     }
 
-    fn new_with_backtrace(source: ErrorSource, description: String, bt: std::backtrace::Backtrace) -> Self {
+    pub(crate) fn new_with_backtrace(source: ErrorSource, description: String, bt: std::backtrace::Backtrace) -> Self {
         let description = if bt.status() == BacktraceStatus::Captured {
             format!("{description}\n{bt}")
         } else {
@@ -83,6 +87,8 @@ impl std::error::Error for SrError {
             ErrorSource::Vulkan(error) => Some(error),
             ErrorSource::Gltf(error) => Some(error),
             ErrorSource::GpuAllocator(error) => Some(error),
+            ErrorSource::RenderGraph(error) => Some(error),
+            ErrorSource::DescriptorHeap(error) => Some(error),
             ErrorSource::Custom(_string) => None,
         }
     }

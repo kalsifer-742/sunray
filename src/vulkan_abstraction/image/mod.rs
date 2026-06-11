@@ -1,13 +1,21 @@
 pub mod sampler;
+pub mod swapchain;
 pub mod texture;
+
 pub use sampler::*;
 pub use texture::*;
 
+use ash::vk;
+use std::cell::Cell;
 use std::rc::Rc;
 
-use ash::vk;
+use std::sync::Arc;
 
+use crate::render_graph::graph::{AnyRenderResource, GraphResourceImportInfo, ImageDesc, Resource, RgImportable};
+use crate::vulkan_abstraction::Buffer;
+use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::{error::SrResult, utils, vulkan_abstraction};
+use vk_sync_fork as vk_sync;
 
 pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
@@ -18,13 +26,62 @@ pub struct Image {
     image_subresource_range: vk::ImageSubresourceRange,
     extent: vk::Extent3D,
     format: vk::Format,
+    view_type: vk::ImageViewType,
+    /// Lazily-allocated heap slot for STORAGE_IMAGE descriptors. None until first
+    /// call to `storage_slot()`.
+    storage_slot: Cell<Option<DescriptorSlot>>,
+    /// Lazily-allocated heap slot for SAMPLED_IMAGE descriptors.
+    sampled_slot: Cell<Option<DescriptorSlot>>,
+    /// True when this Image holds its own `Allocation` (i.e. it was created via
+    /// `Image::new`). False when memory is owned elsewhere (e.g. by a transient
+    /// alias slot in `TransientResources`); in that case `Drop` still destroys
+    /// the `vk::Image` + view but skips `Allocator::free`.
+    owns_memory: bool,
+}
+//TODO no more lazy slot allocation
+//TODO why are the written slot always read optimal
+//TODO transform the struct internal value to desc
+impl Resource for Image {
+    type Desc = ImageDesc;
+
+    fn borrow_resource(res: &AnyRenderResource) -> &Self {
+        match res {
+            AnyRenderResource::OwnedImage(img) => img,
+            AnyRenderResource::ImportedImage(arc) => arc.as_ref(),
+            _ => panic!("borrow_resource::<Image> called on non-image AnyRenderResource variant"),
+        }
+    }
+}
+
+impl RgImportable<ImageDesc> for Arc<Image> {
+    fn import(&self) -> ImageDesc {
+        ImageDesc {
+            extent: self.extent,
+            format: self.format,
+            tiling: vk::ImageTiling::OPTIMAL,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            // Imported images already exist; the desc is informational for the graph.
+            usage: vk::ImageUsageFlags::empty(),
+            name: "imported",
+        }
+    }
+}
+
+impl From<Arc<Image>> for GraphResourceImportInfo {
+    fn from(val: Arc<Image>) -> Self {
+        GraphResourceImportInfo::Image {
+            resource: val,
+            //TODO let the caller supply the initial access state instead of defaulting to Nothing
+            access_type: vk_sync::AccessType::Nothing,
+        }
+    }
 }
 
 impl Image {
     pub fn new_from_data(
         core: Rc<vulkan_abstraction::Core>,
         image_data: Vec<u8>,
-        extent: vk::Extent3D,
+        extent: vk::Extent3D, //TODO we assume an extend3d but do not save the use the actual extent for any meaningful use like using the image as a vector of 2d images
         format: vk::Format,
         tiling: vk::ImageTiling,
         location: gpu_allocator::MemoryLocation,
@@ -32,6 +89,7 @@ impl Image {
         name: &'static str,
     ) -> SrResult<Self> {
         let usage_flags = vk::ImageUsageFlags::TRANSFER_DST | usage_flags;
+
         // format is the format of the data. we don't even try to check if it's supported by the gpu since
         // in general only RGBA8 is supported. TODO: it would be better to do so, and also we're assuming UNORM for no reason
         let mut image = Self::new(core, extent, vk::Format::R8G8B8A8_UNORM, tiling, location, usage_flags, name)?;
@@ -44,12 +102,27 @@ impl Image {
             _ => todo!(), // TODO
         };
 
-        let staging_buffer = vulkan_abstraction::Buffer::new_staging_from_data(Rc::clone(&image.core), &image_data)?;
+        let staging_buffer = vulkan_abstraction::StagingBuffer::new_temp_from_data(Rc::clone(&image.core), &image_data)?;
 
         image.copy_from_buffer(&staging_buffer)?;
 
         Ok(image)
     }
+    /// Construct an image from a render-graph descriptor. Equivalent to calling
+    /// `Image::new` with the desc's fields; kept as a separate entry point so the
+    /// graph can build images straight from a `&ImageDesc` without unpacking.
+    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &crate::render_graph::graph::ImageDesc) -> SrResult<Self> {
+        Self::new(
+            core,
+            desc.extent,
+            desc.format,
+            desc.tiling,
+            desc.location,
+            desc.usage,
+            desc.name,
+        )
+    }
+
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         extent: vk::Extent3D,
@@ -105,9 +178,10 @@ impl Image {
             base_array_layer: 0,
             layer_count: 1,
         };
+        let view_type = vk::ImageViewType::TYPE_2D;
         let image_view = {
             let image_view_create_info = vk::ImageViewCreateInfo::default()
-                .view_type(vk::ImageViewType::TYPE_2D)
+                .view_type(view_type)
                 .format(format)
                 .subresource_range(image_subresource_range)
                 .image(image);
@@ -124,6 +198,79 @@ impl Image {
             image_subresource_range,
             extent,
             format,
+            view_type,
+            storage_slot: Cell::new(None),
+            sampled_slot: Cell::new(None),
+            owns_memory: true,
+        })
+    }
+
+    /// Create a bare `vk::Image` handle and report its memory requirements without
+    /// allocating or binding any memory. Used by the render-graph transient
+    /// allocator: it queries requirements across every member of an alias slot,
+    /// allocates a single memory range that satisfies all of them, then binds each
+    /// returned handle via `from_aliased`.
+    pub(crate) fn create_unbound(
+        core: &vulkan_abstraction::Core,
+        extent: vk::Extent3D,
+        format: vk::Format,
+        tiling: vk::ImageTiling,
+        usage: vk::ImageUsageFlags,
+    ) -> SrResult<(vk::Image, vk::MemoryRequirements)> {
+        let info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(extent)
+            .flags(vk::ImageCreateFlags::empty())
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(tiling)
+            .usage(usage)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        let image = unsafe { core.device().inner().create_image(&info, None) }?;
+        let reqs = unsafe { core.device().inner().get_image_memory_requirements(image) };
+        Ok((image, reqs))
+    }
+
+    /// Wrap an already-bound `vk::Image` (memory owned elsewhere). Creates the image
+    /// view; `Drop` will destroy the handle + view but NOT free the memory. Used
+    /// for transient images that share a slot allocation in `TransientResources`.
+    pub(crate) fn from_aliased(
+        core: Rc<vulkan_abstraction::Core>,
+        image: vk::Image,
+        extent: vk::Extent3D,
+        format: vk::Format,
+        byte_size: u64,
+    ) -> SrResult<Self> {
+        let image_subresource_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let view_type = vk::ImageViewType::TYPE_2D;
+        let view_info = vk::ImageViewCreateInfo::default()
+            .view_type(view_type)
+            .format(format)
+            .subresource_range(image_subresource_range)
+            .image(image);
+        let image_view = unsafe { core.device().inner().create_image_view(&view_info, None) }?;
+
+        Ok(Self {
+            core,
+            image,
+            allocation: gpu_allocator::vulkan::Allocation::default(),
+            byte_size,
+            image_view,
+            image_subresource_range,
+            extent,
+            format,
+            view_type,
+            storage_slot: Cell::new(None),
+            sampled_slot: Cell::new(None),
+            owns_memory: false,
         })
     }
 
@@ -133,13 +280,13 @@ impl Image {
 
     // copies from a staging buffer mainly useful to copy from a staging buffer to a device buffer
     // note that this function internally changes the image's layout to TRANSFER_DST_OPTIMAL
-    pub fn copy_from_buffer(&mut self, src: &vulkan_abstraction::Buffer) -> SrResult<()> {
+    pub fn copy_from_buffer(&mut self, src: &impl Buffer) -> SrResult<()> {
         if src.is_null() {
             return Ok(());
         }
 
         let device = self.core.device().inner();
-        let cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(self.core.cmd_pool(), device)?;
+        let cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(self.core.graphics_cmd_pool(), device)?;
 
         let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
@@ -150,10 +297,10 @@ impl Image {
                 &self.core,
                 cmd_buf,
                 self.image,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::empty(),
-                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::TRANSFER_WRITE,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             );
@@ -183,9 +330,9 @@ impl Image {
             device.end_command_buffer(cmd_buf)?;
         }
 
-        self.core.queue().submit_sync(cmd_buf)?;
+        self.core.graphics_queue().submit_sync(cmd_buf)?;
 
-        unsafe { device.free_command_buffers(self.core.cmd_pool().inner(), &[cmd_buf]) };
+        unsafe { device.free_command_buffers(self.core.graphics_cmd_pool().inner(), &[cmd_buf]) };
 
         Ok(())
     }
@@ -230,6 +377,43 @@ impl Image {
         self.image_view
     }
 
+    /// Heap slot for `STORAGE_IMAGE`. Allocated and written on first call; cached for the
+    /// rest of the image's life. Layout used in the descriptor is `GENERAL`.
+    pub fn storage_slot(&self) -> u32 {
+        if let Some(s) = self.storage_slot.get() {
+            return s.shader_index();
+        }
+        let slot = self.write_image_slot(ResourceDescriptorKind::StorageImage, vk::ImageLayout::GENERAL);
+        self.storage_slot.set(Some(slot));
+        slot.shader_index()
+    }
+
+    /// Heap slot for `SAMPLED_IMAGE`. Layout used in the descriptor is `SHADER_READ_ONLY_OPTIMAL`.
+    pub fn sampled_slot(&self) -> u32 {
+        if let Some(s) = self.sampled_slot.get() {
+            return s.shader_index();
+        }
+        let slot = self.write_image_slot(
+            ResourceDescriptorKind::SampledImage,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        );
+        self.sampled_slot.set(Some(slot));
+        slot.shader_index()
+    }
+
+    fn write_image_slot(&self, kind: ResourceDescriptorKind, layout: vk::ImageLayout) -> DescriptorSlot {
+        let view_info = vk::ImageViewCreateInfo::default()
+            .view_type(self.view_type)
+            .format(self.format)
+            .subresource_range(self.image_subresource_range)
+            .image(self.image);
+        let mut heap = self.core.descriptor_heap_mut();
+        let slot = heap.alloc_resource_slot(kind);
+        heap.write_image(slot, &view_info, layout, kind)
+            .expect("descriptor heap write_image failed");
+        slot
+    }
+
     pub fn byte_size(&self) -> u64 {
         self.byte_size
     }
@@ -255,17 +439,31 @@ impl Drop for Image {
     fn drop(&mut self) {
         let device = self.core.device().inner();
 
+        // Return any descriptor slots we allocated.
+        {
+            let mut heap = self.core.descriptor_heap_mut();
+            if let Some(s) = self.storage_slot.get() {
+                heap.free(s);
+            }
+            if let Some(s) = self.sampled_slot.get() {
+                heap.free(s);
+            }
+        }
+
         unsafe {
             device.destroy_image_view(self.image_view, None);
             device.destroy_image(self.image, None);
         }
 
-        //need to take ownership to pass to free
-        let allocation = std::mem::replace(&mut self.allocation, gpu_allocator::vulkan::Allocation::default());
-        match self.core.allocator_mut().free(allocation) {
-            Ok(()) => {}
-            Err(e) => {
-                log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop")
+        // Aliased images don't own their memory (it's held by a transient slot in
+        // TransientResources); skip free in that case.
+        if self.owns_memory {
+            let allocation = std::mem::take(&mut self.allocation);
+            match self.core.allocator_mut().free(allocation) {
+                Ok(()) => {}
+                Err(e) => {
+                    log::error!("gpu_allocator::vulkan::Allocator::free returned {e} in sunray::vulkan_abstraction::Image::drop")
+                }
             }
         }
     }

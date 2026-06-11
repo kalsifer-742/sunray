@@ -2,14 +2,44 @@ use std::rc::Rc;
 
 use ash::vk;
 
+use crate::vulkan_abstraction::descriptor_heap::DescriptorSlot;
 use crate::{error::SrResult, vulkan_abstraction};
+
+/// Plain-data copy of the sampler parameters. Under the descriptor-heap model the sampler
+/// is materialised by `vkWriteSamplerDescriptorsEXT` from a `SamplerCreateInfo` directly,
+/// so there is no `vkCreateSampler` / `vkDestroySampler` round-trip and no `vk::Sampler`
+/// handle to track — these params are the entire sampler.
+#[derive(Copy, Clone)]
+struct SamplerParams {
+    min_filter: vk::Filter,
+    mag_filter: vk::Filter,
+    address_mode_u: vk::SamplerAddressMode,
+    address_mode_v: vk::SamplerAddressMode,
+    address_mode_w: vk::SamplerAddressMode,
+    mipmap_mode: vk::SamplerMipmapMode,
+    max_anisotropy: f32,
+}
 
 pub struct Sampler {
     core: Rc<vulkan_abstraction::Core>,
-    sampler: vk::Sampler,
+    params: SamplerParams,
+    slot: DescriptorSlot,
 }
 
 impl Sampler {
+    /// Construct a sampler from a render-graph descriptor.
+    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &crate::render_graph::graph::SamplerDesc) -> SrResult<Self> {
+        Self::new(
+            core,
+            desc.min_filter,
+            desc.mag_filter,
+            desc.address_mode_u,
+            desc.address_mode_v,
+            desc.address_mode_w,
+            desc.mipmap_mode,
+        )
+    }
+
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         min_filter: vk::Filter,
@@ -19,46 +49,83 @@ impl Sampler {
         address_mode_w: vk::SamplerAddressMode,
         mipmap_mode: vk::SamplerMipmapMode,
     ) -> SrResult<Self> {
-        let create_info = vk::SamplerCreateInfo::default()
-            .flags(vk::SamplerCreateFlags::empty())
-            // linear filtering both for magnification and minification
-            .min_filter(min_filter)
-            .mag_filter(mag_filter)
-            // repeat (tile) the texture on all axes
-            .address_mode_u(address_mode_u)
-            .address_mode_v(address_mode_v)
-            .address_mode_w(address_mode_w)
-            // use supported anisotropy
-            // TODO: does this make sense for raytracing?
-            .anisotropy_enable(true)
-            .max_anisotropy(core.device().properties().limits.max_sampler_anisotropy)
-            // use normalized ([0,1] range) coordinates
-            .unnormalized_coordinates(false)
-            // no need for a comparison function ("mainly used for percentage-closer filtering on shadow maps")
-            .compare_enable(false)
-            .compare_op(vk::CompareOp::ALWAYS)
-            // mipmapping
-            .mipmap_mode(mipmap_mode)
-            .mip_lod_bias(0.0)
-            .min_lod(0.0)
-            .max_lod(0.0);
+        let params = SamplerParams {
+            min_filter,
+            mag_filter,
+            address_mode_u,
+            address_mode_v,
+            address_mode_w,
+            mipmap_mode,
+            max_anisotropy: core.device().properties().limits.max_sampler_anisotropy,
+        };
+        let slot = core.descriptor_heap_mut().alloc_sampler_slot();
+        core.descriptor_heap_mut()
+            .write_sampler(slot, &params.to_create_info())
+            .expect("descriptor heap write_sampler failed");
 
-        let sampler = unsafe { core.device().inner().create_sampler(&create_info, None) }?;
-
-        Ok(Self { core, sampler })
+        Ok(Self { core, params, slot })
     }
 
-    pub fn inner(&self) -> vk::Sampler {
-        self.sampler
+    /// Heap slot for this sampler in the sampler heap. Allocated and written on first call.
+    pub fn slot(&self) -> u32 {
+        self.slot.shader_index()
+    }
+}
+
+impl SamplerParams {
+    fn to_create_info(&self) -> vk::SamplerCreateInfo<'static> {
+        vk::SamplerCreateInfo::default()
+            .flags(vk::SamplerCreateFlags::empty())
+            .min_filter(self.min_filter)
+            .mag_filter(self.mag_filter)
+            .address_mode_u(self.address_mode_u)
+            .address_mode_v(self.address_mode_v)
+            .address_mode_w(self.address_mode_w)
+            .anisotropy_enable(true)
+            .max_anisotropy(self.max_anisotropy)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .compare_op(vk::CompareOp::ALWAYS)
+            .mipmap_mode(self.mipmap_mode)
+            .mip_lod_bias(0.0)
+            .min_lod(0.0)
+            .max_lod(0.0)
     }
 }
 
 impl Drop for Sampler {
     fn drop(&mut self) {
-        let device = self.core.device().inner();
+        self.core.descriptor_heap_mut().free(self.slot);
+    }
+}
 
-        unsafe {
-            device.destroy_sampler(self.sampler, None);
+impl crate::render_graph::graph::Resource for Sampler {
+    type Desc = crate::render_graph::graph::SamplerDesc;
+
+    fn borrow_resource(res: &crate::render_graph::graph::AnyRenderResource) -> &Self {
+        match res {
+            crate::render_graph::graph::AnyRenderResource::OwnedSampler(s) => s,
+            crate::render_graph::graph::AnyRenderResource::ImportedSampler(arc) => arc.as_ref(),
+            _ => panic!("borrow_resource::<Sampler> called on non-sampler AnyRenderResource variant"),
         }
+    }
+}
+
+impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::SamplerDesc> for std::sync::Arc<Sampler> {
+    fn import(&self) -> crate::render_graph::graph::SamplerDesc {
+        crate::render_graph::graph::SamplerDesc {
+            min_filter: self.params.min_filter,
+            mag_filter: self.params.mag_filter,
+            address_mode_u: self.params.address_mode_u,
+            address_mode_v: self.params.address_mode_v,
+            address_mode_w: self.params.address_mode_w,
+            mipmap_mode: self.params.mipmap_mode,
+        }
+    }
+}
+
+impl From<std::sync::Arc<Sampler>> for crate::render_graph::graph::GraphResourceImportInfo {
+    fn from(val: std::sync::Arc<Sampler>) -> Self {
+        crate::render_graph::graph::GraphResourceImportInfo::Sampler { resource: val }
     }
 }

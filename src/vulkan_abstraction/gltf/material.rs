@@ -13,8 +13,11 @@ pub struct Material {
     pub normal_texture_index: Option<usize>,
     pub occlusion_texture_index: Option<usize>,
     pub emissive_factor: [f32; 3],
+    pub emissive_strength: f32,
     pub emissive_texture_index: Option<usize>,
     pub alpha_mode: gltf::material::AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    pub transmission_factor: f32,
+    pub ior: f32,
 }

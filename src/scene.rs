@@ -1,17 +1,39 @@
 use std::{collections::HashMap, rc::Rc};
 
+use crate::render_graph::graph::SamplerDesc;
 use crate::{error::SrResult, vulkan_abstraction};
 
+use crate::utils::na_mat4_to_vk_transform;
 use ash::vk;
-use nalgebra as na;
-
-type BlasInstanceInfo = (usize, na::Matrix4<f32>);
 
 pub struct SceneData {
     pub textures: Vec<vulkan_abstraction::gltf::Texture>,
     pub samplers: Vec<vulkan_abstraction::gltf::Sampler>,
     pub images: Vec<vulkan_abstraction::gltf::Image>,
     pub primitive_data_map: vulkan_abstraction::gltf::PrimitiveDataMap,
+}
+//TODO I need to actually look into this and decide how to handle it once and for all
+/// One unique BLAS of a loaded scene, together with the data the
+/// `ResourceManager` uploads alongside it: the primitive's material and its
+/// local-space emissive triangles.
+pub struct LoadedBlas {
+    pub blas: vulkan_abstraction::BLAS,
+    pub material: vulkan_abstraction::gltf::Material,
+    pub emissive_triangles: Vec<vulkan_abstraction::gltf::EmissiveTriangle>,
+}
+
+/// Everything `Scene::load_into_gpu` produced, in a renderer-agnostic form:
+/// unique BLASes (with material + emissive triangles), the per-instance
+/// `(blas index, transform)` list, and the texture / sampler / image data the
+/// materials reference. Samplers are plain `SamplerDesc`s so the
+/// `ResourceManager` can dedup them into its finite sampler set.
+pub struct LoadedScene {
+    pub blases: Vec<LoadedBlas>,
+    /// One entry per scene instance: index into `blases` + world transform.
+    pub instances: Vec<(usize, vk::TransformMatrixKHR)>,
+    pub textures: Vec<vulkan_abstraction::gltf::Texture>,
+    pub sampler_descs: Vec<SamplerDesc>,
+    pub images: Vec<vulkan_abstraction::Image>,
 }
 
 pub struct Scene {
@@ -27,79 +49,57 @@ impl Scene {
         &self.nodes
     }
 
-    pub fn load_into_gpu<'a>(
-        &self,
-        core: &Rc<vulkan_abstraction::Core>,
-        blases: &'a mut Vec<vulkan_abstraction::BLAS>,
-        mut scene_data: crate::SceneData,
-    ) -> SrResult<(
-        Vec<vulkan_abstraction::BlasInstance<'a>>,
-        Vec<vulkan_abstraction::gltf::Material>,
-        Vec<vulkan_abstraction::gltf::Texture>,
-        Vec<vulkan_abstraction::image::Sampler>,
-        Vec<vulkan_abstraction::Image>,
-    )> {
-        blases.clear();
-
-        let mut blas_instances_info = vec![];
-        let mut materials = vec![];
+    pub fn load_into_gpu(&self, core: &Rc<vulkan_abstraction::Core>, mut scene_data: crate::SceneData) -> SrResult<LoadedScene> {
+        let mut blases = vec![];
+        let mut instances = vec![];
 
         let mut primitives_blas_index: HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, usize> = HashMap::new();
         for node in self.nodes() {
             self.explore_node(
                 node,
                 core,
-                blases,
-                &mut blas_instances_info,
+                &mut blases,
+                &mut instances,
                 &mut primitives_blas_index,
-                &mut materials,
                 &mut scene_data,
             )?;
         }
 
-        let blas_instances = blas_instances_info
-            .into_iter()
-            .enumerate()
-            .map(
-                |(blas_instance_index, (blas_index, transform))| vulkan_abstraction::BlasInstance {
-                    blas_instance_index: blas_instance_index as u32,
-                    blas: &blases[blas_index],
-                    transform: to_vk_transform(transform),
-                },
-            )
-            .collect::<Vec<_>>();
-
-        let samplers: Result<Vec<_>, _> = scene_data
+        let sampler_descs = scene_data
             .samplers
             .iter()
             .map(|sampler| {
                 let default = gltf::texture::MinFilter::Linear;
 
-                vulkan_abstraction::image::Sampler::new(
-                    core.clone(),
-                    vk::Filter::from_gltf(sampler.min_filter.unwrap_or(default)),
-                    vk::Filter::from_gltf(sampler.mag_filter.unwrap_or(gltf::texture::MagFilter::Linear)),
-                    vk::SamplerAddressMode::from_gltf(sampler.wrap_s_u),
-                    vk::SamplerAddressMode::from_gltf(sampler.wrap_t_v),
-                    vk::SamplerAddressMode::REPEAT,
-                    vk::SamplerMipmapMode::from_gltf(sampler.min_filter.unwrap_or(default)),
-                )
+                SamplerDesc {
+                    min_filter: vk::Filter::from_gltf(sampler.min_filter.unwrap_or(default)),
+                    mag_filter: vk::Filter::from_gltf(sampler.mag_filter.unwrap_or(gltf::texture::MagFilter::Linear)),
+                    address_mode_u: vk::SamplerAddressMode::from_gltf(sampler.wrap_s_u),
+                    address_mode_v: vk::SamplerAddressMode::from_gltf(sampler.wrap_t_v),
+                    address_mode_w: vk::SamplerAddressMode::REPEAT,
+                    mipmap_mode: vk::SamplerMipmapMode::from_gltf(sampler.min_filter.unwrap_or(default)),
+                }
             })
             .collect();
 
         let images: Result<Vec<_>, _> = scene_data.images.into_iter().map(|image| to_vk_image(core, image)).collect();
 
-        Ok((blas_instances, materials, scene_data.textures, samplers?, images?))
+        Ok(LoadedScene {
+            blases,
+            instances,
+            textures: scene_data.textures,
+            sampler_descs,
+            images: images?,
+        })
     }
 
     fn explore_node(
         &self,
         node: &vulkan_abstraction::gltf::Node,
         core: &Rc<vulkan_abstraction::Core>,
-        blases: &mut Vec<vulkan_abstraction::BLAS>,
-        blas_instances_info: &mut Vec<BlasInstanceInfo>,
+        blases: &mut Vec<LoadedBlas>,
+        instances: &mut Vec<(usize, vk::TransformMatrixKHR)>,
         primitives_blas_index: &mut HashMap<vulkan_abstraction::gltf::PrimitiveUniqueKey, usize>,
-        materials: &mut Vec<vulkan_abstraction::gltf::Material>,
         scene_data: &mut crate::SceneData,
     ) -> SrResult<()> {
         if let Some(mesh) = node.mesh() {
@@ -111,12 +111,41 @@ impl Scene {
                     None => {
                         let primitive_data = scene_data.primitive_data_map.remove(&primitive_unique_key).unwrap();
 
+                        // Convert local-space emissive triangles for this primitive
+                        let emissive_triangles: Vec<_> = if !primitive.local_emissive_triangles.is_empty() {
+                            let material = &primitive.material;
+                            let emission = [
+                                material.emissive_factor[0] * material.emissive_strength,
+                                material.emissive_factor[1] * material.emissive_strength,
+                                material.emissive_factor[2] * material.emissive_strength,
+                                0.0,
+                            ];
+                            primitive
+                                .local_emissive_triangles
+                                .iter()
+                                .map(|local_tri| vulkan_abstraction::gltf::EmissiveTriangle {
+                                    v0: [local_tri[0].x, local_tri[0].y, local_tri[0].z, 0.0],
+                                    v1: [local_tri[1].x, local_tri[1].y, local_tri[1].z, 0.0],
+                                    v2: [local_tri[2].x, local_tri[2].y, local_tri[2].z, 0.0],
+                                    emission,
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
                         let blas = vulkan_abstraction::BLAS::new(
                             core.clone(),
                             primitive_data.vertex_buffer,
                             primitive_data.index_buffer,
+                            false,
                         )?;
-                        blases.push(blas);
+
+                        blases.push(LoadedBlas {
+                            blas,
+                            material: primitive.material.clone(),
+                            emissive_triangles,
+                        });
 
                         let blas_index = blases.len() - 1;
                         primitives_blas_index.insert(primitive_unique_key, blas_index);
@@ -125,54 +154,18 @@ impl Scene {
                     }
                 };
 
-                materials.push(primitive.material.clone());
-
-                // the first idea that could come to your mind is to create a BlasInstance here directly.
-                // Apart from having to manage lifetimes it is still not going to work because:
-                // - &blases[blases.len()]
-                // creates an immutable borrow of blases when a mutable borrow already exist - compiler error!
-                // - blases.last() - compiler error!
-                // - blases.last_mut()
-                // creates another mutable borrow when anoter mutable borrow already exists
-                // but only one mutable borrow can exist at any time - compile error!
-                //
-                // tl;dr don't waste time making lifetimes work
-                blas_instances_info.push((blas_index, *node.transform()));
+                instances.push((blas_index, na_mat4_to_vk_transform(*node.transform())));
             }
         }
 
         if let Some(children) = node.children() {
             for child in children {
-                self.explore_node(
-                    child,
-                    core,
-                    blases,
-                    blas_instances_info,
-                    primitives_blas_index,
-                    materials,
-                    scene_data,
-                )? // mut borrow
+                self.explore_node(child, core, blases, instances, primitives_blas_index, scene_data)?
             }
         }
 
         Ok(())
     }
-}
-
-fn to_vk_transform(transform: na::Matrix4<f32>) -> vk::TransformMatrixKHR {
-    let c0 = transform.column(0);
-    let c1 = transform.column(1);
-    let c2 = transform.column(2);
-    let c3 = transform.column(3);
-
-    #[rustfmt::skip]
-    let matrix = [
-        c0[0], c1[0], c2[0], c3[0],
-        c0[1], c1[1], c2[1], c3[1],
-        c0[2], c1[2], c2[2], c3[2],
-    ];
-
-    vk::TransformMatrixKHR { matrix }
 }
 
 fn to_vk_image(
@@ -199,7 +192,7 @@ fn to_vk_image(
     Ok(image)
 }
 
-// Becuase of the oprhan rule of rust
+// Because of the orphan rule of rust
 // it is not possible to implement the trait from
 // for the types gltf::image::Format and vk::Format
 // so I created a custom trait

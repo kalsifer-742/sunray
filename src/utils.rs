@@ -1,5 +1,7 @@
 #![macro_use]
 
+use ash::vk;
+
 pub(crate) fn env_var_as_bool(name: &str) -> Option<bool> {
     match std::env::var(name) {
         Ok(s) => match s.parse::<i32>() {
@@ -47,17 +49,25 @@ pub struct AlignedAs<Align, Bytes: ?Sized> {
 }
 
 macro_rules! include_bytes_align_as {
-    ($align_ty:ty, $path:expr) => {
-        {  // const block expression to encapsulate the static
-            use $crate::utils::AlignedAs;
+    ($align_ty:ty, $path:expr) => {{
+        // const block expression to encapsulate the static
+        use $crate::utils::AlignedAs;
 
-            // this assignment is made possible by CoerceUnsized
-            static ALIGNED: &AlignedAs::<$align_ty, [u8]> = &AlignedAs {
-                _align: [],
-                bytes: *include_bytes!($path),
-            };
+        // this assignment is made possible by CoerceUnsized
+        static ALIGNED: &AlignedAs<$align_ty, [u8]> = &AlignedAs {
+            _align: [],
+            bytes: *include_bytes!($path),
+        };
 
-            &ALIGNED.bytes
-        }
-    };
+        &ALIGNED.bytes
+    }};
+}
+
+pub fn na_mat4_to_vk_transform(m: nalgebra::Matrix4<f32>) -> vk::TransformMatrixKHR {
+    // VkTransformMatrixKHR is a row-major 3x4 affine, flattened to [f32; 12].
+    vk::TransformMatrixKHR {
+        matrix: [
+            m.m11, m.m12, m.m13, m.m14, m.m21, m.m22, m.m23, m.m24, m.m31, m.m32, m.m33, m.m34,
+        ],
+    }
 }
