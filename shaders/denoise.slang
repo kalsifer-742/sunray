@@ -58,15 +58,20 @@ void main(uint3 tid: SV_DispatchThreadID) {
         return;
     }
 
+    // Demodulate: the path tracer bakes albedo into the radiance, so we divide it
+    // out and filter the (smooth) illumination, then remodulate with albedo at the
+    // end. The `diffuse` G-buffer still drives edge stopping below.
+    float3 center_illum = center_color / max(center_diffuse, float3(0.001));
+
     float center_weight = kernel[2] * kernel[2];
-    float3 sum_color = center_color * center_weight;
+    float3 sum_color = center_illum * center_weight;
     float sum_weight = center_weight;
 
     const float DEPTH_SENSITIVITY = 8.0;
     const float NORMAL_SENSITIVITY = 80.0;
     const float DIFFUSE_SENSITIVITY = 50.0;
 
-    float center_luma = get_luminance(center_color);
+    float center_luma = get_luminance(center_illum);
 
     for (int y = -2; y <= 2; ++y) {
         for (int x = -2; x <= 2; ++x) {
@@ -83,7 +88,10 @@ void main(uint3 tid: SV_DispatchThreadID) {
             float3 sample_normal = normal.Load(int3(sample_coord, 0)).rgb;
             float3 sample_diffuse = diffuse.Load(int3(sample_coord, 0)).rgb;
 
-            float sample_luma = get_luminance(sample_color);
+            // Demodulate the neighbor into illumination space to match the center.
+            float3 sample_illum = sample_color / max(sample_diffuse, float3(0.001));
+
+            float sample_luma = get_luminance(sample_illum);
 
             float diffuse_diff = distance(center_diffuse, sample_diffuse);
             float luma_diff = abs(center_luma - sample_luma);
@@ -98,11 +106,11 @@ void main(uint3 tid: SV_DispatchThreadID) {
 
             float weight = exp(combined_power) * kernel[x + 2] * kernel[y + 2];
 
-            sum_color += sample_color * weight;
+            sum_color += sample_illum * weight;
             sum_weight += weight;
         }
     }
 
     float3 spatially_denoised_color = (sum_color / max(sum_weight, 0.0001)) * center_diffuse;
-    spatial_output[pixel_coords] = float4(spatially_denoised_color, 1.0);
+    spatial_output[pixel_coords] = float4(center_normal, 1.0);
 }
