@@ -112,5 +112,5 @@ void main(uint3 tid: SV_DispatchThreadID) {
     }
 
     float3 spatially_denoised_color = (sum_color / max(sum_weight, 0.0001)) * center_diffuse;
-    spatial_output[pixel_coords] = float4(center_normal, 1.0);
+    spatial_output[pixel_coords] = float4(spatially_denoised_color, 1.0);
 }
