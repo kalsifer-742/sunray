@@ -267,6 +267,35 @@ void ray_gen_ris() {
         }
     }
 
+    // Visibility reuse (Bitterli et al. 2020): the RIS audition and temporal
+    // reuse above use an *unshadowed* target function, so an occluded light can
+    // win the reservoir and persist across frames with full weight, flickering
+    // on/off in penumbrae. Test visibility of the selected sample once and zero
+    // W when occluded — keep M so temporal confidence isn't reset. The occluded
+    // sample then contributes nothing to next frame's temporal reuse (its merge
+    // weight is p_hat * W * M = 0) instead of boiling.
+    if (current_r.W > 0.0) {
+        float3 vis_dir = current_r.light_pos - hitPos;
+        float vis_dist = max(length(vis_dir), 0.0001);
+        vis_dir /= vis_dist;
+
+        if (dot(hit_normal, vis_dir) <= 0.0) {
+            current_r.W = 0.0;
+        } else {
+            uint vis_flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+            prd.dist = 1.0;
+            RayDesc vray;
+            vray.Origin = hitPos + hit_normal * 0.001;
+            vray.TMin = 0.001;
+            vray.Direction = vis_dir;
+            vray.TMax = vis_dist - 0.001;
+            TraceRay(tlas, vis_flags, 0xFFu, 0, 0, 0, vray, prd);
+            if (prd.dist >= 0.0) {
+                current_r.W = 0.0; // occluded
+            }
+        }
+    }
+
     current_r.hit_normal_packed = pack_normal(hit_normal);
     current_r.depth = virtual_distance;
     {
