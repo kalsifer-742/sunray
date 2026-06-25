@@ -40,35 +40,35 @@ bimap = "0.6.3"
 #na = "0.32.2"
 
 # --- Bevy integration (optional, gated behind the `bevy` feature) -----------
-# Registry deps (0.19.0-rc.2). We depend on the individual crates rather than
+# Registry deps (0.19.0). We depend on the individual crates rather than
 # the `bevy` meta-crate so the example can build the minimal plugin set
-# (Option B in docs/bevy_integration.md) and we never pull in
+# (Option B in docs/bevy_integration.md) and we never pull inF
 # `RenderPlugin`/wgpu at *runtime*. `bevy_render` is still a compile dependency
 # because we reuse its `ExtractPlugin` + render-world scaffolding.
-bevy_app = { version =  "0.19.0-rc.2", optional = true }
-bevy_ecs = { version = "0.19.0-rc.2", optional = true }
-bevy_render = { version = "0.19.0-rc.2", optional = true }
-bevy_window = { version = "0.19.0-rc.2", optional = true }
-bevy_winit = { version = "0.19.0-rc.2", optional = true }
-bevy_input = { version = "0.19.0-rc.2", optional = true }
-bevy_time = { version = "0.19.0-rc.2", optional = true }
-bevy_transform = { version = "0.19.0-rc.2", optional = true }
-bevy_math = { version = "0.19.0-rc.2", optional = true }
-bevy_platform = { version = "0.19.0-rc.2", optional = true }
-bevy_a11y = { version = "0.19.0-rc.2", optional = true }
-bevy_diagnostic = { version = "0.19.0-rc.2", optional = true }
-bevy_log = { version = "0.19.0-rc.2", optional = true }
-bevy_asset = { version = "0.19.0-rc.2", optional = true }
+bevy_app = { version =  "0.19.0", optional = true }
+bevy_ecs = { version = "0.19.0", optional = true }
+bevy_render = { version = "0.19.0", optional = true }
+bevy_window = { version = "0.19.0", optional = true }
+bevy_winit = { version = "0.19.0", optional = true }
+bevy_input = { version = "0.19.0", optional = true }
+bevy_time = { version = "0.19.0", optional = true }
+bevy_transform = { version = "0.19.0", optional = true }
+bevy_math = { version = "0.19.0", optional = true }
+bevy_platform = { version = "0.19.0", optional = true }
+bevy_a11y = { version = "0.19.0", optional = true }
+bevy_diagnostic = { version = "0.19.0", optional = true }
+bevy_log = { version = "0.19.0", optional = true }
+bevy_asset = { version = "0.19.0", optional = true }
 # glTF loading through Bevy's asset pipeline (`SunrayGltfPlugin`, the second
 # scene-load path next to the renderer's own `load_gltf`). `bevy_gltf` 0.19 is
 # render-stack-free (no bevy_pbr/wgpu plugins at runtime); `bevy_image` needs
 # the format features to decode textures embedded in .glb files, and
 # `bevy_world_serialization`/`bevy_image` give us the subasset types the glTF
 # loader emits, which we must `init_asset` ourselves without `RenderPlugin`.
-bevy_gltf = { version = "0.19.0-rc.2", optional = true }
-bevy_image = { version = "0.19.0-rc.2", optional = true, features = ["png", "jpeg"] }
-bevy_world_serialization = { version = "0.19.0-rc.2", optional = true }
-bevy_color = { version = "0.19.0-rc.2", optional = true }
+bevy_gltf = { version = "0.19.0", optional = true }
+bevy_image = { version = "0.19.0", optional = true, features = ["png", "jpeg"] }
+bevy_world_serialization = { version = "0.19.0", optional = true }
+bevy_color = { version = "0.19.0", optional = true }
 
 # egui core only — NOT bevy_egui and NOT a paint backend. We do input mapping +
 # tessellation ourselves (Option C in docs/bevy_integration.md). `egui-ash-renderer`
