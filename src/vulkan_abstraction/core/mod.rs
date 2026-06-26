@@ -18,6 +18,13 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::ffi::CStr;
 use std::rc::Rc;
 
+pub enum QueuesConf{
+    GraphicsOnly,
+    GraphicsAndTransfer,
+    GraphicsAndAsyncCompute,
+    GraphicsAsyncComputeAndTransfer,
+}
+
 #[rustfmt::skip]
 pub struct Core {
     //TODO core is completely single thread
@@ -112,7 +119,7 @@ impl Core {
             device_extensions.push(ext_name.as_ptr());
         }
 
-        let device = Rc::new(device::Device::new(
+        let device = Rc::new(Device::new(
             &instance,
             &device_extensions,
             diagnostics,
@@ -157,6 +164,9 @@ impl Core {
         let graphics_queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0, device.graphics_queue_family_index())?;
 
         let graphics_family = device.graphics_queue_family_index();
+
+
+
         let (transfer_queue, transfer_cmd_pool) = if let Some(transfer_family) = device.transfer_queue_family_index() {
             // Path A: dGPU (Dedicated Transfer Hardware)
             let queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0, transfer_family)?;

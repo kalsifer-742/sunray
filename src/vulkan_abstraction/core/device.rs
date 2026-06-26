@@ -22,6 +22,7 @@ pub struct Device {
     physical_device_descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
     graphics_queue_family_index: u32,
     transfer_queue_family_index: Option<u32>,
+    async_compute_queue_family_index: Option<u32>,
     surface_support_details: Option<RefCell<SurfaceSupportDetails>>,
 }
 
@@ -36,7 +37,7 @@ impl Device {
         let instance = instance.inner();
         let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
 
-        let (physical_device, surface_support_details, graphics_queue_family_index, transfer_queue_family_index) =
+        let (physical_device, surface_support_details, graphics_queue_family_index, transfer_queue_family_index , async_compute_queue_family_index ) =
             physical_devices
                 .into_iter()
                 //only allow devices which support all required extensions
@@ -79,11 +80,12 @@ impl Device {
                         surface_support_details,
                         Self::select_graphics_queue_family(instance, physical_device)?,
                         Self::select_dedicated_transfer_queue(instance, physical_device),
+                        Self::select_async_compute_queue(instance, physical_device),
                     ))
                 })
                 // try to get a discrete or at least integrated gpu
                 .max_by_key(
-                    |(physical_device, _surface_support_details, _graphics_queue_family_index, _transfer_queue_family_index)| {
+                    |(physical_device, _surface_support_details, _graphics_queue_family_index, _transfer_queue_family_index, _async_compute_queue_family_index )| {
                         let mut props2 = vk::PhysicalDeviceProperties2::default();
                         unsafe { instance.get_physical_device_properties2(*physical_device, &mut props2) };
                         let device_type = props2.properties.device_type;
@@ -100,7 +102,9 @@ impl Device {
         let device = {
             let graphics_priorities = [1.0];
             let transfer_priorities = [0.5];
-
+            let async_compute_priorities = [0.5];
+            
+            
             let mut queue_create_infos = Vec::new();
 
             queue_create_infos.push(
@@ -118,6 +122,17 @@ impl Device {
                         .queue_priorities(&transfer_priorities),
                 );
             }
+
+            if let Some(actual_async_compute_family_index) = async_compute_queue_family_index
+                && graphics_queue_family_index != actual_async_compute_family_index
+            {
+                queue_create_infos.push(
+                    vk::DeviceQueueCreateInfo::default()
+                        .queue_family_index(actual_async_compute_family_index)
+                        .queue_priorities(&async_compute_priorities),
+                );
+            }
+            
             // maintenance9 would let the staging upload skip the transfer->graphics queue
             // ownership transfer (BestPractices-PipelineBarrier-unneeded-QFOT hint), but
             // enabling it crashes during init on this driver/loader stack (host
@@ -130,7 +145,7 @@ impl Device {
             let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default()
                 .synchronization2(true)
                 .dynamic_rendering(true);
-            // enable some device features necessary for ray-tracing //TODO I may need some newer feature expecially for the semi-binding?
+            // enable some device features necessary for ray-tracing 
             let mut vk12_features = vk::PhysicalDeviceVulkan12Features::default()
                 .buffer_device_address(true) // necessary for ray-tracing
                 .timeline_semaphore(true)
@@ -247,6 +262,7 @@ impl Device {
             physical_device_descriptor_heap_properties,
             graphics_queue_family_index,
             transfer_queue_family_index,
+            async_compute_queue_family_index,
             surface_support_details,
         })
     }
@@ -279,6 +295,18 @@ impl Device {
             .map(|(queue_family_index, _)| queue_family_index as u32)
             .next()
     }
+    fn select_async_compute_queue(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Option<u32> {
+        Self::queue_family_properties2(instance, physical_device)
+            .into_iter()
+            .enumerate()
+            .filter(|(_queue_family_index, queue_family_props)| {
+                queue_family_props.queue_flags.contains(vk::QueueFlags::COMPUTE)
+                    && !queue_family_props.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+            })
+            .map(|(queue_family_index, _)| queue_family_index as u32)
+            .next()
+    }
+    
 
     fn check_device_extension_support(
         instance: &ash::Instance,
@@ -337,6 +365,10 @@ impl Device {
     pub fn transfer_queue_family_index(&self) -> Option<u32> {
         self.transfer_queue_family_index
     }
+    pub fn async_compute_queue_family_index(&self) -> Option<u32> {
+        self.async_compute_queue_family_index
+    }
+    
     pub fn surface_support_details(&self) -> Ref<'_, SurfaceSupportDetails> {
         self.surface_support_details.as_ref().unwrap().borrow()
     }
