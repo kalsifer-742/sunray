@@ -38,6 +38,7 @@ pub struct Core {
 
     queues: vulkan_abstraction::Queues,
 
+    #[deprecated]
     transfer_semaphores: RefCell<Vec<vk::Semaphore>>,
 
     allocator: RefCell<Allocator>,
@@ -280,38 +281,6 @@ impl Core {
         self.instance.diagnostics().tool()
     }
 
-    /// Invia un command buffer alla coda di trasferimento.
-    /// Ritorna un Semaforo (che la coda grafica dovrà aspettare)
-    /// e un Fence (che la CPU può opzionalmente aspettare).
-    pub fn submit_transfer_commands(&self, transfer_cmd_buffer: vk::CommandBuffer) -> SrResult<(vk::Semaphore, vk::Fence)> {
-        let device = self.device.inner();
-
-        // 1. Crea il semaforo (Signal per la Graphics Queue)
-        let semaphore_info = vk::SemaphoreCreateInfo::default();
-        let transfer_complete_semaphore = unsafe { device.create_semaphore(&semaphore_info, None) }?;
-
-        // 2. Crea il fence (Signal per la CPU)
-        let fence_info = vk::FenceCreateInfo::default();
-        let transfer_fence = unsafe { device.create_fence(&fence_info, None) }?;
-
-        // 3. Prepara la sottomissione
-        let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(transfer_cmd_buffer)];
-        let signal_semaphore_infos = [vk::SemaphoreSubmitInfo::default()
-            .semaphore(transfer_complete_semaphore)
-            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
-
-        let submit_info = vk::SubmitInfo2::default()
-            .command_buffer_infos(&cmd_buf_infos)
-            .signal_semaphore_infos(&signal_semaphore_infos);
-
-        // 4. Invia alla Transfer Queue
-        unsafe {
-            let queue = self.queues.transfer();
-            device.queue_submit2(queue.inner(), &[submit_info], transfer_fence)?;
-        }
-
-        Ok((transfer_complete_semaphore, transfer_fence))
-    }
 }
 
 impl Drop for Core {

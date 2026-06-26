@@ -92,6 +92,19 @@ impl Queues {
         }
     }
 
+    /// Which queues are backed by their own family rather than aliasing graphics.
+    /// Use this before locking two roles to avoid taking the same mutex twice.
+    pub fn config(&self) -> QueuesConf {
+        let has_transfer = self.transfer != self.graphics;
+        let has_async_compute = self.async_compute != self.graphics;
+        match (has_transfer, has_async_compute) {
+            (false, false) => QueuesConf::GraphicsOnly,
+            (true, false) => QueuesConf::GraphicsAndTransfer,
+            (false, true) => QueuesConf::GraphicsAndAsyncCompute,
+            (true, true) => QueuesConf::GraphicsAsyncComputeAndTransfer,
+        }
+    }
+
     /// Lock the queue serving `role`. Aliased roles return a guard on the same
     /// underlying mutex, so concurrent submits to a shared `VkQueue` are serialized.
      fn lock(&self, role: QueueRole) -> MutexGuard<'_, RawMutex, Queue> {
