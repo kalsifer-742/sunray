@@ -1,10 +1,12 @@
 pub mod device;
 pub mod instance;
 pub mod queue;
+pub mod queues;
 
 pub use device::*;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 pub use instance::*;
+pub use queues::*;
 
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::Queue;
@@ -13,17 +15,12 @@ use crate::{CreateSurfaceFn, error::*};
 use ash::vk::Semaphore;
 use ash::{ext, khr, vk};
 use parking_lot::lock_api::MutexGuard;
-use parking_lot::{Mutex, RawMutex};
+use parking_lot::RawMutex;
 use std::cell::{Ref, RefCell, RefMut};
 use std::ffi::CStr;
 use std::rc::Rc;
 
-pub enum QueuesConf{
-    GraphicsOnly,
-    GraphicsAndTransfer,
-    GraphicsAndAsyncCompute,
-    GraphicsAsyncComputeAndTransfer,
-}
+
 
 #[rustfmt::skip]
 pub struct Core {
@@ -38,11 +35,8 @@ pub struct Core {
     descriptor_heap_device: ext::descriptor_heap::Device, //TODO don't know where to put these params as the almost seem more fit into the descriptor heap and this whole thing could even go in resource manager
     descriptor_heap_instance: ext::descriptor_heap::Instance,
     descriptor_heap: RefCell<vulkan_abstraction::DescriptorHeap>,
-    //queue needs mutability for .present()
-    graphics_queue: Mutex<vulkan_abstraction::Queue>,
-    transfer_queue: Mutex<vulkan_abstraction::Queue>,
-    graphics_cmd_pool: vulkan_abstraction::CmdPool,
-    transfer_cmd_pool: vulkan_abstraction::CmdPool,
+
+    queues: vulkan_abstraction::Queues,
 
     transfer_semaphores: RefCell<Vec<vk::Semaphore>>,
 
@@ -161,37 +155,10 @@ impl Core {
             with_gpuav,
         )?;
 
-        let graphics_queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0, device.graphics_queue_family_index())?;
-
-        let graphics_family = device.graphics_queue_family_index();
-
-
-
-        let (transfer_queue, transfer_cmd_pool) = if let Some(transfer_family) = device.transfer_queue_family_index() {
-            // Path A: dGPU (Dedicated Transfer Hardware)
-            let queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0, transfer_family)?;
-            let pool = vulkan_abstraction::CmdPool::new(
-                Rc::clone(&device),
-                transfer_family,
-                vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-            )?;
-            (queue, pool)
-        } else {
-            // Path B: iGPU Fallback (Aliasing the Graphics Queue)
-            let queue = vulkan_abstraction::Queue::new(Rc::clone(&device), 0, graphics_family)?;
-            let pool = vulkan_abstraction::CmdPool::new(
-                Rc::clone(&device),
-                graphics_family,
-                vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-            )?;
-            (queue, pool)
-        };
-
-        let graphics_cmd_pool = vulkan_abstraction::CmdPool::new(
-            Rc::clone(&device),
-            graphics_family,
-            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-        )?;
+        // Queues are deduplicated by family inside `Queues::new`: dedicated transfer /
+        // async-compute families get their own VkQueue + command pool, and any role the
+        // GPU doesn't expose aliases the graphics queue (sharing its mutex and pool).
+        let queues = vulkan_abstraction::Queues::new(&device)?;
 
         Ok((
             Self {
@@ -205,10 +172,7 @@ impl Core {
                 descriptor_heap_device,
                 descriptor_heap_instance,
                 descriptor_heap: RefCell::new(descriptor_heap),
-                graphics_queue: parking_lot::Mutex::new(graphics_queue),
-                transfer_queue: parking_lot::Mutex::new(transfer_queue),
-                graphics_cmd_pool,
-                transfer_cmd_pool,
+                queues,
                 transfer_semaphores: RefCell::new(vec![]),
             },
             surface_support.map(|(s, _)| s),
@@ -239,12 +203,20 @@ impl Core {
     pub fn rt_pipeline_device(&self) -> &khr::ray_tracing_pipeline::Device {
         &self.ray_tracing_pipeline_device
     }
+    pub fn queues(&self) -> &vulkan_abstraction::Queues {
+        &self.queues
+    }
+
     pub fn graphics_queue(&self) -> MutexGuard<'_, RawMutex, Queue> {
-        self.graphics_queue.lock()
+        self.queues.graphics()
     }
 
     pub fn transfer_queue(&self) -> MutexGuard<'_, RawMutex, Queue> {
-        self.transfer_queue.lock()
+        self.queues.transfer()
+    }
+
+    pub fn async_compute_queue(&self) -> MutexGuard<'_, RawMutex, Queue> {
+        self.queues.async_compute()
     }
 
     pub fn allocator(&self) -> Ref<'_, Allocator> {
@@ -261,7 +233,7 @@ impl Core {
         self.transfer_semaphores.borrow_mut()
     }
     pub fn graphics_cmd_pool(&self) -> &vulkan_abstraction::CmdPool {
-        &self.graphics_cmd_pool
+        self.queues.graphics_pool()
     }
 
     pub fn descriptor_heap(&self) -> Ref<'_, vulkan_abstraction::DescriptorHeap> {
@@ -281,7 +253,11 @@ impl Core {
     }
 
     pub fn transfer_cmd_pool(&self) -> &vulkan_abstraction::CmdPool {
-        &self.transfer_cmd_pool
+        self.queues.transfer_pool()
+    }
+
+    pub fn async_compute_cmd_pool(&self) -> &vulkan_abstraction::CmdPool {
+        self.queues.async_compute_pool()
     }
 
     /// Insert a named checkpoint into the command stream — no-op unless a
@@ -296,7 +272,7 @@ impl Core {
     /// last fault — call from a DEVICE_LOST handler to find the faulting
     /// dispatch. Cheap to call even when no diagnostic tool is active.
     pub fn log_graphics_queue_checkpoints(&self) {
-        let queue = self.graphics_queue.lock().inner();
+        let queue = self.queues.graphics().inner();
         self.instance.diagnostics().log_queue_checkpoints(queue);
     }
 
@@ -330,7 +306,7 @@ impl Core {
 
         // 4. Invia alla Transfer Queue
         unsafe {
-            let queue = self.transfer_queue.lock();
+            let queue = self.queues.transfer();
             device.queue_submit2(queue.inner(), &[submit_info], transfer_fence)?;
         }
 
