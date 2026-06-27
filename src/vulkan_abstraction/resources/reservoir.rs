@@ -1,6 +1,7 @@
 /// Represents a single light candidate reservoir for Spatiotemporal Reservoir Resampling (ReSTIR).
 /// 48 bytes, packed to match std430: vec3 light_pos followed by scalar w_sum packs into 16 bytes
 /// without internal padding; same for light_normal/M.
+//TODO finni
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Reservoir {
@@ -12,7 +13,8 @@ pub(crate) struct Reservoir {
     /// The 3D world normal of the light source at the sampled position.
     pub light_normal: [f32; 3],
     /// The number of light candidates that have been processed to get this winner.
-    pub m: f32,
+    pub m: f32,//TODO finni
+
 
     /// The index of the winning light candidate in the emissive triangles array.
     pub light_idx: u32,
