@@ -24,7 +24,7 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
-use crate::render_graph::graph::{AnyRenderPass, BufferDesc, Handle, ImageDesc, RenderGraph};
+use crate::render_graph::graph::{AnyRenderPass, RenderGraph};
 use crate::render_graph::pass_builder::{
     ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
 };
@@ -33,7 +33,10 @@ use crate::vulkan_abstraction::image::swapchain::{Surface, Swapchain};
 use crate::vulkan_abstraction::swapchain::{SwapchainData, SwapchainFrame};
 use crate::vulkan_abstraction::{Buffer, HostAccessibleBuffer, PostprocessPushConstant, Reservoir, ReservoirGI};
 use ash::vk;
+use render_graph::resource::Handle;
 use vk_sync_fork as vk_sync;
+use vulkan_abstraction::buffer::BufferDesc;
+use vulkan_abstraction::image::ImageDesc;
 
 //TODO finello
 pub const DENOISE_PASSES: u32 = 8;
@@ -855,12 +858,13 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             )));
         }
         if let Some(&max_index) = indices.iter().max()
-            && max_index as usize >= vertices.len() {
-                return Err(SrError::new_custom(format!(
-                    "load_mesh: index {max_index} out of range for {} vertices",
-                    vertices.len()
-                )));
-            }
+            && max_index as usize >= vertices.len()
+        {
+            return Err(SrError::new_custom(format!(
+                "load_mesh: index {max_index} out of range for {} vertices",
+                vertices.len()
+            )));
+        }
 
         let emission = [
             material.emissive_factor[0] * material.emissive_strength,
@@ -1473,7 +1477,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     /// Shared by both RT passes so they push identical bindings.
     fn rt_push_constant_bytes(
         pc_base: &vulkan_abstraction::RaytracingHeapPushConstant,
-        tr: &render_graph::graph::TransientResources,
+        tr: &render_graph::transient_resources::TransientResources,
         raw_color_h: &Handle<vulkan_abstraction::Image>,
         depth_h: &Handle<vulkan_abstraction::Image>,
         normal_h: &Handle<vulkan_abstraction::Image>,

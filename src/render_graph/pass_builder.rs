@@ -1,9 +1,8 @@
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
-use crate::render_graph::graph::{
-    AnyRenderPass, Handle, PassResourceAccessSyncType, PassResourceAccessType, RawResourceHandle, RenderGraph, Resource,
-    ResourceRef, TransientResources,
-};
+use crate::render_graph::graph::{AnyRenderPass, PassResourceAccessSyncType, PassResourceAccessType, RenderGraph};
+use crate::render_graph::resource::{Handle, RawResourceHandle, Resource, ResourceRef};
+use crate::render_graph::transient_resources::TransientResources;
 use crate::vulkan_abstraction::{GraphicsPipelineShaders, Pipeline, RayTracingPipelineShaders};
 use ash::vk;
 use ash::vk::CommandBuffer;

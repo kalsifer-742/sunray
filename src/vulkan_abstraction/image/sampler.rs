@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use ash::vk;
 
+use crate::render_graph::resource::ResourceDesc;
 use crate::vulkan_abstraction::descriptor_heap::DescriptorSlot;
 use crate::{error::SrResult, vulkan_abstraction};
 
@@ -28,7 +29,7 @@ pub struct Sampler {
 
 impl Sampler {
     /// Construct a sampler from a render-graph descriptor.
-    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &crate::render_graph::graph::SamplerDesc) -> SrResult<Self> {
+    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &SamplerDesc) -> SrResult<Self> {
         Self::new(
             core,
             desc.min_filter,
@@ -100,20 +101,20 @@ impl Drop for Sampler {
 }
 
 impl crate::render_graph::graph::Resource for Sampler {
-    type Desc = crate::render_graph::graph::SamplerDesc;
+    type Desc = SamplerDesc;
 
-    fn borrow_resource(res: &crate::render_graph::graph::AnyRenderResource) -> &Self {
+    fn borrow_resource(res: &crate::render_graph::resource::AnyRenderResource) -> &Self {
         match res {
-            crate::render_graph::graph::AnyRenderResource::OwnedSampler(s) => s,
-            crate::render_graph::graph::AnyRenderResource::ImportedSampler(arc) => arc.as_ref(),
+            crate::render_graph::resource::AnyRenderResource::OwnedSampler(s) => s,
+            crate::render_graph::resource::AnyRenderResource::ImportedSampler(arc) => arc.as_ref(),
             _ => panic!("borrow_resource::<Sampler> called on non-sampler AnyRenderResource variant"),
         }
     }
 }
 
-impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::SamplerDesc> for std::sync::Arc<Sampler> {
-    fn import(&self) -> crate::render_graph::graph::SamplerDesc {
-        crate::render_graph::graph::SamplerDesc {
+impl crate::render_graph::graph::RgImportable<SamplerDesc> for std::sync::Arc<Sampler> {
+    fn import(&self) -> SamplerDesc {
+        SamplerDesc {
             min_filter: self.params.min_filter,
             mag_filter: self.params.mag_filter,
             address_mode_u: self.params.address_mode_u,
@@ -128,4 +129,18 @@ impl From<std::sync::Arc<Sampler>> for crate::render_graph::graph::GraphResource
     fn from(val: std::sync::Arc<Sampler>) -> Self {
         crate::render_graph::graph::GraphResourceImportInfo::Sampler { resource: val }
     }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct SamplerDesc {
+    pub min_filter: vk::Filter,
+    pub mag_filter: vk::Filter,
+    pub address_mode_u: vk::SamplerAddressMode,
+    pub address_mode_v: vk::SamplerAddressMode,
+    pub address_mode_w: vk::SamplerAddressMode,
+    pub mipmap_mode: vk::SamplerMipmapMode,
+}
+
+impl ResourceDesc for SamplerDesc {
+    type Resource = Sampler;
 }

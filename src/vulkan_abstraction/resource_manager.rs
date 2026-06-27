@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use ash::vk;
 
-use crate::render_graph::graph::SamplerDesc;
+use crate::vulkan_abstraction::image::sampler::SamplerDesc;
 use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, Material};
 use crate::{error::SrResult, vulkan_abstraction};
 

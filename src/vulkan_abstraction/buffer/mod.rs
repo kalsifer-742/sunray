@@ -18,6 +18,7 @@ pub use staging_buffer::*;
 pub use uniform_buffer::*;
 pub use vertex_buffer::*;
 
+use crate::render_graph::resource::ResourceDesc;
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::{error::*, vulkan_abstraction};
 use ash::vk;
@@ -104,7 +105,7 @@ pub struct RawBuffer {
 
 impl RawBuffer {
     /// Construct a buffer from a render-graph descriptor.
-    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &crate::render_graph::graph::BufferDesc) -> SrResult<Self> {
+    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &BufferDesc) -> SrResult<Self> {
         Self::new_aligned(
             core,
             desc.byte_size,
@@ -462,19 +463,19 @@ pub fn infer_read_masks_from_usage(usage: vk::BufferUsageFlags) -> (vk::Pipeline
 }
 
 impl crate::render_graph::graph::Resource for RawBuffer {
-    type Desc = crate::render_graph::graph::BufferDesc;
+    type Desc = BufferDesc;
 
-    fn borrow_resource(res: &crate::render_graph::graph::AnyRenderResource) -> &Self {
+    fn borrow_resource(res: &crate::render_graph::resource::AnyRenderResource) -> &Self {
         match res {
-            crate::render_graph::graph::AnyRenderResource::OwnedBuffer(buf) => buf,
+            crate::render_graph::resource::AnyRenderResource::OwnedBuffer(buf) => buf,
             _ => panic!("borrow_resource::<RawBuffer> called on non-buffer AnyRenderResource variant"),
         }
     }
 }
 
-impl crate::render_graph::graph::RgImportable<crate::render_graph::graph::BufferDesc> for Arc<RawBuffer> {
-    fn import(&self) -> crate::render_graph::graph::BufferDesc {
-        crate::render_graph::graph::BufferDesc {
+impl crate::render_graph::graph::RgImportable<BufferDesc> for Arc<RawBuffer> {
+    fn import(&self) -> BufferDesc {
+        BufferDesc {
             byte_size: self.byte_size,
             alignment: 1,
             memory_location: gpu_allocator::MemoryLocation::GpuOnly,
@@ -492,4 +493,17 @@ impl From<Arc<RawBuffer>> for crate::render_graph::graph::GraphResourceImportInf
             access_type: vk_sync_fork::AccessType::Nothing,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct BufferDesc {
+    pub byte_size: vk::DeviceSize,
+    pub alignment: u64,
+    pub memory_location: gpu_allocator::MemoryLocation,
+    pub usage: vk::BufferUsageFlags,
+    pub name: &'static str,
+}
+
+impl ResourceDesc for BufferDesc {
+    type Resource = RawBuffer;
 }

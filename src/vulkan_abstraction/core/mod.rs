@@ -14,13 +14,11 @@ use crate::vulkan_abstraction::diagnostics::DiagnosticTool;
 use crate::{CreateSurfaceFn, error::*};
 use ash::vk::Semaphore;
 use ash::{ext, khr, vk};
-use parking_lot::lock_api::MutexGuard;
 use parking_lot::RawMutex;
+use parking_lot::lock_api::MutexGuard;
 use std::cell::{Ref, RefCell, RefMut};
 use std::ffi::CStr;
 use std::rc::Rc;
-
-
 
 #[rustfmt::skip]
 pub struct Core {
@@ -280,7 +278,6 @@ impl Core {
     pub fn diagnostic_tool(&self) -> vulkan_abstraction::DiagnosticTool {
         self.instance.diagnostics().tool()
     }
-
 }
 
 impl Drop for Core {

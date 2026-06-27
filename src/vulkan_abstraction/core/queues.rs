@@ -15,7 +15,7 @@ pub enum QueueRole {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QueuesConf{
+pub enum QueuesConf {
     GraphicsOnly,
     GraphicsAndTransfer,
     GraphicsAndAsyncCompute,
@@ -27,7 +27,7 @@ pub enum QueuesConf{
 /// A universal (graphics)
 /// A transfer
 /// A async compute
-/// 
+///
 /// Note: Always ask for the [`Config`](QueuesConf) to make sure you are not asking for the same mutex lock twice
 
 pub struct Queues {
@@ -107,16 +107,14 @@ impl Queues {
 
     /// Lock the queue serving `role`. Aliased roles return a guard on the same
     /// underlying mutex, so concurrent submits to a shared `VkQueue` are serialized.
-     fn lock(&self, role: QueueRole) -> MutexGuard<'_, RawMutex, Queue> {
+    fn lock(&self, role: QueueRole) -> MutexGuard<'_, RawMutex, Queue> {
         self.queues[self.index(role)].lock()
     }
 
     /// The command pool matching `role`'s queue family.
-     fn pool(&self, role: QueueRole) -> &CmdPool {
+    fn pool(&self, role: QueueRole) -> &CmdPool {
         &self.pools[self.index(role)]
     }
-
-
 
     pub fn graphics(&self) -> MutexGuard<'_, RawMutex, Queue> {
         self.lock(QueueRole::Graphics)

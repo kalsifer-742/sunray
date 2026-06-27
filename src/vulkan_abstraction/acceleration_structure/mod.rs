@@ -315,3 +315,8 @@ impl Drop for AccelerationStructure {
         }
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct RaytracingASDesc {
+    //TODO missing impl
+}

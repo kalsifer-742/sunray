@@ -37,74 +37,84 @@ impl Device {
         let instance = instance.inner();
         let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
 
-        let (physical_device, surface_support_details, graphics_queue_family_index, transfer_queue_family_index , async_compute_queue_family_index ) =
-            physical_devices
-                .into_iter()
-                //only allow devices which support all required extensions
-                .filter(|physical_device| {
-                    Self::check_device_extension_support(instance, *physical_device, device_extensions).unwrap_or(false)
-                })
-                //check for blit support
-                .filter(|physical_device| {
-                    let mut format_properties2 = vk::FormatProperties2::default();
-                    unsafe {
-                        instance.get_physical_device_format_properties2(*physical_device, image_format, &mut format_properties2)
-                    };
-                    let format_properties = format_properties2.format_properties;
+        let (
+            physical_device,
+            surface_support_details,
+            graphics_queue_family_index,
+            transfer_queue_family_index,
+            async_compute_queue_family_index,
+        ) = physical_devices
+            .into_iter()
+            //only allow devices which support all required extensions
+            .filter(|physical_device| {
+                Self::check_device_extension_support(instance, *physical_device, device_extensions).unwrap_or(false)
+            })
+            //check for blit support
+            .filter(|physical_device| {
+                let mut format_properties2 = vk::FormatProperties2::default();
+                unsafe {
+                    instance.get_physical_device_format_properties2(*physical_device, image_format, &mut format_properties2)
+                };
+                let format_properties = format_properties2.format_properties;
 
-                    format_properties
-                        .optimal_tiling_features
-                        .contains(FormatFeatureFlags::BLIT_SRC)
-                        && format_properties
-                            .linear_tiling_features
-                            .contains(FormatFeatureFlags::BLIT_DST)
-                })
-                // filter out devices without swapchain support if necessary
-                .filter_map(|physical_device| {
-                    if let Some((surface, surface_instance)) = &surface_to_support {
-                        let surface_support_details =
-                            SurfaceSupportDetails::new(*surface, surface_instance, physical_device).unwrap();
-                        if surface_support_details.check_swapchain_support() {
-                            Some((physical_device, Some(RefCell::new(surface_support_details))))
-                        } else {
-                            None
-                        }
+                format_properties
+                    .optimal_tiling_features
+                    .contains(FormatFeatureFlags::BLIT_SRC)
+                    && format_properties
+                        .linear_tiling_features
+                        .contains(FormatFeatureFlags::BLIT_DST)
+            })
+            // filter out devices without swapchain support if necessary
+            .filter_map(|physical_device| {
+                if let Some((surface, surface_instance)) = &surface_to_support {
+                    let surface_support_details =
+                        SurfaceSupportDetails::new(*surface, surface_instance, physical_device).unwrap();
+                    if surface_support_details.check_swapchain_support() {
+                        Some((physical_device, Some(RefCell::new(surface_support_details))))
                     } else {
-                        Some((physical_device, None))
+                        None
                     }
-                })
-                //choose a suitable queue family, and filter out devices without one
-                .filter_map(|(physical_device, surface_support_details)| {
-                    Some((
-                        physical_device,
-                        surface_support_details,
-                        Self::select_graphics_queue_family(instance, physical_device)?,
-                        Self::select_dedicated_transfer_queue(instance, physical_device),
-                        Self::select_async_compute_queue(instance, physical_device),
-                    ))
-                })
-                // try to get a discrete or at least integrated gpu
-                .max_by_key(
-                    |(physical_device, _surface_support_details, _graphics_queue_family_index, _transfer_queue_family_index, _async_compute_queue_family_index )| {
-                        let mut props2 = vk::PhysicalDeviceProperties2::default();
-                        unsafe { instance.get_physical_device_properties2(*physical_device, &mut props2) };
-                        let device_type = props2.properties.device_type;
+                } else {
+                    Some((physical_device, None))
+                }
+            })
+            //choose a suitable queue family, and filter out devices without one
+            .filter_map(|(physical_device, surface_support_details)| {
+                Some((
+                    physical_device,
+                    surface_support_details,
+                    Self::select_graphics_queue_family(instance, physical_device)?,
+                    Self::select_dedicated_transfer_queue(instance, physical_device),
+                    Self::select_async_compute_queue(instance, physical_device),
+                ))
+            })
+            // try to get a discrete or at least integrated gpu
+            .max_by_key(
+                |(
+                    physical_device,
+                    _surface_support_details,
+                    _graphics_queue_family_index,
+                    _transfer_queue_family_index,
+                    _async_compute_queue_family_index,
+                )| {
+                    let mut props2 = vk::PhysicalDeviceProperties2::default();
+                    unsafe { instance.get_physical_device_properties2(*physical_device, &mut props2) };
+                    let device_type = props2.properties.device_type;
 
-                        match device_type {
-                            vk::PhysicalDeviceType::DISCRETE_GPU => 2,
-                            vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
-                            _ => 0,
-                        }
-                    },
-                )
-                .ok_or(SrError::new_custom("No suitable GPU found!".to_string()))?;
+                    match device_type {
+                        vk::PhysicalDeviceType::DISCRETE_GPU => 2,
+                        vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
+                        _ => 0,
+                    }
+                },
+            )
+            .ok_or(SrError::new_custom("No suitable GPU found!".to_string()))?;
 
         let device = {
             let graphics_priorities = [1.0];
             let transfer_priorities = [0.5];
             let async_compute_priorities = [0.5];
-            
-            
+
             let mut queue_create_infos = Vec::new();
 
             queue_create_infos.push(
@@ -132,7 +142,7 @@ impl Device {
                         .queue_priorities(&async_compute_priorities),
                 );
             }
-            
+
             // maintenance9 would let the staging upload skip the transfer->graphics queue
             // ownership transfer (BestPractices-PipelineBarrier-unneeded-QFOT hint), but
             // enabling it crashes during init on this driver/loader stack (host
@@ -145,7 +155,7 @@ impl Device {
             let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default()
                 .synchronization2(true)
                 .dynamic_rendering(true);
-            // enable some device features necessary for ray-tracing 
+            // enable some device features necessary for ray-tracing
             let mut vk12_features = vk::PhysicalDeviceVulkan12Features::default()
                 .buffer_device_address(true) // necessary for ray-tracing
                 .timeline_semaphore(true)
@@ -306,7 +316,6 @@ impl Device {
             .map(|(queue_family_index, _)| queue_family_index as u32)
             .next()
     }
-    
 
     fn check_device_extension_support(
         instance: &ash::Instance,
@@ -368,7 +377,7 @@ impl Device {
     pub fn async_compute_queue_family_index(&self) -> Option<u32> {
         self.async_compute_queue_family_index
     }
-    
+
     pub fn surface_support_details(&self) -> Ref<'_, SurfaceSupportDetails> {
         self.surface_support_details.as_ref().unwrap().borrow()
     }

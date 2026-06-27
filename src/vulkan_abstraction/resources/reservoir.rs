@@ -13,8 +13,7 @@ pub(crate) struct Reservoir {
     /// The 3D world normal of the light source at the sampled position.
     pub light_normal: [f32; 3],
     /// The number of light candidates that have been processed to get this winner.
-    pub m: f32,//TODO finni
-
+    pub m: f32, //TODO finni
 
     /// The index of the winning light candidate in the emissive triangles array.
     pub light_idx: u32,

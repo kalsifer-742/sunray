@@ -1,6 +1,6 @@
 use std::{collections::HashMap, rc::Rc};
 
-use crate::render_graph::graph::SamplerDesc;
+use crate::vulkan_abstraction::image::sampler::SamplerDesc;
 use crate::{error::SrResult, vulkan_abstraction};
 
 use crate::utils::na_mat4_to_vk_transform;

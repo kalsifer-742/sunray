@@ -11,7 +11,8 @@ use std::rc::Rc;
 
 use std::sync::Arc;
 
-use crate::render_graph::graph::{AnyRenderResource, GraphResourceImportInfo, ImageDesc, Resource, RgImportable};
+use crate::render_graph::resource::RgImportable;
+use crate::render_graph::resource::{AnyRenderResource, GraphResourceImportInfo, Resource, ResourceDesc};
 use crate::vulkan_abstraction::Buffer;
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::{error::SrResult, utils, vulkan_abstraction};
@@ -111,7 +112,7 @@ impl Image {
     /// Construct an image from a render-graph descriptor. Equivalent to calling
     /// `Image::new` with the desc's fields; kept as a separate entry point so the
     /// graph can build images straight from a `&ImageDesc` without unpacking.
-    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &crate::render_graph::graph::ImageDesc) -> SrResult<Self> {
+    pub fn new_from_desc(core: Rc<vulkan_abstraction::Core>, desc: &ImageDesc) -> SrResult<Self> {
         Self::new(
             core,
             desc.extent,
@@ -467,4 +468,18 @@ impl Drop for Image {
             }
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ImageDesc {
+    pub extent: vk::Extent3D,
+    pub format: vk::Format,
+    pub tiling: vk::ImageTiling,
+    pub location: gpu_allocator::MemoryLocation,
+    pub usage: vk::ImageUsageFlags,
+    pub name: &'static str,
+}
+
+impl ResourceDesc for ImageDesc {
+    type Resource = Image;
 }
