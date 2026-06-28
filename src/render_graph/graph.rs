@@ -2,8 +2,7 @@ use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
 use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
 pub(crate) use crate::render_graph::resource::{
-    GraphResourceDesc, GraphResourceImportInfo, GraphResourceInfo, Handle, RawResourceHandle, Resource, ResourceDesc,
-    RgImportable,
+    GraphResourceDesc, GraphResourceImportInfo, GraphResourceInfo, Handle, Resource, ResourceDesc, RgImportable,
 };
 use crate::render_graph::transient_resources::TransientResources;
 use crate::vulkan_abstraction::image::ImageDesc;
@@ -12,10 +11,12 @@ use crate::vulkan_abstraction::{
     RayTracingPipeline, RayTracingPipelineShaders, ShaderBindingTable,
 };
 use ash::vk;
-use petgraph::visit::EdgeRef;
-use std::collections::{BTreeMap, HashMap};
+use petgraph::Graph;
+use petgraph::visit::{EdgeRef, IntoNeighbors};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
+use petgraph::graph::EdgeIndex;
 use vk_sync_fork as vk_sync;
 
 #[derive(Copy, Clone, Debug)]
@@ -31,10 +32,21 @@ pub struct PassResourceAccessType {
     pub(crate) sync_type: PassResourceAccessSyncType,
 }
 
-pub enum AnyRenderPass {
+struct PhiNode {
+    resources: Vec<u32>,
+}
+
+pub(super) enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
     Compute(ComputeRenderPass),
+    Phi(PhiNode),
+}
+
+impl From<PhiNode> for AnyRenderPass {
+    fn from(value: PhiNode) -> Self {
+        Self::Phi(value)
+    }
 }
 
 /// Lightweight reference to a pipeline interned in the graph's [`PipelineCache`].
@@ -293,10 +305,7 @@ impl RenderGraph {
     {
         self.create_raw_resource(desc.clone().into());
         Handle {
-            raw: RawResourceHandle {
-                id: self.next_resource_id(),
-                version: 0,
-            },
+            id: self.next_resource_id(),
             desc: TypeEquals::same(desc),
             marker: Default::default(),
         }
@@ -316,17 +325,14 @@ impl RenderGraph {
         let desc = res.import();
         self.virtual_resources.push(GraphResourceInfo::Imported(res.into()));
         Handle {
-            raw: RawResourceHandle {
-                id: self.next_resource_id(),
-                version: 0,
-            },
+            id: self.next_resource_id(),
             desc: TypeEquals::same(desc),
             marker: Default::default(),
         }
     }
 
-    pub fn add_render_pass(&mut self, render_pass: AnyRenderPass) {
-        self.passes.push(render_pass)
+    pub fn add_render_pass(&mut self, render_pass: impl Into<AnyRenderPass>) {
+        self.passes.push(render_pass.into())
     }
 
     /// The graph's cached `Core`. Pass builders use this so callers no longer
@@ -405,11 +411,12 @@ impl RenderGraph {
             }));
         self.swapchain_resource_id = Some(id);
         Ok(Handle {
-            raw: RawResourceHandle { id, version: 0 },
+            id,
             desc,
             marker: Default::default(),
         })
     }
+
 
     pub fn compile(&mut self) -> SrResult<()> {
         //TODO force injection of previous temporal data on rebuild, the graph is incapable of understanding temporal dep across compilations
@@ -420,6 +427,7 @@ impl RenderGraph {
         //TODO the render graph currently has no way to export the data, this is useful to synchronize across frames. The data should be released and reused basically each frame. This put a constraint, mutable data imported into the graph is hard to work with,
         // for example you could build a tlas the next frame if this is seen as an internal or created on the spot data structure, but exporting it would block the cpu on interacting with it until the previous frame has ended.
         // To further emphasise this there will need to be a dedicated way to handle multiple data based of frames in flight , transformation matrices and the camera should only live as long as a frame.
+
         let pass_count = self.passes.len();
 
         let mut resource_usages: BTreeMap<u32, ResourceLifetimeUsage> = BTreeMap::new();
@@ -439,7 +447,7 @@ impl RenderGraph {
             };
 
             for read in &common.read {
-                let res_id = read.raw.id;
+                let res_id = read.id;
                 record_usage(&mut resource_usages, res_id, pass_id, read.access);
                 let state = hazard_states.entry(res_id).or_default();
                 if let Some((w_pass, w_access)) = state.last_writer {
@@ -459,7 +467,7 @@ impl RenderGraph {
             }
 
             for write in &common.write {
-                let res_id = write.raw.id;
+                let res_id = write.id;
                 record_usage(&mut resource_usages, res_id, pass_id, write.access);
                 let state = hazard_states.entry(res_id).or_default();
                 if !state.readers_since_write.is_empty() {
@@ -649,7 +657,7 @@ impl RenderGraph {
 
     /// End state of one resource by handle, if the graph compiled it.
     pub fn end_state<R: Resource>(&self, handle: &Handle<R>) -> Option<&ResourceEndState> {
-        self.resource_end_states.get(&handle.raw.id)
+        self.resource_end_states.get(&handle.id)
     }
 
     /// Submit the recorded command buffer to the graphics queue, signaling

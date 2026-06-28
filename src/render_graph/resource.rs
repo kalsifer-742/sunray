@@ -1,4 +1,4 @@
-use crate::render_graph::graph::PassResourceAccessType;
+use crate::render_graph::graph::{AnyRenderPass, PassResourceAccessType};
 use crate::vulkan_abstraction::acceleration_structure::RaytracingASDesc;
 use crate::vulkan_abstraction::buffer::BufferDesc;
 use crate::vulkan_abstraction::image::ImageDesc;
@@ -18,15 +18,11 @@ pub trait ResourceDesc: Clone + std::fmt::Debug + Into<GraphResourceDesc> {
     type Resource: Resource;
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RawResourceHandle {
-    pub(crate) id: u32,
-    pub(crate) version: u32,
-}
+
 
 #[derive(Debug)]
 pub struct Handle<ResourceType: Resource> {
-    pub(crate) raw: RawResourceHandle,
+    pub(crate) id: u32,
     pub(crate) desc: <ResourceType as Resource>::Desc,
     pub(crate) marker: PhantomData<ResourceType>,
 }
@@ -37,7 +33,7 @@ pub struct Handle<ResourceType: Resource> {
 impl<ResourceType: Resource> Clone for Handle<ResourceType> {
     fn clone(&self) -> Self {
         Self {
-            raw: self.raw,
+            id: self.id,
             desc: self.desc.clone(),
             marker: PhantomData,
         }
@@ -46,7 +42,7 @@ impl<ResourceType: Resource> Clone for Handle<ResourceType> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResourceRef {
-    pub(crate) raw: RawResourceHandle,
+    pub(crate) id: u32,
     pub(crate) access: PassResourceAccessType,
 }
 

@@ -24,7 +24,7 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
-use crate::render_graph::graph::{AnyRenderPass, RenderGraph};
+use crate::render_graph::graph::{RenderGraph};
 use crate::render_graph::pass_builder::{
     ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
 };
@@ -1546,7 +1546,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             })?
             .build()
             .map_err(|e| SrError::new_custom(format!("raytracing RIS pass builder failed: {e}")))?;
-        rg.add_render_pass(AnyRenderPass::Rt(pass));
+        rg.add_render_pass(pass);
         Ok(())
     }
 
@@ -1592,7 +1592,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             })?
             .build()
             .map_err(|e| SrError::new_custom(format!("raytracing final pass builder failed: {e}")))?;
-        rg.add_render_pass(AnyRenderPass::Rt(pass));
+        rg.add_render_pass(pass);
         Ok(())
     }
 
@@ -1635,7 +1635,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
                 })
             })
             .map_err(|e| SrError::new_custom(format!("temporal accumulation pass builder failed: {e}")))?;
-        rg.add_render_pass(AnyRenderPass::Compute(pass));
+        rg.add_render_pass(pass);
         Ok(())
     }
 
@@ -1709,7 +1709,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
                     })
                 })
                 .map_err(|e| SrError::new_custom(format!("denoise pass builder failed: {e}")))?;
-            rg.add_render_pass(AnyRenderPass::Compute(pass));
+            rg.add_render_pass(pass);
         }
         Ok(())
     }
@@ -1743,7 +1743,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
                 })
             })
             .map_err(|e| SrError::new_custom(format!("postprocess pass builder failed: {e}")))?;
-        rg.add_render_pass(AnyRenderPass::Compute(pass));
+        rg.add_render_pass(pass);
         Ok(())
     }
 

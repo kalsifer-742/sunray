@@ -1,7 +1,7 @@
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
 use crate::render_graph::graph::{AnyRenderPass, PassResourceAccessSyncType, PassResourceAccessType, RenderGraph};
-use crate::render_graph::resource::{Handle, RawResourceHandle, Resource, ResourceRef};
+use crate::render_graph::resource::{Handle, Resource, ResourceRef};
 use crate::render_graph::transient_resources::TransientResources;
 use crate::vulkan_abstraction::{GraphicsPipelineShaders, Pipeline, RayTracingPipelineShaders};
 use ash::vk;
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 pub(crate) enum BindingElement {
     //TODO maybe compile time check the value corresponds to the inserted one
     RgResource {
-        resource: RawResourceHandle,
+        resource: u32,
     },
 
     /// Buffer Device Address: Directly pass a 64-bit GPU pointer. TODO this is unsafe and suggested by gemini, this is a bda basically
@@ -96,7 +96,7 @@ impl PassCommonDataBuilder {
     pub fn read<Res: Resource>(&mut self, resource: &Handle<Res>, access_type: vk_sync_fork::AccessType) -> SrResult<()> {
         if !access_type.is_write_access() {
             self.pass_common_data.read.push(ResourceRef {
-                raw: resource.raw,
+                id: resource.id,
                 access: PassResourceAccessType {
                     access_type,
                     sync_type: PassResourceAccessSyncType::NeverSync,
@@ -117,7 +117,7 @@ impl PassCommonDataBuilder {
 
         if access_type.is_write_access() {
             self.pass_common_data.write.push(ResourceRef {
-                raw: resource.raw,
+                id: resource.id,
                 access: PassResourceAccessType {
                     access_type,
                     sync_type: PassResourceAccessSyncType::AlwaysSync,

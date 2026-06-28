@@ -1,5 +1,4 @@
 use crate::error::{SrError, SrResult};
-use crate::render_graph::graph;
 use crate::render_graph::graph::{
     CachedPipeline, PassComponent, PipelineCache, PipelineHandle, ResourceBarrier, ResourceLifetimeUsage,
 };
@@ -382,7 +381,7 @@ impl TransientResources {
     /// (`storage_slot()` / `sampled_slot()`) when the image is graph-managed
     /// rather than captured directly.
     pub fn image(&self, handle: &Handle<Image>) -> SrResult<&Image> {
-        let id = handle.raw.id;
+        let id = handle.id;
         if let Some(img) = self.transient_images.get(&id) {
             return Ok(img);
         }
