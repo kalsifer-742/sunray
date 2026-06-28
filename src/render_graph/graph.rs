@@ -14,10 +14,12 @@ use ash::vk;
 use petgraph::Graph;
 use petgraph::visit::{EdgeRef, IntoNeighbors};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 use petgraph::graph::EdgeIndex;
 use vk_sync_fork as vk_sync;
+use crate::MAX_FRAMES_IN_FLIGHT;
 
 #[derive(Copy, Clone, Debug)]
 pub enum PassResourceAccessSyncType {
@@ -32,22 +34,14 @@ pub struct PassResourceAccessType {
     pub(crate) sync_type: PassResourceAccessSyncType,
 }
 
-struct PhiNode {
-    resources: Vec<u32>,
-}
+
 
 pub(super) enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
     Compute(ComputeRenderPass),
-    Phi(PhiNode),
 }
 
-impl From<PhiNode> for AnyRenderPass {
-    fn from(value: PhiNode) -> Self {
-        Self::Phi(value)
-    }
-}
 
 /// Lightweight reference to a pipeline interned in the graph's [`PipelineCache`].
 /// Render closures resolve it to the concrete pipeline at record time via
@@ -161,6 +155,9 @@ pub(crate) struct ResourceBarrier {
     pub(crate) next_access: vk_sync::AccessType,
 }
 
+
+
+
 /// Edge weight on the pass dependency graph: all barriers that must be issued
 /// before the destination pass runs because of the source pass.
 #[derive(Clone, Debug, Default)]
@@ -232,11 +229,17 @@ fn add_dep_edge(
     }
 }
 
+struct TemporalResource{
+    frame_of_creation : usize ,
+    ids : [u32 ; MAX_FRAMES_IN_FLIGHT],
+}
+
 pub struct RenderGraph {
     next_pass_id: u32,
     next_resource_id: u32,
     //TODO debug hooks and tools
     virtual_resources: Vec<GraphResourceInfo>,
+    temporal_resources: Vec<TemporalResource>,
     passes: Vec<AnyRenderPass>,
     transient_resources: TransientResources,
     /// At most one swapchain target per graph; remembered so the compile step can
@@ -265,6 +268,7 @@ impl RenderGraph {
             next_resource_id: 0,
             passes: vec![],
             virtual_resources: vec![],
+            temporal_resources: vec![],
             transient_resources: TransientResources::default(),
             swapchain_resource_id: None,
             resource_end_states: HashMap::new(),
@@ -310,6 +314,36 @@ impl RenderGraph {
             marker: Default::default(),
         }
     }
+
+    pub fn create_temporal_resource<Desc : ResourceDesc>(&mut self, desc: Desc) -> [Handle<<Desc as ResourceDesc>::Resource>; MAX_FRAMES_IN_FLIGHT]
+    where
+        Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
+    {
+        let mut ids = [0; MAX_FRAMES_IN_FLIGHT];
+
+        let handles = std::array::from_fn(|i| {
+            self.create_raw_resource(desc.clone().into());
+            let id = self.next_resource_id();
+
+            ids[i] = id;
+
+            Handle {
+                id,
+                desc: TypeEquals::same(desc.clone()),
+                marker: Default::default(),
+            }
+        });
+
+        let temporal_resource = TemporalResource {
+            frame_of_creation: *self.core.absolute_frame_count.borrow(),
+            ids,
+        };
+
+        self.temporal_resources.push(temporal_resource);
+
+        handles
+    }
+
 
     fn create_raw_resource(&mut self, resource_desc: GraphResourceDesc) {
         self.virtual_resources.push(GraphResourceInfo::Created(resource_desc));
