@@ -179,7 +179,9 @@
       "Bash(cargo fetch *)",
       "Bash(timeout 20 ./target/debug/examples/bevy_app.exe)",
       "Bash(timeout 25 ./target/debug/examples/bevy_app.exe)",
-      "Bash(timeout 30 ./target/debug/examples/bevy_app.exe)"
+      "Bash(timeout 30 ./target/debug/examples/bevy_app.exe)",
+      "Bash(grep -v '\\\\.d$')",
+      "WebFetch(domain:crates.io)"
     ]
   }
 }

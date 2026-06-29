@@ -1,11 +1,11 @@
-use std::collections::HashSet;
-use std::io;
-use std::io::Read;
-
 use ash::vk;
 use nalgebra as na;
 use rand::random_range;
-use std::time::Instant;
+use std::collections::HashSet;
+use std::io;
+use std::io::Read;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use sunray::{
     ResourceKey,
     camera::Camera,
@@ -321,7 +321,7 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        let window = event_loop.create_window(Window::default_attributes()).unwrap();
+        let window = event_loop.create_window(Window::default_attributes().with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))).unwrap();
         let window_size = window.inner_size().into();
         self.window = Some(window);
 
@@ -393,4 +393,5 @@ fn main() {
 
     let mut app = App::default();
     let _ = event_loop.run_app(&mut app).unwrap();
+    sleep(Duration::from_secs(100));
 }

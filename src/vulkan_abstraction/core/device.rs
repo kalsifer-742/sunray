@@ -124,20 +124,26 @@ impl Device {
             // STATUS_ACCESS_VIOLATION right after descriptor-heap creation). Left disabled;
             // the QFOT in staging_buffer is therefore still required and correct.
             let mut maintenance9_features = vk::PhysicalDeviceMaintenance9FeaturesKHR::default().maintenance9(false);
+            let mut vk11_features = vk::PhysicalDeviceVulkan11Features::default()
+                .storage_buffer16_bit_access(true)
+                .uniform_and_storage_buffer16_bit_access(true);
+
             let mut vk14_features = vk::PhysicalDeviceVulkan14Features::default().maintenance5(true);
             // dynamic_rendering: the Bevy egui overlay paints into the swapchain image via
             // VK_KHR_dynamic_rendering (cmd_begin_rendering, no VkRenderPass/framebuffer).
             let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default()
                 .synchronization2(true)
                 .dynamic_rendering(true);
-            // enable some device features necessary for ray-tracing //TODO I may need some newer feature expecially for the semi-binding?
+            // enable some device features necessary for ray-tracing
             let mut vk12_features = vk::PhysicalDeviceVulkan12Features::default()
                 .buffer_device_address(true) // necessary for ray-tracing
                 .timeline_semaphore(true)
                 .vulkan_memory_model(true)
                 .vulkan_memory_model_device_scope(true)
                 .storage_buffer8_bit_access(true)
+                .uniform_and_storage_buffer8_bit_access(true)
                 .shader_float16(true);
+
             let mut physical_device_rt_pipeline_features =
                 vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
             let mut physical_device_acceleration_structure_features =
@@ -187,6 +193,7 @@ impl Device {
 
             let mut device_create_info = vk::DeviceCreateInfo::default()
                 .enabled_extension_names(device_extensions)
+                .push(&mut vk11_features)
                 .push(&mut vk12_features)
                 .push(&mut vk13_features)
                 .push(&mut physical_device_rt_pipeline_features)

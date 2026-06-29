@@ -425,6 +425,11 @@ pub struct RenderGraph {
     /// Cached so `run` can submit and `compile` can record without the caller
     /// having to re-thread `Core` through every call.
     core: Rc<Core>,
+    /// Emits a `VK_EXT_debug_utils` GPU-timeline label around each pass while
+    /// `compile` records, so a Vulkan profiler shows the passes by name. Present
+    /// only under the `profiling` feature; a no-op if the extension is absent.
+    #[cfg(feature = "profiling")]
+    gpu_profiler: crate::profiling::GpuProfiler,
 }
 //TODO per frame global data uploaded each frame like transforms and the camera, these can then live in the descriptor heap based on kajiya DYNAMIC_CONSTANTS_BUFFER
 //TODO Reintroduce the typestate of the render graph,as it is intended to work like this, the setup phase is where you can add stuff and so on, when you want to run it you compile it once done than you can return to the setup phase, this should empty out reset the cmdbuffer and allow to add again resources, this should make sure the resources in use are
@@ -432,6 +437,8 @@ pub struct RenderGraph {
 impl RenderGraph {
     pub fn new(core: Rc<Core>) -> SrResult<Self> {
         let cmd_buffer = CmdBuffer::new(Rc::clone(&core))?;
+        #[cfg(feature = "profiling")]
+        let gpu_profiler = crate::profiling::GpuProfiler::new(core.instance(), core.device().inner(), core.debug_utils_enabled());
         Ok(RenderGraph {
             next_pass_id: 0,
             next_resource_id: 0,
@@ -442,6 +449,8 @@ impl RenderGraph {
             resource_end_states: HashMap::new(),
             cmd_buffer,
             core,
+            #[cfg(feature = "profiling")]
+            gpu_profiler,
         })
     }
 
@@ -596,6 +605,7 @@ impl RenderGraph {
     }
 
     pub fn compile(&mut self) -> SrResult<()> {
+        crate::profile_scope!("RenderGraph::compile");
         //TODO mark the render pass goals as the result of the graph so anything unnecessary can be removed
         //TODO there are some complex optimizations as shown here https://www.youtube.com/watch?v=v9LaTFLhP38 and this is the site where it will be published the paper https://dl.acm.org/profile/99661091135
         //TODO respect PassResourceAccessSyncType (NeverSync / SkipSyncIfSameAccessType) when deciding whether to emit a barrier
@@ -806,6 +816,14 @@ impl RenderGraph {
                 AnyRenderPass::Compute(compute) => &mut compute.common,
             };
             if let Some(render) = common.render.as_mut() {
+                // CPU range over the recording of this pass + a GPU-timeline label
+                // bracketing the commands it records into `raw_cb`. Both compile
+                // away without the `profiling` feature. `gpu_profiler` and
+                // `transient_resources` are disjoint fields from `passes`, so the
+                // borrows don't conflict with the `&mut` on `common`.
+                crate::profile_scope!(common.name.as_str());
+                #[cfg(feature = "profiling")]
+                let _gpu_label = self.gpu_profiler.scope(raw_cb, common.name.as_str());
                 let mut cb_handle = raw_cb;
                 render(&mut cb_handle, &self.transient_resources)?;
             }

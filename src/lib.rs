@@ -1,6 +1,8 @@
 pub mod camera;
 pub mod error;
 pub mod finello_pathtracing_pipeline;
+/// Optional profiling instrumentation (`profiling` / `profiling-nvtx` features).
+pub mod profiling;
 pub mod render_graph;
 pub mod scene;
 pub mod shader_compiler;
@@ -36,7 +38,7 @@ use ash::vk;
 use vk_sync_fork as vk_sync;
 
 //TODO finello
-pub const DENOISE_PASSES: u32 = 8;
+pub const DENOISE_PASSES: u32 = 4;
 //TODO finello
 pub const EXPOSURE: f32 = 1.0;
 
@@ -855,12 +857,13 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             )));
         }
         if let Some(&max_index) = indices.iter().max()
-            && max_index as usize >= vertices.len() {
-                return Err(SrError::new_custom(format!(
-                    "load_mesh: index {max_index} out of range for {} vertices",
-                    vertices.len()
-                )));
-            }
+            && max_index as usize >= vertices.len()
+        {
+            return Err(SrError::new_custom(format!(
+                "load_mesh: index {max_index} out of range for {} vertices",
+                vertices.len()
+            )));
+        }
 
         let emission = [
             material.emissive_factor[0] * material.emissive_strength,
@@ -931,6 +934,11 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         camera: &Camera,
         instances: &[(K, Vec<vk::TransformMatrixKHR>)],
     ) -> SrResult<u64> {
+        // Host-timeline range covering the whole CPU side of the frame. Nested
+        // sub-ranges below mark the expensive phases; the render graph adds a
+        // GPU-timeline label per pass while recording (see `RenderGraph::compile`).
+        crate::profile_scope!("Renderer::render");
+
         // ── Start of frame: scheduled callbacks + deferred deallocation of the
         // per-frame resources of frames the timeline reported complete.
         let upcoming_frame = *self.core.absolute_frame_count.borrow() as u64 + 1;
@@ -1034,7 +1042,10 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             "per-frame emissive indirection",
         )?;
 
-        self.resource_manager.rebuild_tlas(instance_count, &instances_buffer)?;
+        {
+            crate::profile_scope!("TLAS rebuild");
+            self.resource_manager.rebuild_tlas(instance_count, &instances_buffer)?;
+        }
 
         let frame_gpu_data = FrameGpuData {
             matrices_address: matrices_buffer.get_device_address(),
@@ -1062,7 +1073,10 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // accumulation, the 8 a-trous denoise passes, and postprocess. Every pass
         // is heap + Slang; the intermediate G-buffer / RT-output images are
         // graph-internal (transient) resources.
-        self.build_unified_graph(&postprocess_out, result_extent, &frame_gpu_data)?;
+        {
+            crate::profile_scope!("build + compile render graph");
+            self.build_unified_graph(&postprocess_out, result_extent, &frame_gpu_data)?;
+        }
 
         // build_unified_graph advanced the absolute frame count: that's this
         // frame's number on the frame timeline.
@@ -1080,9 +1094,12 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         unsafe {
             self.core.device().inner().device_wait_idle()?;
         }
-        self.render_graph
-            .run(&mut self.render_graph_fence, &wait_semaphores, &wait_stages)?;
-        self.render_graph_fence.wait()?;
+        {
+            crate::profile_scope!("render graph submit + wait");
+            self.render_graph
+                .run(&mut self.render_graph_fence, &wait_semaphores, &wait_stages)?;
+            self.render_graph_fence.wait()?;
+        }
 
         // === Blit postprocess result -> caller's target (outside the graph) ===
         // The blit submission signals the frame timeline with this frame's

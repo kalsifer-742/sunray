@@ -215,6 +215,13 @@ impl Core {
         self.instance.inner()
     }
 
+    /// Whether `VK_EXT_debug_utils` was enabled on the instance — required before
+    /// recording GPU-timeline labels (see [`crate::profiling::GpuProfiler`]).
+    #[allow(unused)]
+    pub fn debug_utils_enabled(&self) -> bool {
+        self.instance.debug_utils_enabled()
+    }
+
     pub fn device(&self) -> &Rc<vulkan_abstraction::Device> {
         &self.device
     }

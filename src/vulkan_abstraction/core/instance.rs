@@ -34,6 +34,73 @@ impl Instance {
         Ok(supports_validation_layer)
     }
 
+    /// Log every instance layer the loader can *discover*, plus the loader env vars
+    /// that decide which implicit layers actually load.
+    ///
+    /// CAVEAT: `vkEnumerateInstanceLayerProperties` returns *installed* layers, not
+    /// the ones active in this process — implicit layers (Nsight Graphics, RenderDoc,
+    /// ReShade, Steam/OBS overlays, …) are activated separately at `vkCreateInstance`
+    /// from registry/env conditions. So this list looks identical whether or not a
+    /// tool is attached and can't, on its own, name who injects the stray
+    /// `vkCmdPushDescriptorSetKHR` calls that bind our BDA-only vertex/index buffers
+    /// as storage buffers (sunray uses a descriptor heap + BDA and records no
+    /// descriptor-set writes). To see the *active* layer chain, run with
+    /// `VK_LOADER_DEBUG=layer`; to rule implicit injectors out entirely, run with
+    /// `VK_LOADER_LAYERS_DISABLE=~implicit~`. Suspected capture/instrumentation
+    /// layers are surfaced as warnings, and any set loader env vars are echoed below.
+    fn log_available_layers(entry: &ash::Entry) -> SrResult<()> {
+        // Substrings (case-insensitive) of layer names that record/instrument the
+        // command stream and are a plausible source of injected GPU work.
+        const CAPTURE_LAYER_HINTS: [&str; 7] = [
+            "nomad",
+            "gpu_trace",
+            "renderdoc",
+            "gfxreconstruct",
+            "fossilize",
+            "obs",
+            "reshade",
+        ];
+
+        let layers_props = unsafe { entry.enumerate_instance_layer_properties() }?;
+        log::info!(
+            "Discoverable Vulkan instance layers ({}) — INSTALLED, not necessarily active; run with VK_LOADER_DEBUG=layer to see the active chain:",
+            layers_props.len()
+        );
+        for p in &layers_props {
+            let name = p
+                .layer_name_as_c_str()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let desc = p
+                .description_as_c_str()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let lname = name.to_ascii_lowercase();
+            if CAPTURE_LAYER_HINTS.iter().any(|h| lname.contains(h)) {
+                log::warn!("  [capture/instrumentation] {name} — {desc}");
+            } else {
+                log::info!("  {name} — {desc}");
+            }
+        }
+
+        // These env vars decide which implicit layers actually load (and let you
+        // force/suppress layers). Echoing them is the cheap way to spot, e.g., an
+        // Nsight launcher that flipped an activation var for this process.
+        const LOADER_ENV_VARS: [&str; 5] = [
+            "VK_INSTANCE_LAYERS",
+            "VK_LOADER_LAYERS_ENABLE",
+            "VK_LOADER_LAYERS_DISABLE",
+            "VK_ADD_LAYER_PATH",
+            "VK_LOADER_DEBUG",
+        ];
+        for var in LOADER_ENV_VARS {
+            if let Ok(val) = std::env::var(var) {
+                log::warn!("  loader env: {var}={val}");
+            }
+        }
+        Ok(())
+    }
+
     fn filter_supported_exts<'a>(
         entry: &ash::Entry,
         layer: Option<&CStr>,
@@ -137,6 +204,16 @@ impl Instance {
     ) -> SrResult<Self> {
         let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 4, 0));
 
+        // Dump all visible layers (incl. implicit ones injected by capture tools) so
+        // it's obvious at attach time who, if anyone, is instrumenting the command
+        // stream. sunray records no descriptor-set writes itself.
+        Self::log_available_layers(entry)?;
+
+        // Names the render thread for NVTX and logs which profiling backend is
+        // live (the "move vendor logging data" switch is `profiling-nvtx`).
+        // No-op without the `profiling` feature.
+        crate::profiling::init();
+
         let (enable_validation_layer, layer_names) = {
             let enable_validation_layer = if with_validation_layer {
                 if Self::check_validation_layer_support(entry)? {
@@ -163,18 +240,20 @@ impl Instance {
         let supported_debug_extensions = Self::filter_supported_exts(entry, None, &Self::DEBUG_EXTENSIONS)?;
         let enable_layer_settings = enable_validation_layer
             && !Self::filter_supported_exts(entry, Some(Self::VALIDATION_LAYER_NAME), &[ext::layer_settings::NAME])?.is_empty();
-        let enable_debug_utils = enable_validation_layer && supported_debug_extensions.contains(&ext::debug_utils::NAME);
+        // VK_EXT_debug_utils backs both the validation messenger and the
+        // `profiling` feature's GPU-timeline pass labels, so enable it whenever
+        // either wants it and the loader supports it.
+        let want_debug_utils = enable_validation_layer || cfg!(feature = "profiling");
+        let enable_debug_utils = want_debug_utils && supported_debug_extensions.contains(&ext::debug_utils::NAME);
 
         let instance_extensions = {
-            if enable_validation_layer {
-                instance_exts
-                    .iter()
-                    .copied()
-                    .chain(supported_debug_extensions.iter().map(|arr| arr.as_ptr()))
-                    .collect::<Vec<*const i8>>()
-            } else {
-                instance_exts.to_vec()
+            let mut exts = instance_exts.to_vec();
+            if enable_debug_utils {
+                // `supported_debug_extensions` is the loader-supported subset of
+                // `DEBUG_EXTENSIONS` (currently just VK_EXT_debug_utils).
+                exts.extend(supported_debug_extensions.iter().map(|arr| arr.as_ptr()));
             }
+            exts
         };
 
         // use VK_EXT_layer_settings to configure the validation layer
@@ -240,6 +319,18 @@ impl Instance {
             instance_create_info
         };
 
+        // Layers sunray explicitly requests — anything active beyond these (see the
+        // available-layers dump above) is an implicit layer the loader injected.
+        log::info!(
+            "Explicitly enabling {} instance layer(s){}",
+            layer_names.len(),
+            if enable_validation_layer {
+                format!(" ({})", Self::VALIDATION_LAYER_NAME.to_string_lossy())
+            } else {
+                String::new()
+            }
+        );
+
         let instance = unsafe { entry.create_instance(&instance_create_info, None) }?;
 
         let (debug_utils_instance, debug_messenger) = if enable_debug_utils {
@@ -262,6 +353,12 @@ impl Instance {
     }
     pub fn inner(&self) -> &ash::Instance {
         &self.instance
+    }
+    /// Whether `VK_EXT_debug_utils` was enabled (the messenger is only created
+    /// when it is). Used to gate GPU-timeline labels in
+    /// [`crate::profiling::GpuProfiler`].
+    pub fn debug_utils_enabled(&self) -> bool {
+        self.debug_utils_instance.is_some()
     }
     pub fn diagnostics(&self) -> &DiagnosticsContext {
         &self.diagnostics
