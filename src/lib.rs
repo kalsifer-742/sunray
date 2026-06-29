@@ -24,7 +24,7 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
-use crate::render_graph::graph::{RenderGraph};
+use crate::render_graph::graph::{ExportedTemporalResource, RenderGraph};
 use crate::render_graph::pass_builder::{
     ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
 };
@@ -124,23 +124,33 @@ pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
 
     core: Rc<vulkan_abstraction::Core>,
 
-    //TODO finello all of this params are temporal stuff to be incorporated in a future version of the graph when temporal stuff can be handled internally
-    pub accumulation_images: [Arc<vulkan_abstraction::Image>; 2],
-    pub denoising_images: [Arc<vulkan_abstraction::Image>; 2],
+    //TODO finni all of this params are pipeline-specific temporal (cross-frame) stuff. They now
+    // live as temporal resources owned by the render graph (created once, re-registered each
+    // rebuild, memory preserved across frames). When the path-tracing pipeline is extracted into
+    // its own file and the renderer becomes pipelineless, these tokens move out with it.
+    /// Ping-pong accumulation images for temporal accumulation. The graph owns
+    /// the backing memory; this is just the exported token re-registered each
+    /// frame. Ping-pong selection is by [`Self::relative_frame_count`] parity.
+    accumulation_temporal: ExportedTemporalResource<vulkan_abstraction::Image>,
+    /// Ping-pong a-trous denoise images (same ownership contract as
+    /// `accumulation_temporal`).
+    denoising_temporal: ExportedTemporalResource<vulkan_abstraction::Image>,
     ///this is used for temporal accumulation, there is an absolute frame counter in the core
     pub relative_frame_count: u32,
 
-    /// Ping-pong reservoir buffers. Stored as `Arc<RawBuffer>` (rather than plain
-    /// `GpuOnlyBuffer`) so the same buffer can be imported into the render graph
-    /// each frame for hazard tracking — the RIS pass writes them and the final
-    /// pass reads them, so the graph emits the reservoir hand-off barrier between
-    /// the two RT passes automatically. The shader still addresses them by
-    /// device-address (see `RaytracingHeapPushConstant::reservoirs`); the graph
-    /// import only governs synchronization.
-    reservoir_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
-    /// Ping-pong pair of GI reservoir buffers for ReSTIR GI (Ouyang 2021)
-    /// contract as reservoir_buffers above, but storing surface samples (x2) instead of light samples.
-    reservoir_gi_buffers: [Arc<vulkan_abstraction::RawBuffer>; 2],
+    /// Ping-pong reservoir buffers for ReSTIR. The graph owns the backing memory
+    /// (a temporal resource): the same buffers are re-registered each frame for
+    /// hazard tracking — the RIS pass writes them and the final pass reads them,
+    /// so the graph emits the reservoir hand-off barrier between the two RT passes
+    /// automatically. The shader still addresses them by device-address (see
+    /// `RaytracingHeapPushConstant::reservoirs`, filled from
+    /// [`RenderGraph::temporal_buffer_addresses`]); the graph import only governs
+    /// synchronization.
+    reservoir_temporal: ExportedTemporalResource<vulkan_abstraction::RawBuffer>,
+    /// Ping-pong pair of GI reservoir buffers for ReSTIR GI (Ouyang 2021); same
+    /// ownership contract as `reservoir_temporal`, storing surface samples (x2)
+    /// instead of light samples.
+    reservoir_gi_temporal: ExportedTemporalResource<vulkan_abstraction::RawBuffer>,
 
     prev_view_proj: nalgebra::Matrix4<f32>, //used to calculate motion vectors
 
@@ -171,7 +181,7 @@ pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
     //these are ordered,the u64 is the absolute frame on which to execute and the actual callback
     start_of_frame_callbacks: Vec<(u64, Box<dyn FnOnce()>)>,
     /// Persistent (FnMut) callbacks invoked on every `resize`.
-    resize_callbacks: Vec<Box<dyn FnMut()>>,
+    resize_callbacks: Vec<Box<dyn FnMut((u32,u32))>>,
     /// Run on the render thread once the tagged frame has *completed on the
     /// GPU* (per `completed_frame`). The per-frame CpuToGpu buffers `render`
     /// creates are deallocated through here.
@@ -251,28 +261,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
         let image_dependant_data = HashMap::new();
 
-        let create_accum_image = |name: &'static str| -> SrResult<Arc<vulkan_abstraction::Image>> {
-            Ok(Arc::new(vulkan_abstraction::Image::new(
-                core.clone(),
-                image_extent, // <--- USE THIS (it's already a vk::Extent3D)
-                vk::Format::B10G11R11_UFLOAT_PACK32,
-                vk::ImageTiling::OPTIMAL,
-                gpu_allocator::MemoryLocation::GpuOnly,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                name,
-            )?))
-        };
-
-        let accumulation_images = [
-            create_accum_image("Accumulation_Ping")?,
-            create_accum_image("Accumulation_Pong")?,
-        ];
-
-        let denoising_images = [create_accum_image("Denoise_Ping")?, create_accum_image("Denoise_Pong")?];
-
-        let num_pixels = (image_extent.width * image_extent.height) as usize;
-        let reservoir_buffers = Self::create_reservoir_buffers(&core, num_pixels)?;
-        let reservoir_gi_buffers = Self::create_reservoir_gi_buffers(&core, num_pixels)?;
+        // The cross-frame ping-pong resources (accumulation / denoise images,
+        // ReSTIR reservoir buffers) are now temporal resources owned by the
+        // render graph — created just below, once the graph exists.
 
         let blue_noise_bytes = include_bytes!("finello_pathtracing_pipeline/util_files/noise.png");
         let blue_noise_img = image::load_from_memory(blue_noise_bytes).unwrap().to_rgba8();
@@ -304,8 +295,23 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             vk::SamplerMipmapMode::NEAREST,
         )?;
 
-        let render_graph = RenderGraph::new(Rc::clone(&core))?;
+        let mut render_graph = RenderGraph::new(Rc::clone(&core))?;
         let render_graph_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(core.device()))?;
+
+        // Temporal (cross-frame) resources: the graph owns the backing memory and
+        // preserves it across the per-frame rebuild, so each holds its history.
+        let num_pixels = (image_extent.width * image_extent.height) as usize;
+        let accumulation_temporal =
+            render_graph.create_temporal_resource(Self::temporal_image_desc("Accumulation", image_extent))?;
+        let denoising_temporal = render_graph.create_temporal_resource(Self::temporal_image_desc("Denoise", image_extent))?;
+        let reservoir_temporal = render_graph.create_temporal_resource(Self::reservoir_buffer_desc::<Reservoir>(
+            "ReSTIR Reservoir Buffer",
+            num_pixels,
+        ))?;
+        let reservoir_gi_temporal = render_graph.create_temporal_resource(Self::reservoir_buffer_desc::<ReservoirGI>(
+            "ReSTIR GI Reservoir Buffer",
+            num_pixels,
+        ))?;
 
         // Frame timeline: signaled with the absolute frame count when each
         // frame's GPU work completes. Starts at 0 = "frame 0 (nothing) done".
@@ -374,7 +380,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             frame_watcher_shutdown,
             frame_watcher: Some(frame_watcher),
 
-            reservoir_buffers,
+            reservoir_temporal,
 
             ray_gen_ris_spirv,
             ray_gen_final_spirv,
@@ -390,15 +396,15 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             image_extent,
             image_format,
 
-            accumulation_images,
-            denoising_images,
+            accumulation_temporal,
+            denoising_temporal,
             relative_frame_count: 0,
 
             blue_noise_image,
             blue_noise_sampler,
 
             resource_manager,
-            reservoir_gi_buffers,
+            reservoir_gi_temporal,
 
             core,
 
@@ -406,6 +412,11 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             resize_callbacks: vec![],
             end_of_frame_callbacks: vec![],
         };
+
+        // The temporal images are imported into the graph, which never transitions
+        // imported resources; bring their freshly-created (UNDEFINED) backings into
+        // GENERAL so the first compute pass that touches them is valid.
+        renderer.init_temporal_images_to_general()?;
 
         // The pre-recorded blit into each swapchain image must exist before the
         // first `render_to_swapchain` call.
@@ -417,49 +428,90 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         Ok(renderer)
     }
 
-    /// Allocate a ping-pong pair of GPU-only buffers holding `num_pixels`
-    /// elements of `T`, usable as SSBOs addressed by device-address and importable
-    /// into the render graph (`Arc<RawBuffer>`).
-    fn create_reservoir_pair<T>(
-        core: &Rc<vulkan_abstraction::Core>,
-        num_pixels: usize,
-        name_a: &'static str,
-        name_b: &'static str,
-    ) -> SrResult<[Arc<vulkan_abstraction::RawBuffer>; 2]> {
-        let byte_size = (num_pixels * size_of::<T>()) as vk::DeviceSize;
-        let usage = vk::BufferUsageFlags::STORAGE_BUFFER
-            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-            | vk::BufferUsageFlags::TRANSFER_DST;
-        let make = |name: &'static str| -> SrResult<Arc<vulkan_abstraction::RawBuffer>> {
-            Ok(Arc::new(vulkan_abstraction::RawBuffer::new_aligned(
-                Rc::clone(core),
-                byte_size,
-                1,
-                gpu_allocator::MemoryLocation::GpuOnly,
-                usage,
-                name,
-            )?))
-        };
-        Ok([make(name_a)?, make(name_b)?])
+    /// Descriptor for a temporal ping-pong image (accumulation / denoise). The
+    /// render graph allocates `MAX_FRAMES_IN_FLIGHT` backings from this.
+    //TODO finni: pipeline-specific; moves with the temporal resources when the
+    // path-tracing pipeline is extracted and the renderer becomes pipelineless.
+    fn temporal_image_desc(name: &'static str, extent: vk::Extent3D) -> ImageDesc {
+        ImageDesc {
+            extent,
+            format: vk::Format::B10G11R11_UFLOAT_PACK32,
+            tiling: vk::ImageTiling::OPTIMAL,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+            name,
+        }
     }
 
-    fn create_reservoir_buffers(
-        core: &Rc<vulkan_abstraction::Core>,
-        num_pixels: usize,
-    ) -> SrResult<[Arc<vulkan_abstraction::RawBuffer>; 2]> {
-        Self::create_reservoir_pair::<Reservoir>(core, num_pixels, "ReSTIR Reservoir Buffer A", "ReSTIR Reservoir Buffer B")
+    /// Descriptor for a ReSTIR reservoir buffer holding `num_pixels` elements of
+    /// `T`, addressed by device-address in the shader. The render graph allocates
+    /// `MAX_FRAMES_IN_FLIGHT` ping-pong backings from this.
+    //TODO finni: pipeline-specific; moves with the temporal resources when the
+    // path-tracing pipeline is extracted and the renderer becomes pipelineless.
+    fn reservoir_buffer_desc<T>(name: &'static str, num_pixels: usize) -> BufferDesc {
+        BufferDesc {
+            byte_size: (num_pixels * size_of::<T>()) as vk::DeviceSize,
+            alignment: 1,
+            memory_location: gpu_allocator::MemoryLocation::GpuOnly,
+            usage: vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::TRANSFER_DST,
+            name,
+        }
     }
 
-    fn create_reservoir_gi_buffers(
-        core: &Rc<vulkan_abstraction::Core>,
-        num_pixels: usize,
-    ) -> SrResult<[Arc<vulkan_abstraction::RawBuffer>; 2]> {
-        Self::create_reservoir_pair::<ReservoirGI>(
-            core,
-            num_pixels,
-            "ReSTIR GI Reservoir Buffer A",
-            "ReSTIR GI Reservoir Buffer B",
-        )
+    /// Transition the freshly-created (UNDEFINED) backings of the temporal
+    /// accumulation / denoise images into GENERAL with a one-time submit. The
+    /// graph imports these resources and never transitions imported memory
+    /// itself, so without this the first compute pass would touch a storage image
+    /// in the wrong layout. Run after (re)creating the temporal images.
+    //TODO finni: pipeline-specific; moves with the temporal resources when the
+    // path-tracing pipeline is extracted and the renderer becomes pipelineless.
+    fn init_temporal_images_to_general(&self) -> SrResult<()> {
+        let images: Vec<Arc<vulkan_abstraction::Image>> = self
+            .render_graph
+            .temporal_image_backings(&self.accumulation_temporal)
+            .into_iter()
+            .chain(self.render_graph.temporal_image_backings(&self.denoising_temporal))
+            .collect();
+
+        let device = self.core.device().inner();
+        let mut setup_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
+        unsafe {
+            let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
+            let barriers: Vec<vk::ImageMemoryBarrier2> = images
+                .iter()
+                .map(|image| {
+                    vk::ImageMemoryBarrier2::default()
+                        .src_stage_mask(vk::PipelineStageFlags2::NONE)
+                        .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                        .src_access_mask(vk::AccessFlags2::empty())
+                        .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::GENERAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(image.inner())
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                })
+                .collect();
+            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+            device.cmd_pipeline_barrier2(setup_cmd_buf.inner(), &dep_info);
+            device.end_command_buffer(setup_cmd_buf.inner())?;
+            let fence = setup_cmd_buf.fence_mut().submit()?;
+            self.core
+                .graphics_queue()
+                .submit_async(setup_cmd_buf.inner(), &[], &[], &[], fence)?;
+            setup_cmd_buf.fence_mut().wait()?;
+        }
+        Ok(())
     }
     // ─── Frame / resize callbacks ───────────────────────────────────────────
 
@@ -480,7 +532,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     }
 
     /// Register a persistent callback invoked on every [`Self::resize`].
-    pub fn add_resize_callback(&mut self, callback: impl FnMut() + 'static) {
+    pub fn add_resize_callback(&mut self, callback: impl FnMut((u32,u32)) + 'static) {
         self.resize_callbacks.push(Box::new(callback));
     }
 
@@ -519,7 +571,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         self.resize_swapchain(image_extent)?;
 
         for callback in self.resize_callbacks.iter_mut() {
-            callback();
+            callback(image_extent);
         }
 
         Ok(())
@@ -537,72 +589,35 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         self.clear_image_dependent_data();
 
         let num_pixels = (new_extent.width * new_extent.height) as usize;
-        self.reservoir_buffers = Self::create_reservoir_buffers(&self.core, num_pixels)?;
-        self.reservoir_gi_buffers = Self::create_reservoir_gi_buffers(&self.core, num_pixels)?;
-
         self.image_extent = new_extent;
 
-        let create_accum_image = |name: &'static str| -> SrResult<Arc<vulkan_abstraction::Image>> {
-            Ok(Arc::new(vulkan_abstraction::Image::new(
-                self.core.clone(),
-                new_extent,
-                vk::Format::B10G11R11_UFLOAT_PACK32,
-                vk::ImageTiling::OPTIMAL,
-                gpu_allocator::MemoryLocation::GpuOnly,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                name,
-            )?))
-        };
+        // Recreate the temporal resources at the new dimensions. The graph owns
+        // their backing memory, so (the GPU is idle from the wait above) drop the
+        // old backings and re-export fresh tokens; the per-frame rebuild
+        // re-registers them. Recreate in the same order as construction.
+        self.render_graph.clear_temporal_resources();
+        self.accumulation_temporal = self
+            .render_graph
+            .create_temporal_resource(Self::temporal_image_desc("Accumulation", new_extent))?;
+        self.denoising_temporal = self
+            .render_graph
+            .create_temporal_resource(Self::temporal_image_desc("Denoise", new_extent))?;
+        self.reservoir_temporal = self
+            .render_graph
+            .create_temporal_resource(Self::reservoir_buffer_desc::<Reservoir>(
+                "ReSTIR Reservoir Buffer",
+                num_pixels,
+            ))?;
+        self.reservoir_gi_temporal = self
+            .render_graph
+            .create_temporal_resource(Self::reservoir_buffer_desc::<ReservoirGI>(
+                "ReSTIR GI Reservoir Buffer",
+                num_pixels,
+            ))?;
 
-        self.accumulation_images = [create_accum_image("Accumulation_1")?, create_accum_image("Accumulation_2")?];
-
-        self.denoising_images = [create_accum_image("Denoising_1")?, create_accum_image("Denoising_2")?];
-
-        let device = self.core.device().inner();
-        let mut setup_cmd_buf = vulkan_abstraction::CmdBuffer::new(self.core.clone())?;
-
-        unsafe {
-            let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-            device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
-
-            let create_barrier = |image: vk::Image| {
-                vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::NONE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .src_access_mask(vk::AccessFlags2::empty())
-                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .image(image)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-            };
-
-            let barriers = [
-                create_barrier(self.accumulation_images[0].inner()),
-                create_barrier(self.accumulation_images[1].inner()),
-                create_barrier(self.denoising_images[0].inner()),
-                create_barrier(self.denoising_images[1].inner()),
-            ];
-
-            let dep_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
-            device.cmd_pipeline_barrier2(setup_cmd_buf.inner(), &dep_info);
-
-            device.end_command_buffer(setup_cmd_buf.inner())?;
-
-            let fence = setup_cmd_buf.fence_mut().submit()?;
-            self.core
-                .graphics_queue()
-                .submit_async(setup_cmd_buf.inner(), &[], &[], &[], fence)?;
-            setup_cmd_buf.fence_mut().wait()?;
-        }
+        // Bring the freshly-created (UNDEFINED) accumulation / denoise backings
+        // into GENERAL, exactly as the initial construction does.
+        self.init_temporal_images_to_general()?;
 
         self.relative_frame_count = 0;
 
@@ -1233,8 +1248,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     /// (RIS + final in one node), temporal accumulation, the 8 a-trous denoise
     /// passes, and postprocess. Every pass is heap-mode + Slang. The G-buffer /
     /// RT-output images are created as graph-internal (transient) resources; the
-    /// cross-frame accumulation ping-pong, the denoise ping-pong, and the
-    /// post-process output are imported.
+    /// cross-frame accumulation ping-pong, the denoise ping-pong, and the ReSTIR
+    /// reservoir buffers are graph-owned *temporal* resources re-registered each
+    /// rebuild; the post-process output is a per-target import.
     //TODO finni
     fn build_unified_graph(
         &mut self,
@@ -1266,14 +1282,10 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             entity_transforms: pack(frame_gpu_data.entity_transforms_slot),
             blue_noise_tex: pack(self.blue_noise_image.sampled_slot()),
             blue_noise_sampler: pack(self.blue_noise_sampler.slot()),
-            reservoirs: [
-                self.reservoir_buffers[0].device_address(),
-                self.reservoir_buffers[1].device_address(),
-            ],
-            reservoirs_gi: [
-                self.reservoir_gi_buffers[0].device_address(),
-                self.reservoir_gi_buffers[1].device_address(),
-            ],
+            // Device addresses of the graph-owned ping-pong reservoir backings;
+            // the shader picks current/history internally via `frame_count`.
+            reservoirs: self.render_graph.temporal_buffer_addresses(&self.reservoir_temporal),
+            reservoirs_gi: self.render_graph.temporal_buffer_addresses(&self.reservoir_gi_temporal),
             frame_count,
             use_srgb: if self.image_format == vk::Format::R8G8B8A8_SRGB {
                 1
@@ -1313,20 +1325,16 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         let denoise_spirv = self.denoise_spirv;
         let postprocess_spirv = self.postprocess_spirv;
 
-        let accum_arc0 = Arc::clone(&self.accumulation_images[0]);
-        let accum_arc1 = Arc::clone(&self.accumulation_images[1]);
-        let denoise_arc0 = Arc::clone(&self.denoising_images[0]);
-        let denoise_arc1 = Arc::clone(&self.denoising_images[1]);
         let postprocess_out_arc = Arc::clone(postprocess_out);
 
-        // Ping-pong reservoir buffers, cloned so they can be imported into the
-        // graph for hazard tracking (RIS writes → final reads). The shader still
-        // reaches them by device-address (already baked into `rt_pc_base`); the
-        // import only governs the RIS→final hand-off barrier.
-        let reservoir_arc0 = Arc::clone(&self.reservoir_buffers[0]);
-        let reservoir_arc1 = Arc::clone(&self.reservoir_buffers[1]);
-        let reservoir_gi_arc0 = Arc::clone(&self.reservoir_gi_buffers[0]);
-        let reservoir_gi_arc1 = Arc::clone(&self.reservoir_gi_buffers[1]);
+        // Snapshot the temporal-resource tokens so they can be re-registered into
+        // the graph below while `self.render_graph` is borrowed mutably. Cloning a
+        // token is cheap (an index + the resource desc); the backing memory stays
+        // owned by the graph and is preserved across this rebuild.
+        let accumulation_temporal = self.accumulation_temporal.clone();
+        let denoising_temporal = self.denoising_temporal.clone();
+        let reservoir_temporal = self.reservoir_temporal.clone();
+        let reservoir_gi_temporal = self.reservoir_gi_temporal.clone();
 
         // Advance the frame counters for the next frame (after snapshotting
         // `frame_count` for this one).
@@ -1372,19 +1380,22 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             "rg_motion_vec",
         ));
 
-        // Imported (persistent) resources.
-        let accum0_h = rg.import::<ImageDesc>(accum_arc0);
-        let accum1_h = rg.import::<ImageDesc>(accum_arc1);
-        let denoise_a_h = rg.import::<ImageDesc>(denoise_arc0);
-        let denoise_b_h = rg.import::<ImageDesc>(denoise_arc1);
+        // Temporal (cross-frame) ping-pong images: re-register the graph-owned
+        // backings into this rebuild. They are wired in as imports — never aliased,
+        // memory preserved across frames — with index `i` the copy for frame `i`.
+        let [accum0_h, accum1_h] = rg.register_temporal_resource(&accumulation_temporal);
+        let [denoise_a_h, denoise_b_h] = rg.register_temporal_resource(&denoising_temporal);
+
+        // The post-process output is a per-target (per-swapchain-image) import, not
+        // a temporal resource — it changes with the destination image.
         let postprocess_out_h = rg.import::<ImageDesc>(postprocess_out_arc);
 
-        // Reservoir ping-pong buffers, imported so the graph tracks the RIS→final
-        // hand-off and emits the barrier between the two RT passes itself.
-        let reservoir0_h = rg.import::<BufferDesc>(reservoir_arc0);
-        let reservoir1_h = rg.import::<BufferDesc>(reservoir_arc1);
-        let reservoir_gi0_h = rg.import::<BufferDesc>(reservoir_gi_arc0);
-        let reservoir_gi1_h = rg.import::<BufferDesc>(reservoir_gi_arc1);
+        // Reservoir ping-pong buffers re-registered for hazard tracking so the
+        // graph emits the RIS→final hand-off barrier between the two RT passes
+        // itself. The shader still reaches them by device-address (baked into
+        // `rt_pc_base` from `temporal_buffer_addresses`).
+        let [reservoir0_h, reservoir1_h] = rg.register_temporal_resource(&reservoir_temporal);
+        let [reservoir_gi0_h, reservoir_gi1_h] = rg.register_temporal_resource(&reservoir_gi_temporal);
         let reservoir_handles = [reservoir0_h, reservoir1_h, reservoir_gi0_h, reservoir_gi1_h];
 
         let accum_target_h = if accum_idx == 0 { accum0_h.clone() } else { accum1_h.clone() };

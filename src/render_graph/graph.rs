@@ -1,3 +1,4 @@
+use crate::MAX_FRAMES_IN_FLIGHT;
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
 use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
@@ -8,18 +9,17 @@ use crate::render_graph::transient_resources::TransientResources;
 use crate::vulkan_abstraction::image::ImageDesc;
 use crate::vulkan_abstraction::{
     Buffer, CmdBuffer, ComputePipeline, Core, Fence, GraphicsPipeline, GraphicsPipelineShaders, HeapComputePass, Image, Pipeline,
-    RayTracingPipeline, RayTracingPipelineShaders, ShaderBindingTable,
+    RawBuffer, RayTracingPipeline, RayTracingPipelineShaders, ShaderBindingTable,
 };
 use ash::vk;
 use petgraph::Graph;
+use petgraph::graph::EdgeIndex;
 use petgraph::visit::{EdgeRef, IntoNeighbors};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use petgraph::graph::EdgeIndex;
 use vk_sync_fork as vk_sync;
-use crate::MAX_FRAMES_IN_FLIGHT;
 
 #[derive(Copy, Clone, Debug)]
 pub enum PassResourceAccessSyncType {
@@ -34,14 +34,11 @@ pub struct PassResourceAccessType {
     pub(crate) sync_type: PassResourceAccessSyncType,
 }
 
-
-
 pub(super) enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
     Compute(ComputeRenderPass),
 }
-
 
 /// Lightweight reference to a pipeline interned in the graph's [`PipelineCache`].
 /// Render closures resolve it to the concrete pipeline at record time via
@@ -155,9 +152,6 @@ pub(crate) struct ResourceBarrier {
     pub(crate) next_access: vk_sync::AccessType,
 }
 
-
-
-
 /// Edge weight on the pass dependency graph: all barriers that must be issued
 /// before the destination pass runs because of the source pass.
 #[derive(Clone, Debug, Default)]
@@ -229,9 +223,44 @@ fn add_dep_edge(
     }
 }
 
-struct TemporalResource{
-    frame_of_creation : usize ,
-    ids : [u32 ; MAX_FRAMES_IN_FLIGHT],
+/// Graph-owned backing for one temporal (cross-frame) resource: one distinct,
+/// persistent copy per frame in flight. Unlike transient `Created` resources
+/// these are stored as ready-made *imports* and re-registered into the graph on
+/// every rebuild, so the transient slot allocator never aliases them (only
+/// `Created` resources are aliased) and `reset()` never recycles their memory —
+/// each copy keeps its contents across frames, which is exactly what history /
+/// ping-pong data needs (TAA accumulation, ReSTIR reservoirs, denoise).
+struct TemporalResource {
+    /// Absolute frame index when the backing was allocated. Lets the caller
+    /// reason about how many frames of history have accumulated so far.
+    frame_of_creation: usize,
+    /// One persistent backing per frame in flight, kept as a clonable import so
+    /// [`RenderGraph::register_temporal_resource`] can wire it into each rebuild.
+    imports: [GraphResourceImportInfo; MAX_FRAMES_IN_FLIGHT],
+}
+
+/// Exported handle to a temporal resource. Returned by
+/// [`RenderGraph::create_temporal_resource`] and kept by the caller across
+/// frames: the backing it points at lives in the graph and survives
+/// [`RenderGraph::reset`], so the same token re-binds the same GPU memory after a
+/// graph rebuild via [`RenderGraph::register_temporal_resource`].
+pub struct ExportedTemporalResource<R: Resource> {
+    /// Index into [`RenderGraph::temporal_resources`].
+    index: usize,
+    desc: <R as Resource>::Desc,
+    marker: PhantomData<R>,
+}
+
+// Manual `Clone` (mirrors `Handle`) so the token is cloneable regardless of
+// whether `R` is `Clone` — only the `Desc` is stored.
+impl<R: Resource> Clone for ExportedTemporalResource<R> {
+    fn clone(&self) -> Self {
+        Self {
+            index: self.index,
+            desc: self.desc.clone(),
+            marker: PhantomData,
+        }
+    }
 }
 
 pub struct RenderGraph {
@@ -291,6 +320,10 @@ impl RenderGraph {
         self.swapchain_resource_id = None;
         self.resource_end_states.clear();
         self.transient_resources.free_internal_state();
+        // `temporal_resources` is intentionally NOT cleared: its backing memory
+        // is owned by the graph for its whole lifetime so history/ping-pong data
+        // survives the rebuild. Re-wire each one with
+        // `register_temporal_resource` while rebuilding this frame's passes.
     }
 
     pub(super) fn next_pass_id(&mut self) -> u32 {
@@ -315,35 +348,138 @@ impl RenderGraph {
         }
     }
 
-    pub fn create_temporal_resource<Desc : ResourceDesc>(&mut self, desc: Desc) -> [Handle<<Desc as ResourceDesc>::Resource>; MAX_FRAMES_IN_FLIGHT]
+    /// Allocate a temporal (cross-frame) resource: `MAX_FRAMES_IN_FLIGHT`
+    /// dedicated, persistent copies of `desc` that the graph owns for its whole
+    /// lifetime. The backing is allocated once here; it is **not** aliased with
+    /// transient resources and survives [`Self::reset`], so each copy preserves
+    /// its contents from frame to frame (history buffers, ping-pong targets).
+    ///
+    /// Returns an [`ExportedTemporalResource`] the caller keeps across frames.
+    /// Each frame (including the first), after `reset`, call
+    /// [`Self::register_temporal_resource`] with this token to wire the copies
+    /// into the rebuilt graph and obtain the per-frame [`Handle`]s.
+    ///
+    /// Only images and buffers can be temporal; samplers / acceleration
+    /// structures return an error.
+    pub fn create_temporal_resource<Desc: ResourceDesc>(
+        &mut self,
+        desc: Desc,
+    ) -> SrResult<ExportedTemporalResource<<Desc as ResourceDesc>::Resource>>
     where
         Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
     {
-        let mut ids = [0; MAX_FRAMES_IN_FLIGHT];
+        let graph_desc: GraphResourceDesc = desc.clone().into();
 
-        let handles = std::array::from_fn(|i| {
-            self.create_raw_resource(desc.clone().into());
-            let id = self.next_resource_id();
+        let mut backings: Vec<GraphResourceImportInfo> = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            backings.push(self.allocate_temporal_backing(&graph_desc)?);
+        }
+        let imports: [GraphResourceImportInfo; MAX_FRAMES_IN_FLIGHT] = backings
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("allocated exactly MAX_FRAMES_IN_FLIGHT backings"));
 
-            ids[i] = id;
-
-            Handle {
-                id,
-                desc: TypeEquals::same(desc.clone()),
-                marker: Default::default(),
-            }
+        let index = self.temporal_resources.len();
+        self.temporal_resources.push(TemporalResource {
+            frame_of_creation: *self.core.absolute_frame_count.borrow(),
+            imports,
         });
 
-        let temporal_resource = TemporalResource {
-            frame_of_creation: *self.core.absolute_frame_count.borrow(),
-            ids,
-        };
-
-        self.temporal_resources.push(temporal_resource);
-
-        handles
+        Ok(ExportedTemporalResource {
+            index,
+            desc: TypeEquals::same(desc),
+            marker: PhantomData,
+        })
     }
 
+    /// Register the persistent backing of an exported temporal resource into the
+    /// current graph build, returning a [`Handle`] for each frame-in-flight copy
+    /// (index `i` is the copy for frame `i`; the caller selects current vs.
+    /// history by frame parity). Call once per rebuild after [`Self::reset`].
+    ///
+    /// Copies are wired in as imports, so they bypass transient aliasing and are
+    /// never recycled — see [`Self::create_temporal_resource`].
+    pub fn register_temporal_resource<R: Resource>(
+        &mut self,
+        exported: &ExportedTemporalResource<R>,
+    ) -> [Handle<R>; MAX_FRAMES_IN_FLIGHT] {
+        let imports = self.temporal_resources[exported.index].imports.clone();
+        std::array::from_fn(|i| {
+            self.virtual_resources.push(GraphResourceInfo::Imported(imports[i].clone()));
+            Handle {
+                id: self.next_resource_id(),
+                desc: exported.desc.clone(),
+                marker: PhantomData,
+            }
+        })
+    }
+
+    /// Absolute frame index at which this temporal resource's backing was
+    /// allocated. The number of frames of history accumulated so far is
+    /// `current_absolute_frame - temporal_frame_of_creation`.
+    pub fn temporal_frame_of_creation<R: Resource>(&self, exported: &ExportedTemporalResource<R>) -> usize {
+        self.temporal_resources[exported.index].frame_of_creation
+    }
+
+    /// The persistent per-frame backing images of a temporal *image* resource.
+    /// The graph never transitions imported resources itself, so the caller uses
+    /// these to drive a one-time layout transition right after (re)creation.
+    pub fn temporal_image_backings(&self, exported: &ExportedTemporalResource<Image>) -> [Arc<Image>; MAX_FRAMES_IN_FLIGHT] {
+        let imports = &self.temporal_resources[exported.index].imports;
+        std::array::from_fn(|i| match &imports[i] {
+            GraphResourceImportInfo::Image { resource, .. } => Arc::clone(resource),
+            _ => unreachable!("temporal image resource backed by a non-image import"),
+        })
+    }
+
+    /// The device addresses of the persistent per-frame backing buffers of a
+    /// temporal *buffer* resource. Ping-pong buffers are still reached by device
+    /// address in the shader (the graph import only governs synchronization), so
+    /// the caller bakes these into its push constants.
+    pub fn temporal_buffer_addresses(
+        &self,
+        exported: &ExportedTemporalResource<RawBuffer>,
+    ) -> [vk::DeviceAddress; MAX_FRAMES_IN_FLIGHT] {
+        let imports = &self.temporal_resources[exported.index].imports;
+        std::array::from_fn(|i| match &imports[i] {
+            GraphResourceImportInfo::Buffer { resource, .. } => resource.device_address(),
+            _ => unreachable!("temporal buffer resource backed by a non-buffer import"),
+        })
+    }
+
+    /// Drop every temporal resource's backing memory. Existing
+    /// [`ExportedTemporalResource`] tokens dangle afterwards, so only call this
+    /// when about to recreate them (e.g. a resize that changes their dimensions)
+    /// and replace every token the caller holds. The caller must ensure the GPU
+    /// is idle first — the backings may still be in use by an in-flight frame.
+    pub fn clear_temporal_resources(&mut self) {
+        self.temporal_resources.clear();
+    }
+
+    /// Allocate one owned, dedicated backing for a temporal resource and wrap it
+    /// as an import ready to be registered each frame. The backing carries its
+    /// own memory (so it is never aliased) and is reference-counted, so the graph
+    /// can clone it into every rebuild while keeping it alive across resets.
+    fn allocate_temporal_backing(&self, desc: &GraphResourceDesc) -> SrResult<GraphResourceImportInfo> {
+        match desc {
+            GraphResourceDesc::Image(image_desc) => {
+                let image = Arc::new(Image::new_from_desc(self.core(), image_desc)?);
+                Ok(GraphResourceImportInfo::Image {
+                    resource: image,
+                    access_type: vk_sync::AccessType::Nothing,
+                })
+            }
+            GraphResourceDesc::Buffer(buffer_desc) => {
+                let buffer = Arc::new(RawBuffer::new_from_desc(self.core(), buffer_desc)?);
+                Ok(GraphResourceImportInfo::Buffer {
+                    resource: buffer,
+                    access_type: vk_sync::AccessType::Nothing,
+                })
+            }
+            GraphResourceDesc::Sampler(_) | GraphResourceDesc::RaytracingAS(_) => Err(SrError::new_custom(
+                "temporal resources are only supported for images and buffers".to_string(),
+            )),
+        }
+    }
 
     fn create_raw_resource(&mut self, resource_desc: GraphResourceDesc) {
         self.virtual_resources.push(GraphResourceInfo::Created(resource_desc));
@@ -450,7 +586,6 @@ impl RenderGraph {
             marker: Default::default(),
         })
     }
-
 
     pub fn compile(&mut self) -> SrResult<()> {
         //TODO force injection of previous temporal data on rebuild, the graph is incapable of understanding temporal dep across compilations

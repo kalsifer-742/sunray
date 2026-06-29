@@ -18,8 +18,6 @@ pub trait ResourceDesc: Clone + std::fmt::Debug + Into<GraphResourceDesc> {
     type Resource: Resource;
 }
 
-
-
 #[derive(Debug)]
 pub struct Handle<ResourceType: Resource> {
     pub(crate) id: u32,
