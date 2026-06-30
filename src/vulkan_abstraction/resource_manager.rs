@@ -36,14 +36,14 @@ pub(crate) struct FrameInstanceData {
 /// from the renderer's local instance buffer). Per-frame data only passes
 /// through [`Self::frame_instance_data`] — it is never stored here.
 pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
-    tlas: vulkan_abstraction::TLAS,
+    tlas: vulkan_abstraction::Tlas,
 
     // ── Stable per-asset GPU data, keyed by `K`.
     /// Per-BLAS mesh info (vertex/index BDA + material). The slot index is the
     /// `gl_InstanceCustomIndexEXT` every instance of that BLAS uses.
     meshes_info: vulkan_abstraction::ArenaGpuBuffer<EntityGpuData>,
     blas_emissive_triangles: vulkan_abstraction::ArenaGpuBuffer<vulkan_abstraction::gltf::EmissiveTriangle>,
-    blases: HashMap<K, vulkan_abstraction::BLAS>,
+    blases: HashMap<K, vulkan_abstraction::Blas>,
     /// Key → slot in `meshes_info`.
     mesh_info_slots: HashMap<K, u32>,
     /// Key → slots of the BLAS's triangles in `blas_emissive_triangles`.
@@ -96,7 +96,7 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         // Temporary one-element buffer for the initial empty TLAS build (the
         // build is synchronous, so dropping it right after is fine). Per-frame
         // instance buffers are created by the renderer each frame.
-        let mut empty_instances_buffer = vulkan_abstraction::StagingBuffer::<vk::AccelerationStructureInstanceKHR>::new(
+        let empty_instances_buffer = vulkan_abstraction::StagingBuffer::<vk::AccelerationStructureInstanceKHR>::new(
             Rc::clone(&core),
             1,
             vk::BufferUsageFlags::STORAGE_BUFFER
@@ -105,7 +105,8 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
             "empty TLAS build instances",
         )?;
 
-        let tlas = vulkan_abstraction::TLAS::new(Rc::clone(&core), &[], &mut empty_instances_buffer)?;
+        // Build over 0 instances (the dummy buffer just keeps the build input non-null).
+        let tlas = vulkan_abstraction::Tlas::new(Rc::clone(&core), &empty_instances_buffer, 0)?;
 
         let default_sampler = vulkan_abstraction::Sampler::new(
             Rc::clone(&core),
@@ -237,38 +238,35 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         let no_emissive: Vec<u32> = Vec::new();
 
         for (key, instance_transforms) in instances {
-            let Some(blas) = self.blases.get(key) else {
+            // Validate the key is registered: `InstanceDesc::lower` resolves the
+            // BLAS address through `blas_device_address`, which would otherwise
+            // panic on an unknown key.
+            if !self.blases.contains_key(key) {
                 return Err(crate::error::SrError::new_custom(
                     "frame_instance_data: instance references a BLAS key that was never loaded".to_string(),
                 ));
-            };
+            }
             let mesh_info_slot = self.mesh_info_slots[key];
             let emissive_slots = self.emissive_triangle_slots.get(key).unwrap_or(&no_emissive);
-
-            let blas_device_handle = unsafe {
-                self.core
-                    .acceleration_structure_device()
-                    .get_acceleration_structure_device_address(
-                        &vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(blas.inner()),
-                    )
-            };
 
             for transform in instance_transforms {
                 let instance_index = transforms.len();
 
                 transforms.push(*transform);
 
-                as_instances.push(vk::AccelerationStructureInstanceKHR {
+                // Plain-data instance description; the BLAS device address is
+                // resolved late, inside `lower` (custom index = the BLAS's
+                // stable mesh-info slot; hit_group_offset = 0, same hit group
+                // for the whole scene; face culling disabled for simplicity).
+                let desc = vulkan_abstraction::InstanceDesc {
+                    blas: *key,
                     transform: *transform,
-                    instance_custom_index_and_mask: vk::Packed24_8::new(mesh_info_slot, 0xFF),
-                    instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-                        0, // hit_group_offset = 0, same hit group for the whole scene
-                        vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-                    ),
-                    acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                        device_handle: blas_device_handle,
-                    },
-                });
+                    custom_index: mesh_info_slot,
+                    mask: 0xFF,
+                    sbt_offset: 0,
+                    flags: vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE,
+                };
+                as_instances.push(desc.lower(self));
 
                 for &tri_slot in emissive_slots {
                     emissive_entries.push(vulkan_abstraction::gltf::EmissiveIndirectionEntry {
@@ -347,7 +345,7 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
     pub fn add_blas(
         &mut self,
         key: K,
-        blas: vulkan_abstraction::BLAS,
+        blas: vulkan_abstraction::Blas,
         material: Material,
         emissive_triangles: &[vulkan_abstraction::gltf::EmissiveTriangle],
     ) -> SrResult<()> {
@@ -430,7 +428,7 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
 
     // ─── Accessors for the heap-mode push constant ──────────────────────────
 
-    pub fn tlas(&self) -> &vulkan_abstraction::TLAS {
+    pub fn tlas(&self) -> &vulkan_abstraction::Tlas {
         &self.tlas
     }
 
@@ -454,5 +452,17 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
             self.schedule_at_frame(due, Self::flush_queued_copies);
         }
         self.buffer_copies_queued.push((src, dst, region));
+    }
+}
+
+// Key → address resolution, used by `InstanceDesc::lower` for late address
+// resolution. Kept off the `'static` impl so it stays callable from `lower`'s
+// non-`'static` bound.
+impl<K: Hash + Eq + Copy> ResourceManager<K> {
+    /// Cached device address of the BLAS registered under `key`, or `None` if no
+    /// BLAS is registered there. Resolves key → device address (not key →
+    /// handle), so a future handle-less cluster BLAS fits the same path.
+    pub(crate) fn blas_device_address(&self, key: K) -> Option<vk::DeviceAddress> {
+        self.blases.get(&key).map(|blas| blas.device_address())
     }
 }

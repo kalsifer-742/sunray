@@ -17,7 +17,7 @@ pub struct SceneData {
 /// `ResourceManager` uploads alongside it: the primitive's material and its
 /// local-space emissive triangles.
 pub struct LoadedBlas {
-    pub blas: vulkan_abstraction::BLAS,
+    pub blas: vulkan_abstraction::Blas,
     pub material: vulkan_abstraction::gltf::Material,
     pub emissive_triangles: Vec<vulkan_abstraction::gltf::EmissiveTriangle>,
 }
@@ -134,7 +134,7 @@ impl Scene {
                             Vec::new()
                         };
 
-                        let blas = vulkan_abstraction::BLAS::new(
+                        let blas = vulkan_abstraction::Blas::new(
                             core.clone(),
                             primitive_data.vertex_buffer,
                             primitive_data.index_buffer,

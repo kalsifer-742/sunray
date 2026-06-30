@@ -1,5 +1,5 @@
 use crate::render_graph::graph::{AnyRenderPass, PassResourceAccessType};
-use crate::vulkan_abstraction::acceleration_structure::RaytracingASDesc;
+use crate::vulkan_abstraction::acceleration_structure::ASDesc;
 use crate::vulkan_abstraction::buffer::BufferDesc;
 use crate::vulkan_abstraction::image::ImageDesc;
 use crate::vulkan_abstraction::image::sampler::SamplerDesc;
@@ -103,8 +103,8 @@ impl From<SamplerDesc> for GraphResourceDesc {
     }
 }
 
-impl From<RaytracingASDesc> for GraphResourceDesc {
-    fn from(val: RaytracingASDesc) -> Self {
+impl From<ASDesc> for GraphResourceDesc {
+    fn from(val: ASDesc) -> Self {
         GraphResourceDesc::RaytracingAS(val)
     }
 }
@@ -113,7 +113,7 @@ pub enum GraphResourceDesc {
     Image(ImageDesc),
     Buffer(BufferDesc),
     Sampler(SamplerDesc),
-    RaytracingAS(RaytracingASDesc),
+    RaytracingAS(ASDesc),
 }
 
 #[derive(EnumAsInner)]

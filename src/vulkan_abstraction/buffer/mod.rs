@@ -24,6 +24,7 @@ use crate::{error::*, vulkan_abstraction};
 use ash::vk;
 use ash::vk::{BufferUsageFlags, Handle};
 use std::cell::Cell;
+use std::fmt::{Debug, Formatter};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -86,7 +87,6 @@ pub trait HostAccessibleBuffer<T>: Buffer {
 
     fn len(&self) -> usize;
 }
-
 pub struct RawBuffer {
     core: Rc<vulkan_abstraction::Core>,
     buffer: vk::Buffer,
@@ -102,6 +102,8 @@ pub struct RawBuffer {
     /// `Drop` still destroys the `vk::Buffer` but skips `Allocator::free`.
     owns_memory: bool,
 }
+
+
 
 impl RawBuffer {
     /// Construct a buffer from a render-graph descriptor.
