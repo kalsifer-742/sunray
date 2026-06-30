@@ -40,6 +40,19 @@ pub struct BLAS {
     state: BlasState,
 }
 
+#[derive(Copy, Clone)]
+pub struct InstanceDesc {
+    pub blas: BlasKey,                    // existing resource-manager key, NOT a borrow or new id
+    pub transform: vk::TransformMatrixKHR,
+    pub custom_index: u32,               // → gl_InstanceCustomIndexEXT (was blas_instance_index)
+    pub mask: u8,
+    pub sbt_offset: u32,
+    pub flags: vk::GeometryInstanceFlagsKHR,
+    // pub partition: PartitionId,       // reserved for PTLAS
+}
+
+
+
 impl BLAS {
     /// the vertex_buffer is assumed to have a vec3 position attribute as its first (not necessarily the only) attribute in memory.
     /// Emissive triangles are no longer tracked here — the `ResourceManager` owns
@@ -65,7 +78,7 @@ impl BLAS {
         // there must be one build_range_info for each geometry
         let build_range_info = Self::make_build_range_info(&index_buffer);
 
-        let blas = vulkan_abstraction::AccelerationStructure::new(
+        let blas = vulkan_abstraction::AccelerationStructure::new_sync(
             core,
             vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
             &[build_range_info],
@@ -149,7 +162,7 @@ impl BLAS {
 
         let build_range_info = Self::make_build_range_info(&index_buffer);
 
-        self.blas.update(&[build_range_info], &[geometry])?;
+        self.blas.update_sync(&[build_range_info], &[geometry])?;
 
         Ok(())
     }

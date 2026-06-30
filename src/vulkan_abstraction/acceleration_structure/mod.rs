@@ -22,7 +22,16 @@ pub struct RaytracingASDesc {
 
 
 
+
+
 pub struct AccelerationStructure {
+    //TO Be pub struct AccelerationStructure {        // resource only
+    //     core: Rc<vulkan_abstraction::Core>,   // for Drop
+    //     handle: vk::AccelerationStructureKHR,
+    //     buffer: vulkan_abstraction::GpuOnlyBuffer,
+    //     device_address: vk::DeviceAddress,    // from vkGetAccelerationStructureDeviceAddressKHR
+    // }
+
     core: Rc<vulkan_abstraction::Core>,
     handle: vk::AccelerationStructureKHR,
     #[allow(dead_code)]
@@ -32,7 +41,7 @@ pub struct AccelerationStructure {
     number_of_geometries: usize,
 }
 impl AccelerationStructure {
-    pub fn new(
+    pub fn new_sync(
         core: Rc<vulkan_abstraction::Core>,
         level: vk::AccelerationStructureTypeKHR,
         build_range_infos: &[vk::AccelerationStructureBuildRangeInfoKHR],
@@ -195,7 +204,7 @@ impl AccelerationStructure {
     /// It seems to be better to update matrices/LODs in the TLAS and keep BLASes mostly static, unless we need
     /// fancy behaviour like dynamic deformation of meshes, and even then when the deformation is significant or
     /// unpredictable it is better to rebuild the BLAS for optimal rt performance
-    pub fn update(
+    pub fn update_sync(
         &mut self,
         build_range_infos: &[vk::AccelerationStructureBuildRangeInfoKHR],
         geometries: &[vk::AccelerationStructureGeometryKHR],
@@ -298,7 +307,7 @@ impl AccelerationStructure {
         geometries: &[vk::AccelerationStructureGeometryKHR],
         fast_build: bool,
     ) -> SrResult<()> {
-        *self = Self::new(
+        *self = Self::new_sync(
             Rc::clone(&self.core),
             self.level,
             build_range_infos,

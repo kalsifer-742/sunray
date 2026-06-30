@@ -48,6 +48,7 @@ pub struct AlignedAs<Align, Bytes: ?Sized> {
     pub bytes: Bytes,
 }
 
+#[macro_export]
 macro_rules! include_bytes_align_as {
     ($align_ty:ty, $path:expr) => {{
         // const block expression to encapsulate the static

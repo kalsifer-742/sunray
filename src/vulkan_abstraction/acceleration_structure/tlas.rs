@@ -29,7 +29,7 @@ impl TLAS {
 
         let build_range_info = Self::make_build_range_info(blas_instances.len() as u32);
 
-        let tlas = vulkan_abstraction::AccelerationStructure::new(
+        let tlas = vulkan_abstraction::AccelerationStructure::new_sync(
             core,
             vk::AccelerationStructureTypeKHR::TOP_LEVEL,
             &[build_range_info],
@@ -70,7 +70,7 @@ impl TLAS {
 
         let build_range_info = Self::make_build_range_info(blas_instances.len() as u32);
 
-        self.tlas.update(&[build_range_info], &[geometry])?;
+        self.tlas.update_sync(&[build_range_info], &[geometry])?;
 
         Ok(())
     }
