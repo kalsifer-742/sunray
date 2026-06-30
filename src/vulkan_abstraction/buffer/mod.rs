@@ -103,7 +103,20 @@ pub struct RawBuffer {
     owns_memory: bool,
 }
 
-
+// `RawBuffer` can't `#[derive(Debug)]`: its `core: Rc<Core>` field doesn't
+// implement `Debug` (and `Allocation` / the `Cell` slots aren't worth printing).
+// A hand-written impl lets `Debug` types that hold a `RawBuffer` (e.g.
+// `Arc<RawBuffer>` inside `TlasBuildDesc` / `ASDesc`) derive `Debug` normally.
+impl Debug for RawBuffer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawBuffer")
+            .field("buffer", &self.buffer)
+            .field("byte_size", &self.byte_size)
+            .field("usage", &self.usage)
+            .field("owns_memory", &self.owns_memory)
+            .finish_non_exhaustive()
+    }
+}
 
 impl RawBuffer {
     /// Construct a buffer from a render-graph descriptor.

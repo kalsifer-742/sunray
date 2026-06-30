@@ -1,10 +1,10 @@
-use std::rc::Rc;
-use std::sync::Arc;
 use crate::error::*;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
 use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, Buffer, RawBuffer};
 use ash::vk;
+use std::rc::Rc;
+use std::sync::Arc;
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
@@ -14,10 +14,10 @@ pub struct Tlas {
     slot: DescriptorSlot,
 }
 
-#[derive(Clone)]
-pub struct TlasBuildDesc{
+#[derive(Clone, Debug)]
+pub struct TlasBuildDesc {
     instances_buffer: Arc<RawBuffer>,
-    instance_count: u32
+    instance_count: u32,
 }
 
 impl Tlas {
@@ -79,20 +79,23 @@ impl Tlas {
     }
 
     /// External-command-buffer rebuild: record the build into `cmd_buf` instead
-    /// of submitting. Returns the **old** structure and the build scratch buffer
-    /// — both must be kept alive until `cmd_buf`'s submission completes, then
-    /// dropped. Not yet wired into the per-frame path.
+    /// of submitting. `scratch` follows [`AccelerationStructure::record_build`]
+    /// (`None` allocates internally and returns it; `Some(buf)` uses the
+    /// caller's scratch and returns `None`). Returns the **old** structure plus
+    /// the (optional) owned scratch — both must be kept alive until `cmd_buf`'s
+    /// submission completes, then dropped. Not yet wired into the per-frame path.
     #[allow(unused)]
     pub fn record_rebuild(
         &mut self,
         cmd_buf: vk::CommandBuffer,
         instance_count: u32,
         instances_buffer: &impl Buffer,
-    ) -> SrResult<(AccelerationStructure, vulkan_abstraction::GpuOnlyBuffer)> {
+        scratch: Option<&vulkan_abstraction::GpuOnlyBuffer>,
+    ) -> SrResult<(AccelerationStructure, Option<vulkan_abstraction::GpuOnlyBuffer>)> {
         let geometry = Self::make_geometry(instances_buffer);
         let build_range_info = Self::make_build_range_info(instance_count);
 
-        let (accel, scratch) = AccelerationStructure::record_build(
+        let (accel, owned_scratch) = AccelerationStructure::record_build(
             Rc::clone(self.accel.core()),
             cmd_buf,
             &AsBuildInputs {
@@ -101,13 +104,14 @@ impl Tlas {
                 geometries: &[geometry],
                 ranges: &[build_range_info],
             },
+            scratch,
         )?;
 
         let old = std::mem::replace(&mut self.accel, accel);
         // The new structure's address is valid at create time, so the slot can
         // be re-pointed now even though the build hasn't executed yet.
         self.write_slot()?;
-        Ok((old, scratch))
+        Ok((old, owned_scratch))
     }
 
     /// Build flags for the TLAS — identical to the pre-rework

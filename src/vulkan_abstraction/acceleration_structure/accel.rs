@@ -14,9 +14,6 @@ pub struct AsBuildInputs<'a> {
     pub ranges: &'a [vk::AccelerationStructureBuildRangeInfoKHR],
 }
 
-//TODO there should be an option to give scratch buffers from outside
-
-
 /// A bare GPU acceleration-structure **resource**: just the handle, its backing
 /// buffer, and the device address. No build description and no rebuild policy —
 /// those belong to the owning wrapper ([`vulkan_abstraction::Blas`] /
@@ -33,14 +30,22 @@ pub struct AccelerationStructure {
 
 impl AccelerationStructure {
     /// Allocate the backing buffer, create the (unbuilt) handle, and record the
-    /// build of `inputs` into `cmd_buf`. Returns the resource **and the scratch
-    /// buffer**, which the caller must keep alive until `cmd_buf`'s submission
-    /// completes. Does not submit — the caller owns timing and queue.
+    /// build of `inputs` into `cmd_buf`. Does not submit — the caller owns timing
+    /// and queue.
+    ///
+    /// `scratch` chooses where the build scratch memory comes from:
+    /// - `None` — a throwaway scratch buffer is allocated internally and returned
+    ///   as `Some(buffer)`; the caller must keep it alive until `cmd_buf`'s
+    ///   submission completes.
+    /// - `Some(buf)` — `buf` is used as scratch (the caller owns it and keeps it
+    ///   alive); the returned scratch is `None`. `buf` must be at least
+    ///   `build_scratch_size` bytes and satisfy the scratch offset alignment.
     pub fn record_build(
         core: Rc<vulkan_abstraction::Core>,
         cmd_buf: vk::CommandBuffer,
         inputs: &AsBuildInputs,
-    ) -> SrResult<(Self, vulkan_abstraction::GpuOnlyBuffer)> {
+        scratch: Option<&vulkan_abstraction::GpuOnlyBuffer>,
+    ) -> SrResult<(Self, Option<vulkan_abstraction::GpuOnlyBuffer>)> {
         assert_eq!(inputs.geometries.len(), inputs.ranges.len());
 
         // Parameters used first to size the allocations; the real build info
@@ -65,21 +70,37 @@ impl AccelerationStructure {
 
         let (handle, buffer, device_address) = Self::create_backed(&core, inputs.ty, size_info.acceleration_structure_size)?;
 
-        // Scratch buffer; discardable once the build has executed.
-        let scratch_buffer = vulkan_abstraction::GpuOnlyBuffer::new_aligned::<u8>(
-            Rc::clone(&core),
-            size_info.build_scratch_size,
-            core.device()
-                .acceleration_structure_properties()
-                .min_acceleration_structure_scratch_offset_alignment as u64,
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
-            "acceleration structure build scratch buffer",
-        )?;
+        // Scratch memory: either a caller-supplied buffer, or a throwaway one we
+        // allocate here and hand back (discardable once the build has executed).
+        let (scratch_address, owned_scratch) = match scratch {
+            Some(external) => {
+                debug_assert!(
+                    external.byte_size() >= size_info.build_scratch_size,
+                    "external scratch buffer too small: {} < required {}",
+                    external.byte_size(),
+                    size_info.build_scratch_size,
+                );
+                (external.get_device_address(), None)
+            }
+            None => {
+                let scratch_buffer = vulkan_abstraction::GpuOnlyBuffer::new_aligned::<u8>(
+                    Rc::clone(&core),
+                    size_info.build_scratch_size,
+                    core.device()
+                        .acceleration_structure_properties()
+                        .min_acceleration_structure_scratch_offset_alignment as u64,
+                    vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
+                    "acceleration structure build scratch buffer",
+                )?;
+                let address = scratch_buffer.get_device_address();
+                (address, Some(scratch_buffer))
+            }
+        };
 
         let build_geometry_info = incomplete_build_geometry_info
             .dst_acceleration_structure(handle)
             .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: scratch_buffer.get_device_address(),
+                device_address: scratch_address,
             });
 
         unsafe {
@@ -97,7 +118,7 @@ impl AccelerationStructure {
                 buffer,
                 device_address,
             },
-            scratch_buffer,
+            owned_scratch,
         ))
     }
 
@@ -113,9 +134,10 @@ impl AccelerationStructure {
             )?;
         }
 
-        // `_scratch` must outlive the submit (it does — dropped at end of scope,
-        // after `submit_sync` has waited for the build to finish).
-        let (accel, _scratch) = Self::record_build(Rc::clone(&core), cmd_buf, inputs)?;
+        // `_scratch` (the internally-allocated scratch) must outlive the submit —
+        // it does, dropped at end of scope after `submit_sync` has waited for the
+        // build to finish.
+        let (accel, _scratch) = Self::record_build(Rc::clone(&core), cmd_buf, inputs, None)?;
 
         unsafe { core.device().inner().end_command_buffer(cmd_buf)? }
 
