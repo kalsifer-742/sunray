@@ -1,4 +1,3 @@
-use crate::MAX_FRAMES_IN_FLIGHT;
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
 use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
@@ -11,11 +10,10 @@ use crate::vulkan_abstraction::{
     Buffer, CmdBuffer, ComputePipeline, Core, Fence, GraphicsPipeline, GraphicsPipelineShaders, HeapComputePass, Image, Pipeline,
     RawBuffer, RayTracingPipeline, RayTracingPipelineShaders, ShaderBindingTable,
 };
+use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
-use petgraph::Graph;
-use petgraph::graph::EdgeIndex;
 use petgraph::visit::{EdgeRef, IntoNeighbors};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;

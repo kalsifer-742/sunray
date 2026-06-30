@@ -13,6 +13,7 @@ use ash::vk;
 // TODO: implement drop
 pub struct TLAS {
     tlas: vulkan_abstraction::AccelerationStructure,
+    //TODO always give slot
     slot: Cell<Option<DescriptorSlot>>,
 }
 
@@ -222,6 +223,7 @@ impl TLAS {
 
 impl Drop for TLAS {
     fn drop(&mut self) {
+        
         if let Some(s) = self.slot.get() {
             self.tlas.core().descriptor_heap_mut().free(s);
         }

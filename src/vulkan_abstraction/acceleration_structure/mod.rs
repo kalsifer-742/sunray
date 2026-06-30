@@ -10,6 +10,18 @@ use crate::vulkan_abstraction::Buffer;
 use crate::{error::*, vulkan_abstraction};
 use ash::vk;
 
+
+#[derive(Clone, Debug)]
+pub struct RaytracingASDesc {
+    allow_update : bool ,
+
+    //TODO missing impl
+}
+
+
+
+
+
 pub struct AccelerationStructure {
     core: Rc<vulkan_abstraction::Core>,
     handle: vk::AccelerationStructureKHR,
@@ -316,7 +328,4 @@ impl Drop for AccelerationStructure {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct RaytracingASDesc {
-    //TODO missing impl
-}
+
