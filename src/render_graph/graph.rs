@@ -1,16 +1,19 @@
+use crate::MAX_FRAMES_IN_FLIGHT;
 use crate::error::{SrError, SrResult};
 use crate::render_graph::error::GraphError;
-use crate::render_graph::pass_builder::{ComputeRenderPass, RasterRenderPass, RaytracingRenderPass};
+use crate::render_graph::pass_builder::{
+    ComputeRenderPass, PassCommonDataBuilder, RasterRenderPass, RaytracingRenderPass, TransferPass, TransferPassBuilder,
+};
 pub(crate) use crate::render_graph::resource::{
     GraphResourceDesc, GraphResourceImportInfo, GraphResourceInfo, Handle, Resource, ResourceDesc, RgImportable,
 };
 use crate::render_graph::transient_resources::TransientResources;
 use crate::vulkan_abstraction::image::ImageDesc;
 use crate::vulkan_abstraction::{
-    Buffer, CmdBuffer, ComputePipeline, Core, Fence, GraphicsPipeline, GraphicsPipelineShaders, HeapComputePass, Image, Pipeline,
-    RawBuffer, RayTracingPipeline, RayTracingPipelineShaders, ShaderBindingTable,
+    ASDesc, AccelerationStructure, AsBuildJob, CmdBuffer, ComputePipeline, Core, Fence, GpuOnlyBuffer, GraphicsPipeline,
+    GraphicsPipelineShaders, HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders,
+    ShaderBindingTable, TlasBuildDesc,
 };
-use crate::MAX_FRAMES_IN_FLIGHT;
 use ash::vk;
 use petgraph::visit::{EdgeRef, IntoNeighbors};
 use std::collections::{BTreeMap, HashMap};
@@ -36,6 +39,7 @@ pub(super) enum AnyRenderPass {
     Rt(RaytracingRenderPass),
     Raster(RasterRenderPass),
     Compute(ComputeRenderPass),
+    Transfer(TransferPass),
 }
 
 /// Lightweight reference to a pipeline interned in the graph's [`PipelineCache`].
@@ -499,8 +503,86 @@ impl RenderGraph {
         }
     }
 
+    /// Import an existing acceleration structure as a graph resource, so a build
+    /// pass can declare a write on it and later passes (the TLAS build reading its
+    /// BLASes, the RT pass reading the TLAS) a read — letting `compile` order the
+    /// AS builds against their consumers and emit the barrier itself. The graph
+    /// only tracks synchronization for the AS; the shader still reaches it by
+    /// device address (baked into the push constant). `initial_access` is the
+    /// access the structure is left in from the previous frame (`Nothing` if
+    /// freshly created), used to seed the cross-frame init barrier.
+    pub fn import_acceleration_structure(
+        &mut self,
+        accel: Arc<AccelerationStructure>,
+        initial_access: vk_sync::AccessType,
+    ) -> Handle<AccelerationStructure> {
+        let id = self.next_resource_id();
+        self.virtual_resources
+            .push(GraphResourceInfo::Imported(GraphResourceImportInfo::RayTracingAcceleration {
+                resource: accel,
+                access_type: initial_access,
+            }));
+        Handle {
+            // Placeholder desc: never consulted for imports (AS is imported by Arc),
+            // only carried for `Handle` typing. See `resource::ASDesc`.
+            desc: ASDesc::Tlas(TlasBuildDesc {
+                instances_address: 0,
+                instance_count: 0,
+            }),
+            id,
+            marker: PhantomData,
+        }
+    }
+
     pub fn add_render_pass(&mut self, render_pass: impl Into<AnyRenderPass>) {
         self.passes.push(render_pass.into())
+    }
+
+    /// Add a pass that records a deferred acceleration-structure build/update
+    /// ([`AsBuildJob`]) into the graph's command buffer. The pass declares a write
+    /// on `build_target` (so consumers — the TLAS build, the RT trace — are ordered
+    /// after it) and a read on each of `deps` (a TLAS build reads the BLASes it
+    /// references, so their builds are ordered before it). Scratch is allocated
+    /// here, sized from the job, and kept alive by the pass closure until the next
+    /// `reset` (past this frame's fence). See `ResourceManager::queue_*`.
+    pub fn add_as_build_pass(
+        &mut self,
+        name: &str,
+        build_target: &Handle<AccelerationStructure>,
+        deps: &[Handle<AccelerationStructure>],
+        job: AsBuildJob,
+    ) -> SrResult<()> {
+        let scratch = GpuOnlyBuffer::new_aligned::<u8>(
+            Rc::clone(&self.core),
+            job.scratch_size,
+            job.scratch_alignment,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
+            "render graph AS build scratch",
+        )?;
+
+        let mut common = PassCommonDataBuilder::new(self, name);
+        common.write(build_target, vk_sync::AccessType::AccelerationStructureBuildWrite)?;
+        for dep in deps {
+            common.read(dep, vk_sync::AccessType::AccelerationStructureBuildRead)?;
+        }
+
+        // The job is `FnOnce`; the render closure is `FnMut`, so take it out on the
+        // first (only) invocation. `scratch` is owned by the closure and outlives
+        // the submission (dropped at the next `reset`, guarded by the frame fence).
+        let mut job = Some(job);
+        common.render(move |cb, _tr| {
+            if let Some(job) = job.take() {
+                job.record(*cb, &scratch);
+            }
+            Ok(())
+        });
+
+        let pass = TransferPassBuilder::default()
+            .common(common.build())
+            .build()
+            .map_err(|e| SrError::new_custom(format!("AS build pass builder failed: {e}")))?;
+        self.add_render_pass(pass);
+        Ok(())
     }
 
     /// The graph's cached `Core`. Pass builders use this so callers no longer
@@ -611,6 +693,7 @@ impl RenderGraph {
                 AnyRenderPass::Rt(rt) => &rt.common,
                 AnyRenderPass::Raster(raster) => &raster.common,
                 AnyRenderPass::Compute(compute) => &compute.common,
+                AnyRenderPass::Transfer(transfer) => &transfer.common,
             };
 
             for read in &common.read {
@@ -780,6 +863,32 @@ impl RenderGraph {
                 });
             }
         }
+
+        // Cross-frame init barriers for *imported* resources that come into this
+        // frame carrying a non-`Nothing` access (the state the previous frame's
+        // submission left them in, threaded back in by the caller — e.g. a TLAS an
+        // in-place update inherits as `RayTracingShaderReadAccelerationStructure`).
+        // The hazard graph only orders passes *within* this compile, so without
+        // this a resource whose first in-graph use conflicts with its prior-frame
+        // access (a build writing a just-traced TLAS) would be unsynchronized. This
+        // is what lets the caller drop the device-wide idle wait between frames.
+        for (res_id, usage) in &resource_usages {
+            let prev_access = match self.virtual_resources.get(*res_id as usize) {
+                Some(GraphResourceInfo::Imported(import)) => imported_initial_access(import),
+                _ => continue,
+            };
+            if prev_access == vk_sync::AccessType::Nothing {
+                continue;
+            }
+            if let Some((_, first_access)) = usage.usages.first() {
+                init_barriers.push(ResourceBarrier {
+                    resource_id: *res_id,
+                    prev_access,
+                    next_access: first_access.access_type,
+                });
+            }
+        }
+
         if !init_barriers.is_empty() {
             self.transient_resources.emit_barriers(&device, raw_cb, &init_barriers);
         }
@@ -799,6 +908,7 @@ impl RenderGraph {
                 AnyRenderPass::Rt(rt) => &mut rt.common,
                 AnyRenderPass::Raster(raster) => &mut raster.common,
                 AnyRenderPass::Compute(compute) => &mut compute.common,
+                AnyRenderPass::Transfer(transfer) => &mut transfer.common,
             };
             if let Some(render) = common.render.as_mut() {
                 let mut cb_handle = raw_cb;
@@ -842,6 +952,19 @@ impl RenderGraph {
             .graphics_queue()
             .submit_async(self.cmd_buffer.inner(), wait_semaphores, wait_stages, &[], fence_handle)?;
         Ok(())
+    }
+}
+
+/// The access an imported resource carries coming into a compile: the state the
+/// previous frame's submission left it in, threaded back by the caller through the
+/// import's `access_type`. Used to seed cross-frame init barriers (see `compile`).
+/// Samplers and swapchain images carry no meaningful cross-frame access.
+fn imported_initial_access(import: &GraphResourceImportInfo) -> vk_sync::AccessType {
+    match import {
+        GraphResourceImportInfo::Image { access_type, .. } => *access_type,
+        GraphResourceImportInfo::Buffer { access_type, .. } => *access_type,
+        GraphResourceImportInfo::RayTracingAcceleration { access_type, .. } => *access_type,
+        GraphResourceImportInfo::Sampler { .. } | GraphResourceImportInfo::SwapchainImage { .. } => vk_sync::AccessType::Nothing,
     }
 }
 

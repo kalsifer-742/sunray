@@ -4,9 +4,12 @@ use std::rc::Rc;
 
 use ash::vk;
 
+use crate::render_graph::graph::RenderGraph;
+use crate::render_graph::resource::Handle;
 use crate::vulkan_abstraction::image::sampler::SamplerDesc;
-use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, Material};
+use crate::vulkan_abstraction::{AccelerationStructure, ArenaBuffer, AsBuildJob, Buffer, EntityGpuData, Material};
 use crate::{error::SrResult, vulkan_abstraction};
+use vk_sync_fork as vk_sync;
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
@@ -65,6 +68,18 @@ pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
     //     free callbacks should key off GPU completion (the frame timeline)
     //     rather than the CPU-side frame counter + the renderer's wait-idle.
     start_of_frame_callbacks: Vec<(u64, FrameCallback<K>)>,
+    /// Deferred work keyed by the absolute frame whose GPU work must have
+    /// completed before it runs (see [`Self::end_of_frame`]). Used to fold a
+    /// recorded AS build's [`OpType`](vulkan_abstraction::OpType) back into its
+    /// heuristic state once the build has finished on the GPU — the render graph
+    /// records the build but can't mutate this CPU-side wrapper state.
+    end_of_frame_callbacks: Vec<(u64, FrameCallback<K>)>,
+    /// BLAS build jobs produced by [`vulkan_abstraction::Blas::new_deferred`] at
+    /// asset-load time, waiting to be recorded into the next frame's graph by
+    /// [`Self::queue_blas_builds`]. Each entry's BLAS is already registered in
+    /// `blases` (so its device address is valid); only the build recording is
+    /// pending.
+    pending_blas_builds: Vec<(K, AsBuildJob)>,
 
     core: Rc<vulkan_abstraction::Core>,
 }
@@ -139,6 +154,8 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
 
             buffer_copies_queued: vec![],
             start_of_frame_callbacks: vec![],
+            end_of_frame_callbacks: vec![],
+            pending_blas_builds: vec![],
             core,
         })
     }
@@ -165,6 +182,30 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         while i < self.start_of_frame_callbacks.len() {
             if self.start_of_frame_callbacks[i].0 <= upcoming_frame {
                 let (_, callback) = self.start_of_frame_callbacks.remove(i);
+                callback(self)?;
+            } else {
+                i += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Schedule `callback` to run once frame `frame`'s GPU work has completed (via
+    /// [`Self::end_of_frame`]). Used for AS-build state fold-ins that must observe
+    /// GPU completion.
+    fn schedule_end_of_frame(&mut self, frame: u64, callback: impl FnOnce(&mut Self) -> SrResult<()> + 'static) {
+        self.end_of_frame_callbacks.push((frame, Box::new(callback)));
+    }
+
+    /// Run the deferred end-of-frame work whose frame the caller reports complete
+    /// on the GPU (`completed_frame` = the highest absolute frame known finished).
+    /// This is where a recorded AS build's [`OpType`](vulkan_abstraction::OpType)
+    /// is folded back into its heuristic state (`Blas`/`Tlas::mark_built`).
+    pub fn end_of_frame(&mut self, completed_frame: u64) -> SrResult<()> {
+        let mut i = 0;
+        while i < self.end_of_frame_callbacks.len() {
+            if self.end_of_frame_callbacks[i].0 <= completed_frame {
+                let (_, callback) = self.end_of_frame_callbacks.remove(i);
                 callback(self)?;
             } else {
                 i += 1;
@@ -293,8 +334,88 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
 
     /// Rebuild the TLAS from instances already written into `instances_buffer`
     /// (the renderer's frame-local buffer). Synchronous.
+    #[allow(dead_code)]
     pub fn rebuild_tlas(&mut self, instance_count: u32, instances_buffer: &impl Buffer) -> SrResult<()> {
         self.tlas.rebuild_from_buffer(instance_count, instances_buffer)
+    }
+
+    // ─── Render-graph AS build queuing ───────────────────────────────────────
+
+    /// Stash a deferred BLAS build job (from [`vulkan_abstraction::Blas::new_deferred`])
+    /// to be recorded into the next frame's graph by [`Self::queue_blas_builds`].
+    /// The BLAS must already be registered via [`Self::add_blas`].
+    pub fn queue_blas_build_job(&mut self, key: K, job: AsBuildJob) {
+        self.pending_blas_builds.push((key, job));
+    }
+
+    /// Record every pending BLAS build (from `new_deferred` at load time) into
+    /// `rg` as a build pass — importing each BLAS so the TLAS build orders itself
+    /// after them — and re-evaluate the rebuild/update heuristic for any built
+    /// BLAS with no operation in flight. Returns the imported handles of the
+    /// BLASes built this frame; pass them to [`Self::queue_tlas_build`] as its
+    /// dependencies. Each build's `mark_built` is scheduled for the end of `frame`.
+    pub fn queue_blas_builds(&mut self, rg: &mut RenderGraph, frame: u64) -> SrResult<Vec<Handle<AccelerationStructure>>> {
+        let mut deps = Vec::new();
+
+        // 1. Pending initial builds. Their `op` was set by `new_deferred`; record
+        //    the job now and fold the op in once this frame completes.
+        let pending = std::mem::take(&mut self.pending_blas_builds);
+        for (key, job) in pending {
+            let Some(blas) = self.blases.get(&key) else {
+                // Removed before its build could be recorded — drop the job.
+                continue;
+            };
+            let handle = rg.import_acceleration_structure(blas.accel_arc(), vk_sync::AccessType::Nothing);
+            rg.add_as_build_pass("blas_build", &handle, &[], job)?;
+            deps.push(handle);
+            self.schedule_end_of_frame(frame, move |rm| {
+                if let Some(blas) = rm.blases.get_mut(&key) {
+                    blas.mark_built();
+                }
+                Ok(())
+            });
+        }
+
+        // 2. Steady-state heuristic for BLASes with nothing in flight. The renderer
+        //    doesn't track per-BLAS geometry mutation yet (its meshes are static
+        //    once loaded), so `inputs_changed = false` and `plan_op` yields `None`
+        //    — nothing is queued. This loop is the seam a future animated/skinned
+        //    mesh path drives an update/rebuild through.
+        for blas in self.blases.values_mut() {
+            if blas.op().is_none() {
+                let _ = blas.plan_op(false);
+            }
+        }
+
+        Ok(deps)
+    }
+
+    /// Record the TLAS build/update for this frame into `rg` (see
+    /// [`vulkan_abstraction::Tlas::queue_build`] for the update-vs-rebuild choice),
+    /// importing the structure so the build pass writes it, the BLAS builds in
+    /// `blas_deps` are ordered before it, and the RT pass can declare a read after
+    /// it. Returns the imported handle (for the RT pass's read) and the TLAS device
+    /// address (for the RT push constant). Schedules the TLAS `mark_built` for the
+    /// end of `frame`.
+    pub fn queue_tlas_build(
+        &mut self,
+        rg: &mut RenderGraph,
+        frame: u64,
+        instance_count: u32,
+        instances_buffer: &impl Buffer,
+        blas_deps: &[Handle<AccelerationStructure>],
+    ) -> SrResult<(Handle<AccelerationStructure>, vk::DeviceAddress)> {
+        let (accel, address, job, initial_access) = self.tlas.queue_build(instance_count, instances_buffer)?;
+        // `initial_access` carries the previous frame's end state (a trace read for
+        // an in-place update, `Nothing` for a fresh rebuild), so `compile` emits the
+        // cross-frame read→build barrier itself instead of relying on a device wait.
+        let handle = rg.import_acceleration_structure(accel, initial_access);
+        rg.add_as_build_pass("tlas_build", &handle, blas_deps, job)?;
+        self.schedule_end_of_frame(frame, |rm| {
+            rm.tlas.mark_built();
+            Ok(())
+        });
+        Ok((handle, address))
     }
 
     // ─── Asset management ────────────────────────────────────────────────────
@@ -421,6 +542,19 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         }
     }
 
+    /// Remove `key`'s asset without a device-wide idle wait: the drop of the BLAS
+    /// / image objects is deferred to an end-of-frame callback scheduled far
+    /// enough out (`next_frame + MAX_FRAMES_IN_FLIGHT`) that no in-flight frame can
+    /// still reference them. The caller must stop passing `key` as an instance from
+    /// now on. The arena-slot frees are deferred internally by [`Self::remove`].
+    pub fn remove_deferred(&mut self, key: K) {
+        let due = self.next_frame() + crate::MAX_FRAMES_IN_FLIGHT as u64;
+        self.schedule_end_of_frame(due, move |rm| {
+            rm.remove(&key);
+            Ok(())
+        });
+    }
+
     /// Slot of the (deduplicated) sampler matching `desc`, creating it on first
     /// use. The sampler set only grows — samplers are never removed.
     fn sampler_slot(&mut self, desc: &SamplerDesc) -> SrResult<u32> {
@@ -435,6 +569,7 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
 
     // ─── Accessors for the heap-mode push constant ──────────────────────────
 
+    #[allow(dead_code)]
     pub fn tlas(&self) -> &vulkan_abstraction::Tlas {
         &self.tlas
     }

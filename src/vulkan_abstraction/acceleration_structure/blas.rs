@@ -1,5 +1,6 @@
 use std::hash::Hash;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::error::*;
 use crate::vulkan_abstraction;
@@ -118,7 +119,10 @@ pub struct BlasGeometry {
 /// the geometry buffers it was built from, its plain-data build description, and
 /// its rebuild-policy state.
 pub struct Blas {
-    accel: AccelerationStructure,
+    /// The resource, behind an `Arc` so the render graph can import it as the
+    /// build pass's write target (and the TLAS build's read) — see
+    /// [`Self::accel_arc`]. A rebuild swaps in a fresh `Arc`.
+    accel: Arc<AccelerationStructure>,
     geometry: BlasGeometry,
     desc: BlasDesc,
     #[allow(dead_code)]
@@ -171,7 +175,7 @@ impl Blas {
             flags,
         };
 
-        let accel = AccelerationStructure::build_sync(core, desc.realize())?;
+        let accel = Arc::new(AccelerationStructure::build_sync(core, desc.realize())?);
 
         Ok(Self {
             accel,
@@ -218,7 +222,7 @@ impl Blas {
 
         Ok((
             Self {
-                accel,
+                accel: Arc::new(accel),
                 geometry: BlasGeometry {
                     vertex_buffer,
                     index_buffer,
@@ -245,9 +249,15 @@ impl Blas {
     /// The operation the heuristic wants recorded this frame given whether the
     /// geometry changed (`None` = nothing to do). Stored into `self.op` so the
     /// matching [`Self::mark_built`] can fold it back in on completion.
-    #[allow(dead_code)]
     pub fn plan_op(&mut self, inputs_changed: bool) -> Option<OpType> {
         self.op = self.state.next_op(inputs_changed);
+        self.op
+    }
+
+    /// The build op currently in flight (recorded but not yet observed complete),
+    /// or `None` when idle. Used to skip BLASes mid-build when re-evaluating the
+    /// heuristic. See [`Self::plan_op`] / [`Self::mark_built`].
+    pub fn op(&self) -> Option<OpType> {
         self.op
     }
 
@@ -310,7 +320,14 @@ impl Blas {
     /// The underlying resource — pass `blas.accel()` to
     /// [`CompactionQueryPool::cmd_reset_and_query`].
     pub fn accel(&self) -> &AccelerationStructure {
-        &self.accel
+        self.accel.as_ref()
+    }
+
+    /// An `Arc` clone of the underlying resource, for importing into the render
+    /// graph as this BLAS build's write target (see
+    /// `ResourceManager::queue_blas_builds`).
+    pub fn accel_arc(&self) -> Arc<AccelerationStructure> {
+        Arc::clone(&self.accel)
     }
 
     /// Record a COMPACT copy into a minimum-sized buffer and swap it in,
@@ -322,7 +339,7 @@ impl Blas {
         &mut self,
         cmd_buf: vk::CommandBuffer,
         compacted_size: vk::DeviceSize,
-    ) -> SrResult<AccelerationStructure> {
+    ) -> SrResult<Arc<AccelerationStructure>> {
         if !self
             .desc
             .flags
@@ -336,7 +353,7 @@ impl Blas {
         let compacted =
             self.accel
                 .record_compact_copy(cmd_buf, vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL, compacted_size)?;
-        Ok(std::mem::replace(&mut self.accel, compacted))
+        Ok(std::mem::replace(&mut self.accel, Arc::new(compacted)))
     }
 
     /// Convenience: run the whole query → copy compaction round-trip
@@ -367,7 +384,7 @@ impl Blas {
                 &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
         }
-        pool.cmd_reset_and_query(query_cmd, &[&self.accel]);
+        pool.cmd_reset_and_query(query_cmd, &[self.accel.as_ref()]);
         unsafe { core.device().inner().end_command_buffer(query_cmd)? }
         core.graphics_queue().submit_sync(query_cmd)?;
         unsafe {

@@ -9,9 +9,11 @@ pub use compaction::*;
 pub use tlas::*;
 
 /// Render-graph resource description for an imported acceleration structure.
-/// (The graph's AS path is forward-looking scaffolding — see
-/// `render_graph::transient_resources`.)
-#[derive(Debug)]
+/// Used only as the phantom `Desc` carried by a `Handle<AccelerationStructure>`
+/// for typing — the graph imports the AS by `Arc`, so this description is never
+/// consulted for imports (transient AS creation is unimplemented). Kept plain
+/// (`Clone`) so a handle is cheap to clone.
+#[derive(Debug, Clone)]
 pub enum ASDesc {
     Blas(BlasDesc),
     Tlas(TlasBuildDesc),

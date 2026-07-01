@@ -127,3 +127,22 @@ pub trait RgImportable<ResDesc: ResourceDesc> {
     //TODO do I want to take ownership of the data?
     fn import(&self) -> ResDesc;
 }
+
+impl Resource for AccelerationStructure {
+    type Desc = ASDesc;
+
+    fn borrow_resource(res: &AnyRenderResource) -> &Self {
+        match res {
+            AnyRenderResource::ImportedRayTracingAcceleration(arc) => arc.as_ref(),
+            _ => panic!("borrow_resource::<AccelerationStructure> called on a non-AS AnyRenderResource variant"),
+        }
+    }
+}
+
+// The description is only ever the phantom `Desc` on a `Handle` — AS resources are
+// imported by `Arc` (see `RenderGraph::import_acceleration_structure`), never
+// created transiently, so `Into<GraphResourceDesc>` (used only for created
+// resources) is never actually exercised for an AS.
+impl ResourceDesc for ASDesc {
+    type Resource = AccelerationStructure;
+}

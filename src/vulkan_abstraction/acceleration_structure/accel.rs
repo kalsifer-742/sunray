@@ -204,8 +204,13 @@ impl AccelerationStructure {
     /// `ALLOW_UPDATE` and the geometry layout must match the original build (see
     /// the Vulkan spec restrictions). The handle/address is unchanged (an update
     /// mutates in place), so nothing about `self` needs to be swapped afterwards.
+    ///
+    /// Takes `&self` (not `&mut self`): an in-place UPDATE mutates the GPU-side
+    /// structure but touches none of this wrapper's Rust fields, so it stays
+    /// callable through a shared `Arc<AccelerationStructure>` (the graph holds one
+    /// while the update job is in flight).
     #[allow(dead_code)]
-    pub fn update(&mut self, inputs: AsBuildInputs) -> SrResult<AsBuildJob> {
+    pub fn update(&self, inputs: AsBuildInputs) -> SrResult<AsBuildJob> {
         assert_eq!(inputs.geometries.len(), inputs.ranges.len());
         let AsBuildInputs {
             ty,
@@ -272,9 +277,10 @@ impl AccelerationStructure {
     }
 
     /// Convenience synchronous in-place UPDATE on the graphics queue. Runs the
-    /// deferred [`Self::update`] job on a throwaway command buffer.
+    /// deferred [`Self::update`] job on a throwaway command buffer. `&self` for the
+    /// same reason as [`Self::update`].
     #[allow(dead_code)]
-    pub fn update_sync(&mut self, inputs: AsBuildInputs) -> SrResult<()> {
+    pub fn update_sync(&self, inputs: AsBuildInputs) -> SrResult<()> {
         let job = self.update(inputs)?;
 
         let scratch = vulkan_abstraction::GpuOnlyBuffer::new_aligned::<u8>(

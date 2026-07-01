@@ -168,6 +168,12 @@ impl From<ComputeRenderPass> for AnyRenderPass {
     }
 }
 
+impl From<TransferPass> for AnyRenderPass {
+    fn from(val: TransferPass) -> Self {
+        AnyRenderPass::Transfer(val)
+    }
+}
+
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 pub(crate) struct RaytracingRenderPass {
@@ -465,6 +471,13 @@ pub(crate) struct ComputeRenderPass {
     /// `ComputeRenderPassBuilder::generate_render`.
     #[builder(setter(strip_option), default)]
     pub(super) shaders: Option<ComputeShaders>,
+}
+
+#[derive(Builder)]
+#[builder(pattern = "owned")]
+/// This is an explicit way to map operations to delegate to the dma controller
+pub(crate) struct TransferPass {
+    pub(super) common: PassCommonData,
 }
 
 /// The shaders backing a single compute pass. Instead of carrying the entry

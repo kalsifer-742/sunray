@@ -2,30 +2,41 @@ use crate::error::*;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::acceleration_structure::{AsState, BuildType, OpType};
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
-use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, RawBuffer};
+use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer};
 use ash::vk;
 use std::rc::Rc;
+use std::sync::Arc;
+use vk_sync_fork as vk_sync;
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
 
 pub struct Tlas {
-    accel: AccelerationStructure,
+    /// The live structure, held behind an `Arc` so the render graph can import it
+    /// (as a synchronization resource) while a build/update job writes it — see
+    /// [`Self::queue_build`]. A rebuild swaps in a fresh `Arc`; an in-place update
+    /// keeps the same one.
+    accel: Arc<AccelerationStructure>,
     slot: DescriptorSlot,
     build_type: BuildType,
+    /// Instance count the current structure was last built/updated for. An
+    /// in-place UPDATE requires the count to be unchanged, so a change forces a
+    /// rebuild (see [`Self::queue_build`]).
+    last_count: u32,
     /// Shared rebuild-vs-update heuristic state (see [`AsState`]).
-    #[allow(dead_code)]
     state: AsState,
     /// The build op currently in flight (recorded but not yet observed complete),
     /// folded back into `state` by [`Self::mark_built`]. `None` == nothing pending.
-    #[allow(dead_code)]
     op: Option<OpType>,
 }
 
-#[derive(Debug)]
+/// Plain-data description of a TLAS build (instances buffer address + count). No
+/// handles, no lifetimes — carried only as the phantom `Desc` on a
+/// `Handle<AccelerationStructure>` (see [`super::ASDesc`]).
+#[derive(Debug, Clone)]
 pub struct TlasBuildDesc {
-    instances_buffer: RawBuffer,
-    instance_count: u32,
+    pub instances_address: vk::DeviceAddress,
+    pub instance_count: u32,
 }
 
 impl Tlas {
@@ -37,10 +48,10 @@ impl Tlas {
         instance_count: u32,
         build_type: BuildType,
     ) -> SrResult<Self> {
-        let accel = AccelerationStructure::build_sync(
+        let accel = Arc::new(AccelerationStructure::build_sync(
             Rc::clone(&core),
             Self::make_inputs(instances_buffer, instance_count, build_type),
-        )?;
+        )?);
 
         let slot = {
             let mut heap = core.descriptor_heap_mut();
@@ -53,6 +64,7 @@ impl Tlas {
             accel,
             slot,
             build_type,
+            last_count: instance_count,
             // Built synchronously here — no op is in flight for `mark_built` to observe.
             state: AsState::initial(build_type),
             op: None,
@@ -89,7 +101,8 @@ impl Tlas {
             Self::make_inputs(instances_buffer, instance_count, self.build_type),
         )?;
 
-        self.accel = accel;
+        self.accel = Arc::new(accel);
+        self.last_count = instance_count;
         // A rebuild yields a new handle/address — re-point the heap slot so it
         // never goes stale (harmless to the live RT path, which reads
         // `device_address()` fresh as a push constant, but correct for any
@@ -119,39 +132,76 @@ impl Tlas {
         Ok(())
     }
 
-    /// **Deferred** rebuild for the render graph. Eagerly create the new TLAS
-    /// (its device address is valid immediately, so it can be baked into this
-    /// frame's push constants) and return it together with the [`AsBuildJob`] the
-    /// graph records into its command buffer. Does **not** mutate `self`: the new
-    /// structure is not the live one until [`Self::commit_rebuild`] installs it.
+    /// **Deferred** build/update for the render graph — the entry point
+    /// `ResourceManager::queue_tlas_build` records into the graph this frame.
     ///
-    /// The caller keeps the returned structure and the scratch it feeds the job
-    /// alive until the job's submission completes, then calls `commit_rebuild`
-    /// (from an end-of-frame closure) to swap it in.
-    #[allow(unused)]
-    pub fn prepare_rebuild(
-        &self,
+    /// Picks the operation with the shared heuristic ([`AsState::next_op`]): the
+    /// per-frame instances buffer is always freshly written, so the inputs are
+    /// treated as changed, and the choice is between an in-place UPDATE and a full
+    /// (fast) rebuild. A change in `instance_count` (or a non-`ALLOW_UPDATE` build
+    /// type) forces a rebuild, since an UPDATE requires the same instance layout.
+    ///
+    /// On UPDATE the same structure is kept (handle/address unchanged); on a
+    /// rebuild a fresh structure is swapped into `self.accel` **now** (its address
+    /// is valid immediately, so it can be baked into this frame's push constants)
+    /// and the heap slot is re-pointed. Returns:
+    ///   - an `Arc` clone of the live structure for the graph to import as the
+    ///     build pass's write target (and the RT pass's read),
+    ///   - its device address (for the RT push constant), and
+    ///   - the [`AsBuildJob`] the graph records into its command buffer.
+    ///
+    /// `self.op` is set to the operation actually chosen; the caller folds it back
+    /// in with [`Self::mark_built`] from an end-of-frame closure once the job's
+    /// submission has completed.
+    ///
+    /// The returned [`vk_sync::AccessType`] is the access the imported structure is
+    /// in coming into this frame — `RayTracingShaderReadAccelerationStructure` for
+    /// an in-place UPDATE (the previous frame's trace read this same structure, so
+    /// the graph emits a read→build barrier), or `Nothing` for a rebuild (a fresh
+    /// structure with no prior GPU access). The caller passes it to
+    /// `RenderGraph::import_acceleration_structure`.
+    pub fn queue_build(
+        &mut self,
         instance_count: u32,
         instances_buffer: &impl Buffer,
-    ) -> SrResult<(AccelerationStructure, AsBuildJob)> {
-        AccelerationStructure::build(
-            Rc::clone(self.accel.core()),
-            Self::make_inputs(instances_buffer, instance_count, self.build_type),
-        )
-    }
+    ) -> SrResult<(Arc<AccelerationStructure>, vk::DeviceAddress, AsBuildJob, vk_sync::AccessType)> {
+        let updatable = Self::build_flags(self.build_type).contains(vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE);
+        let can_update = updatable && instance_count == self.last_count;
 
-    /// Install a structure produced by [`Self::prepare_rebuild`] as the live TLAS
-    /// once its build has completed on the GPU: swap it in, re-point the heap slot
-    /// at its address, and return the **old** structure for the caller to drop
-    /// (deferred past the fence that guarded the previous frame). The graph can't
-    /// perform this CPU-side swap itself, so it runs in an end-of-frame closure.
-    #[allow(unused)]
-    pub fn commit_rebuild(&mut self, built: AccelerationStructure) -> SrResult<AccelerationStructure> {
-        let old = std::mem::replace(&mut self.accel, built);
-        // The new structure's address is valid at create time, so re-pointing the
-        // slot here (after its build completed) never goes stale.
-        self.write_slot()?;
-        Ok(old)
+        // `inputs_changed = true`: a fresh instances buffer every frame. With that,
+        // `next_op` never returns `SlowBuild`/`None`, so this resolves to Update
+        // (when permitted) or FastBuild (heuristic churn cap, or a forced rebuild).
+        let op = match self.state.next_op(true) {
+            Some(OpType::Update) if can_update => OpType::Update,
+            Some(OpType::Update) => OpType::FastBuild,
+            Some(other) => other,
+            None if can_update => OpType::Update,
+            None => OpType::FastBuild,
+        };
+
+        let inputs = Self::make_inputs(instances_buffer, instance_count, self.build_type);
+        let (job, initial_access) = match op {
+            // An UPDATE keeps the same structure the previous frame's trace read, so
+            // it comes in already accessed — the graph barriers read→build.
+            OpType::Update => (
+                self.accel.update(inputs)?,
+                vk_sync::AccessType::RayTracingShaderReadAccelerationStructure,
+            ),
+            OpType::FastBuild | OpType::SlowBuild => {
+                let (new_accel, job) = AccelerationStructure::build(Rc::clone(self.accel.core()), inputs)?;
+                // Previous-frame's graph import of the old structure was dropped by
+                // `RenderGraph::reset`, and its submission has completed, so swapping
+                // (and dropping the old `Arc`) here is safe.
+                self.accel = Arc::new(new_accel);
+                self.last_count = instance_count;
+                self.write_slot()?;
+                // A fresh structure has never been accessed on the GPU.
+                (job, vk_sync::AccessType::Nothing)
+            }
+        };
+
+        self.op = Some(op);
+        Ok((Arc::clone(&self.accel), self.accel.device_address(), job, initial_access))
     }
 
     /// Map a [`BuildType`] to its Vulkan build flags. `SometimesChanges`

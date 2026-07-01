@@ -181,11 +181,11 @@ pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
     //these are ordered,the u64 is the absolute frame on which to execute and the actual callback
     start_of_frame_callbacks: Vec<(u64, Box<dyn FnOnce()>)>,
     /// Persistent (FnMut) callbacks invoked on every `resize`.
-    resize_callbacks: Vec<Box<dyn FnMut((u32,u32))>>,
+    resize_callbacks: Vec<Box<dyn FnMut((u32, u32))>>,
     /// Run on the render thread once the tagged frame has *completed on the
     /// GPU* (per `completed_frame`). The per-frame CpuToGpu buffers `render`
     /// creates are deallocated through here.
-    end_of_frame_callbacks: Vec<(u64, Box<dyn FnOnce()>)>,
+    end_of_frame_callbacks: Vec<(u64, Box<dyn FnOnce(&mut Renderer<K>)>)>,
 }
 
 /// Per-frame GPU inputs of the unified graph that live in frame-local buffers
@@ -526,13 +526,13 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     /// on the GPU* (per the frame timeline). This is the deferred-deallocation
     /// hook: dropping a GPU resource inside the callback is safe because the
     /// frame that used it is provably done.
-    pub fn add_end_of_frame_callback(&mut self, callback: impl FnOnce() + 'static) {
+    pub fn add_end_of_frame_callback(&mut self, callback: impl FnOnce(&mut Renderer<K>) + 'static) {
         let next_frame = *self.core.absolute_frame_count.borrow() as u64 + 1;
         self.end_of_frame_callbacks.push((next_frame, Box::new(callback)));
     }
 
     /// Register a persistent callback invoked on every [`Self::resize`].
-    pub fn add_resize_callback(&mut self, callback: impl FnMut((u32,u32)) + 'static) {
+    pub fn add_resize_callback(&mut self, callback: impl FnMut((u32, u32)) + 'static) {
         self.resize_callbacks.push(Box::new(callback));
     }
 
@@ -558,7 +558,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         while i < self.end_of_frame_callbacks.len() {
             if self.end_of_frame_callbacks[i].0 <= completed {
                 let (_, callback) = self.end_of_frame_callbacks.remove(i);
-                callback();
+                callback(self);
             } else {
                 i += 1;
             }
@@ -909,7 +909,16 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
         let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), vertices)?;
         let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data(Rc::clone(&self.core), indices)?;
-        let blas = vulkan_abstraction::Blas::new(Rc::clone(&self.core), vertex_buffer, index_buffer, vulkan_abstraction::BuildType::Static)?;
+        // Deferred build: the BLAS resource (and its device address) exists now, so
+        // instances can reference it immediately, but the actual
+        // `vkCmdBuildAccelerationStructures` is recorded into the next frame's render
+        // graph by `ResourceManager::queue_blas_builds`. No GPU wait needed to add it.
+        let (blas, build_job) = vulkan_abstraction::Blas::new_deferred(
+            Rc::clone(&self.core),
+            vertex_buffer,
+            index_buffer,
+            vulkan_abstraction::BuildType::Static,
+        )?;
 
         // No image set accompanies a runtime mesh: every texture reference
         // resolves to "absent" (NULL slots ignored by the shader).
@@ -921,16 +930,22 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         };
         let gpu_material = vulkan_abstraction::Material::new(material, &resolve);
 
-        self.resource_manager.add_blas(key, blas, gpu_material, &emissive_triangles)
+        self.resource_manager.add_blas(key, blas, gpu_material, &emissive_triangles)?;
+        // Stash the build job for the next frame's graph to record.
+        self.resource_manager.queue_blas_build_job(key, build_job);
+        Ok(())
     }
 
     /// Free the runtime-loaded mesh registered under `key` by [`Self::load_mesh`].
     /// Instances referencing the key must no longer be passed to `render`.
-    //TODO defer the BLAS drop through an end-of-frame callback (tagged with the
-    //     current frame) instead of waiting the whole device idle.
+    ///
+    /// The BLAS drop is deferred through the resource manager's end-of-frame
+    /// callback (tagged `next_frame + MAX_FRAMES_IN_FLIGHT`), so no device-wide idle
+    /// wait is needed — the callback fires once the frame timeline proves every
+    /// in-flight frame that could reference it has completed on the GPU (see
+    /// [`Self::render`]'s `resource_manager.end_of_frame` drain).
     pub fn unload_mesh(&mut self, key: &K) -> SrResult<()> {
-        unsafe { self.core.device().inner().device_wait_idle() }?;
-        self.resource_manager.remove(key);
+        self.resource_manager.remove_deferred(*key);
         Ok(())
     }
 
@@ -956,10 +971,22 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         self.run_start_of_frame_callbacks(upcoming_frame);
         self.run_due_end_of_frame_callbacks();
 
-        // Waiting for device idle serializes the per-frame work (TLAS rebuild,
-        // arena copy flush) against in-flight GPU work. Minimum viable fix —
-        // the frame-local buffers below don't need it (each frame gets fresh
-        // ones), but the TLAS and arena buffers are still shared across frames.
+        // Fold completed AS-build ops back into their heuristic state and run
+        // deferred asset removals for every frame the GPU has finished (the render
+        // graph records the builds but can't touch this CPU-side wrapper state).
+        let completed_frame = self.completed_frame.load(Ordering::Acquire);
+        self.resource_manager.end_of_frame(completed_frame)?;
+
+        // This wait now guards only the *out-of-graph* arena copy flush that
+        // `start_of_frame` runs (its own synchronous submit into the meshes-info /
+        // emissive arenas, which in-flight frames' RT passes read): without it that
+        // copy could race an in-flight read. It is a no-op on steady frames (the
+        // flush only submits after an asset load). The TLAS/BLAS builds no longer
+        // need it — they're recorded into the graph below and ordered by barriers.
+        //TODO the last device-wide wait: fold the arena flush into a graph transfer
+        //     pass (ordered against the arena reads) and rotate N command
+        //     buffers/fences in the graph, then this wait can go and consecutive
+        //     frames can actually overlap on the GPU.
         unsafe {
             self.core.device().inner().device_wait_idle()?;
         }
@@ -1053,7 +1080,12 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             "per-frame emissive indirection",
         )?;
 
-        self.resource_manager.rebuild_tlas(instance_count, &instances_buffer)?;
+        // The TLAS build (and any pending BLAS builds) are no longer submitted
+        // synchronously here — they're recorded into the unified graph below by
+        // `queue_blas_builds` / `queue_tlas_build`, ordered against the RT trace by
+        // graph barriers. `instances_buffer` is read by the deferred TLAS build, so
+        // it must stay alive until the graph submission completes; the end-of-frame
+        // callback that frees it is already tagged with this frame.
 
         let frame_gpu_data = FrameGpuData {
             matrices_address: matrices_buffer.get_device_address(),
@@ -1081,24 +1113,35 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // accumulation, the 8 a-trous denoise passes, and postprocess. Every pass
         // is heap + Slang; the intermediate G-buffer / RT-output images are
         // graph-internal (transient) resources.
-        self.build_unified_graph(&postprocess_out, result_extent, &frame_gpu_data)?;
+        self.build_unified_graph(
+            &postprocess_out,
+            result_extent,
+            &frame_gpu_data,
+            instance_count,
+            &instances_buffer,
+        )?;
 
         // build_unified_graph advanced the absolute frame count: that's this
         // frame's number on the frame timeline.
         let frame_value = *self.core.absolute_frame_count.borrow() as u64;
         debug_assert_eq!(frame_value, upcoming_frame);
 
-        // The graph submission must wait on any pending transfer work (e.g. the
-        // TLAS build) before the RT pass runs.
+        // Any pending async transfer work the graph submission must wait on. The
+        // AS builds (TLAS + BLAS) are now recorded *inside* the graph and ordered
+        // against the RT trace by graph barriers, so they no longer contribute a
+        // wait here (this drains whatever other transfer producers may have queued;
+        // currently none).
         let wait_semaphores = self.core.transfer_semaphores_mut().drain(..).collect::<Vec<_>>();
         let wait_stages = wait_semaphores
             .iter()
             .map(|_| vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR)
             .collect::<Vec<_>>();
 
-        unsafe {
-            self.core.device().inner().device_wait_idle()?;
-        }
+        // No `device_wait_idle` here: the previous graph submission was already
+        // waited on via `render_graph_fence` before `build_unified_graph` (nothing
+        // is submitted between that wait and here), and this frame's cross-resource
+        // ordering — including the AS-build→trace hazard and the cross-frame TLAS
+        // read→build barrier — is expressed as graph barriers by `compile`.
         self.render_graph
             .run(&mut self.render_graph_fence, &wait_semaphores, &wait_stages)?;
         self.render_graph_fence.wait()?;
@@ -1128,7 +1171,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // done with this frame, then get dropped on the render thread.
         self.end_of_frame_callbacks.push((
             frame_value,
-            Box::new(move || {
+            Box::new(move |_renderer| {
                 drop(matrices_buffer);
                 drop(instances_buffer);
                 drop(transforms_buffer);
@@ -1257,6 +1300,8 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         postprocess_out: &Arc<vulkan_abstraction::Image>,
         extent: vk::Extent3D,
         frame_gpu_data: &FrameGpuData,
+        instance_count: u32,
+        instances_buffer: &impl vulkan_abstraction::Buffer,
     ) -> SrResult<()> {
         let frame_count = self.relative_frame_count;
         let width = extent.width;
@@ -1273,8 +1318,11 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // emissive indirection slots) from this frame's local buffers. The five
         // RT-output image slots are filled inside the closure from the graph's
         // transient resources (they're created per frame).
-        let rt_pc_base = vulkan_abstraction::RaytracingHeapPushConstant {
-            tlas: self.resource_manager.tlas().device_address(),
+        // `tlas` is filled below with the address returned by `queue_tlas_build`
+        // (a rebuild yields a fresh structure with a new address); 0 here is a
+        // placeholder that is always overwritten before the RT passes are added.
+        let mut rt_pc_base = vulkan_abstraction::RaytracingHeapPushConstant {
+            tlas: 0,
             matrices: frame_gpu_data.matrices_address,
             meshes_info: pack(self.resource_manager.meshes_info_storage_slot()),
             emissive_triangles: pack(self.resource_manager.emissive_triangles_storage_slot()),
@@ -1343,6 +1391,20 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
         let rg = &mut self.render_graph;
         rg.reset();
+
+        // Record this frame's acceleration-structure builds into the graph before
+        // any consumer: pending BLAS builds first (so the TLAS build orders itself
+        // after them via graph read edges), then the TLAS build/update. The RT
+        // passes below declare a read on `tlas_h`, so `compile` emits the
+        // build→trace barrier itself — no separate synchronous AS submit. `frame`
+        // is this frame's absolute number (just incremented), tagging the
+        // end-of-frame `mark_built` fold-ins.
+        let frame = *self.core.absolute_frame_count.borrow() as u64;
+        let blas_deps = self.resource_manager.queue_blas_builds(rg, frame)?;
+        let (tlas_h, tlas_address) =
+            self.resource_manager
+                .queue_tlas_build(rg, frame, instance_count, instances_buffer, &blas_deps)?;
+        rt_pc_base.tlas = tlas_address;
 
         let mk_img = |format: vk::Format, usage: vk::ImageUsageFlags, name: &'static str| ImageDesc {
             extent,
@@ -1421,6 +1483,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             diffuse_h.clone(),
             motion_h.clone(),
             reservoir_handles.clone(),
+            tlas_h.clone(),
             extent,
         )?;
         Self::add_raytracing_final_pass(
@@ -1433,6 +1496,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             diffuse_h.clone(),
             motion_h.clone(),
             reservoir_handles,
+            tlas_h,
             extent,
         )?;
 
@@ -1532,6 +1596,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         diffuse_h: Handle<vulkan_abstraction::Image>,
         motion_h: Handle<vulkan_abstraction::Image>,
         reservoir_handles: [Handle<vulkan_abstraction::RawBuffer>; 4],
+        tlas_h: Handle<vulkan_abstraction::AccelerationStructure>,
         extent: vk::Extent3D,
     ) -> SrResult<()> {
         let mut common = PassCommonDataBuilder::new(rg, "raytracing_ris");
@@ -1542,6 +1607,11 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         common.write(&normal_h, vk_sync::AccessType::General)?;
         common.write(&diffuse_h, vk_sync::AccessType::General)?;
         common.write(&motion_h, vk_sync::AccessType::General)?;
+        // Read the TLAS: this read against the TLAS build pass's write is the graph
+        // edge that becomes the AS-build→trace barrier (so the build is complete
+        // before the trace reads it). The shader reaches the TLAS by device address
+        // (baked into `pc_base.tlas`); this only governs synchronization.
+        common.read(&tlas_h, vk_sync::AccessType::RayTracingShaderReadAccelerationStructure)?;
         // Declare the reservoir SSBO writes so the graph orders the final pass's
         // reservoir reads after this pass (the RIS→final hand-off barrier).
         for h in &reservoir_handles {
@@ -1578,6 +1648,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         diffuse_h: Handle<vulkan_abstraction::Image>,
         motion_h: Handle<vulkan_abstraction::Image>,
         reservoir_handles: [Handle<vulkan_abstraction::RawBuffer>; 4],
+        tlas_h: Handle<vulkan_abstraction::AccelerationStructure>,
         extent: vk::Extent3D,
     ) -> SrResult<()> {
         let mut common = PassCommonDataBuilder::new(rg, "raytracing_final");
@@ -1588,6 +1659,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         common.write(&normal_h, vk_sync::AccessType::General)?;
         common.write(&diffuse_h, vk_sync::AccessType::General)?;
         common.write(&motion_h, vk_sync::AccessType::General)?;
+        // Read the TLAS (same as the RIS pass) so the AS build is ordered before
+        // this trace too; addressed by device address in the shader.
+        common.read(&tlas_h, vk_sync::AccessType::RayTracingShaderReadAccelerationStructure)?;
         // Read the reservoirs the RIS pass wrote — this read against the RIS pass's
         // declared writes is the graph edge that becomes the hand-off barrier.
         for h in &reservoir_handles {
@@ -1786,7 +1860,6 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         dst_image.get_raw_image_data_with_no_padding()
     }
 
-
     //TODO this needs to be reworked for a better integration with the graph or kept as default last pass
     fn cmd_blit_image(
         core: &vulkan_abstraction::Core,
@@ -1918,11 +1991,11 @@ impl<K: Hash + Eq + Copy + 'static> Drop for Renderer<K> {
                 _ => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
             },
         }
-
+        let callbacks   = std::mem::take(&mut self.end_of_frame_callbacks);
         // The queue is idle: every pending frame is complete, so all deferred
         // deallocation callbacks can run now.
-        for (_, callback) in self.end_of_frame_callbacks.drain(..) {
-            callback();
+        for (_, callback) in callbacks {
+            callback(self);
         }
     }
 }
