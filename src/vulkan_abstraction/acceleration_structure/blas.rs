@@ -99,19 +99,17 @@ impl BlasDesc {
     }
 }
 
-// ─── BLAS rebuild policy (dormant scaffolding — kept as-is) ───────────────────
-
 pub enum BlasState {
     Optimal,
+    Unbuilt,
     Changing(Dynamic),
 }
-
+/// This is a heuristic on the need to rebuild instead of updating.When it changes it goes into a fast rebuild or update and after N frames unchanged it goes into a slow rebuild. Also after n updates.
 pub struct Dynamic {
-    // when it changes it goes into a fast rebuild or update and after 30 frames unchanged it goes into a slow rebuild
     #[allow(dead_code)]
-    frame_since_last_update_or_fast_rebuild: u32,
+    frames_without_changes: u32,
     #[allow(dead_code)]
-    number_of_updates_and_fast_rebuilds: u32,
+    number_of_updates_since_last_rebuild: u32,
 }
 
 // ─── BLAS geometry ownership ──────────────────────────────────────────────────
@@ -136,6 +134,12 @@ pub struct Blas {
     state: BlasState,
 }
 
+pub enum BuildType{
+    RapidlyChanging,
+    SometimesChanging,
+    Static
+}
+
 impl Blas {
     /// the vertex_buffer is assumed to have a vec3 position attribute as its first (not necessarily the only) attribute in memory.
     /// Emissive triangles are no longer tracked here — the `ResourceManager` owns
@@ -144,14 +148,22 @@ impl Blas {
         core: Rc<vulkan_abstraction::Core>,
         vertex_buffer: VertexBuffer,
         index_buffer: IndexBuffer,
-        fast_build: bool,
+        build_type: BuildType,
     ) -> SrResult<Self> {
         // PREFER_FAST_BUILD -> prioritize build time; PREFER_FAST_TRACE ->
         // prioritize trace performance. Matches the pre-rework default flags.
-        let flags = if fast_build {
-            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
-        } else {
-            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+
+
+        let flags = match build_type {
+            BuildType::RapidlyChanging => {
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+            }
+            BuildType::SometimesChanging => {
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+            }
+            BuildType::Static => {
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION
+            }
         };
         Self::new_with_build_flags(core, vertex_buffer, index_buffer, flags)
     }
@@ -213,8 +225,8 @@ impl Blas {
     }
 
     #[allow(unused)]
-    pub fn rebuild(&mut self, vertex_buffer: VertexBuffer, index_buffer: IndexBuffer, fast_build: bool) -> SrResult<()> {
-        *self = Self::new(Rc::clone(self.accel.core()), vertex_buffer, index_buffer, fast_build)?;
+    pub fn rebuild(&mut self, vertex_buffer: VertexBuffer, index_buffer: IndexBuffer,  build_type: BuildType,) -> SrResult<()> {
+        *self = Self::new(Rc::clone(self.accel.core()), vertex_buffer, index_buffer, build_type)?;
         log::debug!("BLAS rebuilt");
         Ok(())
     }

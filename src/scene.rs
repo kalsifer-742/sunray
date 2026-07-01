@@ -138,7 +138,7 @@ impl Scene {
                             core.clone(),
                             primitive_data.vertex_buffer,
                             primitive_data.index_buffer,
-                            false,
+                            vulkan_abstraction::BuildType::Static,
                         )?;
 
                         blases.push(LoadedBlas {

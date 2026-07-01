@@ -909,7 +909,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
         let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), vertices)?;
         let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data(Rc::clone(&self.core), indices)?;
-        let blas = vulkan_abstraction::Blas::new(Rc::clone(&self.core), vertex_buffer, index_buffer, false)?;
+        let blas = vulkan_abstraction::Blas::new(Rc::clone(&self.core), vertex_buffer, index_buffer, vulkan_abstraction::BuildType::Static)?;
 
         // No image set accompanies a runtime mesh: every texture reference
         // resolves to "absent" (NULL slots ignored by the shader).
