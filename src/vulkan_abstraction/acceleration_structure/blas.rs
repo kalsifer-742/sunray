@@ -8,7 +8,8 @@ use crate::vulkan_abstraction::{
     AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, CompactionQueryPool, IndexBuffer, ResourceManager, VertexBuffer,
 };
 use ash::vk;
-use nalgebra::Dyn;
+
+use crate::vulkan_abstraction::acceleration_structure::{BuildType, OpType};
 // ─── Build description (plain data — no handles, no lifetimes) ────────────────
 
 /// A single triangle geometry, described purely by device addresses + formats +
@@ -98,14 +99,18 @@ impl BlasDesc {
         }
     }
 }
-type FastBuild = bool;
+
+
+
+#[derive(Copy, Clone, Debug)]
 
 pub enum BlasState {
     Optimal,
-    Unbuilt(FastBuild),
     Changing(Dynamic),
 }
+
 /// This is a heuristic on the need to rebuild instead of updating.When it changes it goes into a fast rebuild or update and after N frames unchanged it goes into a slow rebuild. Also after n updates.
+#[derive(Copy, Clone, Debug)]
 pub struct Dynamic {
     #[allow(dead_code)]
     frames_without_changes: u32,
@@ -142,12 +147,7 @@ pub struct Blas {
     desc: BlasDesc,
     #[allow(dead_code)]
     state: BlasState,
-}
-#[derive(Debug,Copy, Clone, PartialEq, Eq, Hash)]
-pub enum BuildType {
-    RapidlyChanging,
-    SometimesChanging,
-    Static,
+    op : Option<OpType>,
 }
 
 
@@ -172,7 +172,7 @@ impl Blas {
             BuildType::RapidlyChanging => {
                 vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
             }
-            BuildType::SometimesChanging => {
+            BuildType::SometimesChanges => {
                 vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
             }
             BuildType::Static => {
@@ -198,6 +198,7 @@ impl Blas {
 
         let accel = AccelerationStructure::build_sync(core, desc.realize())?;
 
+        
         Ok(Self {
             accel,
             geometry: BlasGeometry {
@@ -206,12 +207,13 @@ impl Blas {
             },
             desc,
             state: BlasState::Optimal,
+            op : Some(OpType::SlowBuild)
         })
     }
 
     /// **Deferred** build for the render graph: create the BLAS resource **now**
     /// (its device address is valid immediately, so instance data can reference
-    /// it) in the [`BlasState::Unbuilt`] state, and hand back the [`AsBuildJob`]
+    /// it) in the [`Op::Unbuilt`] state, and hand back the [`AsBuildJob`]
     /// for the graph to record into its command buffer. Call [`Self::mark_built`]
     /// from an end-of-frame closure — once the job's submission has completed —
     /// to flip the CPU-side state to built.
@@ -233,6 +235,13 @@ impl Blas {
 
         let (accel, job) = AccelerationStructure::build(core, desc.realize())?;
 
+        let (state, op) =  if build_type == BuildType::RapidlyChanging {
+           ( BlasState::Changing(Dynamic::new()) , Some(OpType::FastBuild))
+        }
+        else {
+            ( BlasState::Optimal , Some(OpType::SlowBuild))
+        };
+        
         Ok((
             Self {
                 accel,
@@ -241,25 +250,33 @@ impl Blas {
                     index_buffer,
                 },
                 desc,
-                state: BlasState::Unbuilt(build_type == BuildType::RapidlyChanging  ),
+                state,
+                op,
             },
             job,
         ))
     }
 
-    /// Flip a [`Self::new_deferred`] BLAS from [`BlasState::Unbuilt`] to
-    /// [`BlasState::Optimal`]. Run from an end-of-frame closure, after the build
+    /// Flip a [`Self::new_deferred`] BLAS from [`Op::Unbuilt`] to
+    /// [`Op::Optimal`]. Run from an end-of-frame closure, after the build
     /// job recorded into the graph has completed on the GPU — the graph itself
     /// can't mutate this CPU-side state, so the completion is observed here.
     #[allow(dead_code)]
     pub fn mark_built(&mut self) {
-        if let BlasState::Unbuilt(fast_build) = self.state {
-            if fast_build {
-                self.state = BlasState::Changing(Dynamic::new());
-            }
-            else {
-                self.state = BlasState::Optimal;
-            }
+        if let Bl::Unbuilt(op) = self.state {
+             match op {
+                OpType::SlowBuild => {
+                    self.state = Op::Optimal
+                }
+                OpType::FastBuild => {
+                        if let Op:: == self.state   { 
+                            
+                        }                    
+                }
+                OpType::Update => {
+                    
+                }
+            }  
         }
         else {
             unreachable!("You are marking built an unready built blas")
@@ -282,7 +299,7 @@ impl Blas {
         }
     }
 
-    pub fn state(&self) -> &BlasState {
+    pub fn state(&self) -> &Op {
         &self.state
     }
 

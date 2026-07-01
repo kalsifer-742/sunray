@@ -1785,6 +1785,8 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
         dst_image.get_raw_image_data_with_no_padding()
     }
+
+
     //TODO this needs to be reworked for a better integration with the graph or kept as default last pass
     fn cmd_blit_image(
         core: &vulkan_abstraction::Core,

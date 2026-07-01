@@ -16,3 +16,17 @@ pub enum ASDesc {
     Blas(BlasDesc),
     Tlas(TlasBuildDesc)
 }
+
+#[derive(Debug,Copy, Clone, PartialEq, Eq, Hash)]
+pub enum BuildType {
+    RapidlyChanging,
+    SometimesChanges,
+    Static,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum  OpType {
+    SlowBuild,
+    FastBuild,
+    Update
+}

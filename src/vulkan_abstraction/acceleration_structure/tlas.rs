@@ -1,10 +1,11 @@
 use crate::error::*;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
-use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, RawBuffer};
+use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, Dynamic, RawBuffer};
 use ash::vk;
 use std::rc::Rc;
 use std::sync::Arc;
+use crate::vulkan_abstraction::acceleration_structure::BuildType;
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
@@ -12,6 +13,7 @@ use std::sync::Arc;
 pub struct Tlas {
     accel: AccelerationStructure,
     slot: DescriptorSlot,
+    build_type: BuildType,
 }
 
 #[derive(Debug)]
@@ -20,11 +22,22 @@ pub struct TlasBuildDesc {
     instance_count: u32,
 }
 
+
+
+
 impl Tlas {
     /// Build a TLAS over the `instance_count` instances already written into
     /// `instances_buffer`
-    pub fn new(core: Rc<vulkan_abstraction::Core>, instances_buffer: &impl Buffer, instance_count: u32) -> SrResult<Self> {
-        let accel = AccelerationStructure::build_sync(Rc::clone(&core), Self::make_inputs(instances_buffer, instance_count))?;
+    pub fn new(
+        core: Rc<vulkan_abstraction::Core>,
+        instances_buffer: &impl Buffer,
+        instance_count: u32,
+        build_type: BuildType,
+    ) -> SrResult<Self> {
+        let accel = AccelerationStructure::build_sync(
+            Rc::clone(&core),
+            Self::make_inputs(instances_buffer, instance_count, build_type),
+        )?;
 
         let slot = {
             let mut heap = core.descriptor_heap_mut();
@@ -33,7 +46,7 @@ impl Tlas {
             slot
         };
 
-        Ok(Self { accel, slot })
+        Ok(Self { accel, slot, build_type })
     }
 
     /// Rebuild the TLAS from instances already written into `instances_buffer`
@@ -45,7 +58,7 @@ impl Tlas {
     pub fn rebuild_from_buffer(&mut self, instance_count: u32, instances_buffer: &impl Buffer) -> SrResult<()> {
         let accel = AccelerationStructure::build_sync(
             Rc::clone(self.accel.core()),
-            Self::make_inputs(instances_buffer, instance_count),
+            Self::make_inputs(instances_buffer, instance_count, self.build_type),
         )?;
 
         self.accel = accel;
@@ -56,6 +69,25 @@ impl Tlas {
         self.write_slot()?;
 
         log::debug!("TOP_LEVEL acceleration structure rebuilt");
+        Ok(())
+    }
+
+    /// In-place UPDATE of the TLAS from instances already written into
+    /// `instances_buffer` — same instance count / layout, new contents
+    /// (transforms, BLAS references). Requires the TLAS was built as
+    /// [`BuildType::Updatable`]. Mirrors `Blas::update`: cheaper than a full
+    /// rebuild and, since an UPDATE keeps the same handle/address, the heap slot
+    /// stays valid so no re-point is needed. Synchronous.
+    #[allow(unused)]
+    pub fn update(&mut self, instance_count: u32, instances_buffer: &impl Buffer) -> SrResult<()> {
+        if !Self::build_flags(self.build_type).contains(vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE) {
+            return Err(SrError::new_custom("The structure is not updatable".to_string()));
+        }
+
+        self.accel
+            .update_sync(Self::make_inputs(instances_buffer, instance_count, self.build_type))?;
+
+        log::debug!("TOP_LEVEL acceleration structure updated in place");
         Ok(())
     }
 
@@ -76,7 +108,7 @@ impl Tlas {
     ) -> SrResult<(AccelerationStructure, AsBuildJob)> {
         AccelerationStructure::build(
             Rc::clone(self.accel.core()),
-            Self::make_inputs(instances_buffer, instance_count),
+            Self::make_inputs(instances_buffer, instance_count, self.build_type),
         )
     }
 
@@ -94,10 +126,16 @@ impl Tlas {
         Ok(old)
     }
 
-    /// Build flags for the TLAS — identical to the pre-rework
-    /// `allow_update = true, fast_build = false` path.
-    fn build_flags() -> vk::BuildAccelerationStructureFlagsKHR {
-        vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+    /// Map a [`BuildType`] to its Vulkan build flags. `Updatable` reproduces
+    /// the pre-rework `allow_update = true, fast_build = false` path.
+    fn build_flags(build_type: BuildType) -> vk::BuildAccelerationStructureFlagsKHR {
+        match build_type {
+            BuildType::RapidlyChanging =>   vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE ,
+            BuildType::SometimesChanges => {
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+            }
+            BuildType::Static => vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+        }
     }
 
     /// (Re)write the current structure's device address into the heap slot.
@@ -111,10 +149,10 @@ impl Tlas {
     /// Realize the owned build inputs for a TLAS over `instance_count` instances
     /// in `instances_buffer`. The geometry stores only the buffer's device
     /// address, so the `'static` geometry struct borrows nothing.
-    fn make_inputs(instances_buffer: &impl Buffer, instance_count: u32) -> AsBuildInputs {
+    fn make_inputs(instances_buffer: &impl Buffer, instance_count: u32, build_type: BuildType) -> AsBuildInputs {
         AsBuildInputs {
             ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-            flags: Self::build_flags(),
+            flags: Self::build_flags(build_type),
             geometries: vec![Self::make_geometry(instances_buffer)],
             ranges: vec![Self::make_build_range_info(instance_count)],
         }

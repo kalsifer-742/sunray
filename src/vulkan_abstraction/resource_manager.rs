@@ -105,8 +105,14 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
             "empty TLAS build instances",
         )?;
 
-        // Build over 0 instances (the dummy buffer just keeps the build input non-null).
-        let tlas = vulkan_abstraction::Tlas::new(Rc::clone(&core), &empty_instances_buffer, 0)?;
+        // Build over 0 instances (the dummy buffer just keeps the build input
+        // non-null). `Updatable` == the pre-rework `PREFER_FAST_TRACE | ALLOW_UPDATE`.
+        let tlas = vulkan_abstraction::Tlas::new(
+            Rc::clone(&core),
+            &empty_instances_buffer,
+            0,
+            vulkan_abstraction::BuildType::SometimesChanges,
+        )?;
 
         let default_sampler = vulkan_abstraction::Sampler::new(
             Rc::clone(&core),
