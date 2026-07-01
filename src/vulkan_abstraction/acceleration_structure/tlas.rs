@@ -1,11 +1,10 @@
 use crate::error::*;
 use crate::vulkan_abstraction;
+use crate::vulkan_abstraction::acceleration_structure::{AsState, BuildType, OpType};
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
-use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, Dynamic, RawBuffer};
+use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, RawBuffer};
 use ash::vk;
 use std::rc::Rc;
-use std::sync::Arc;
-use crate::vulkan_abstraction::acceleration_structure::BuildType;
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
@@ -14,6 +13,13 @@ pub struct Tlas {
     accel: AccelerationStructure,
     slot: DescriptorSlot,
     build_type: BuildType,
+    /// Shared rebuild-vs-update heuristic state (see [`AsState`]).
+    #[allow(dead_code)]
+    state: AsState,
+    /// The build op currently in flight (recorded but not yet observed complete),
+    /// folded back into `state` by [`Self::mark_built`]. `None` == nothing pending.
+    #[allow(dead_code)]
+    op: Option<OpType>,
 }
 
 #[derive(Debug)]
@@ -21,9 +27,6 @@ pub struct TlasBuildDesc {
     instances_buffer: RawBuffer,
     instance_count: u32,
 }
-
-
-
 
 impl Tlas {
     /// Build a TLAS over the `instance_count` instances already written into
@@ -46,7 +49,32 @@ impl Tlas {
             slot
         };
 
-        Ok(Self { accel, slot, build_type })
+        Ok(Self {
+            accel,
+            slot,
+            build_type,
+            // Built synchronously here — no op is in flight for `mark_built` to observe.
+            state: AsState::initial(build_type),
+            op: None,
+        })
+    }
+
+    /// Fold the operation currently in flight back into the heuristic state and
+    /// clear it. Run once per frame from an end-of-frame closure after the
+    /// build/update job has completed on the GPU; `None` (an idle frame) advances
+    /// the settle counter. Mirrors [`Blas::mark_built`]. See [`AsState::mark_built`].
+    #[allow(dead_code)]
+    pub fn mark_built(&mut self) {
+        self.state.mark_built(self.op.take());
+    }
+
+    /// The operation the heuristic wants recorded this frame given whether the
+    /// instances changed (`None` = nothing to do), stored into `self.op` so the
+    /// matching [`Self::mark_built`] can fold it back in on completion.
+    #[allow(dead_code)]
+    pub fn plan_op(&mut self, inputs_changed: bool) -> Option<OpType> {
+        self.op = self.state.next_op(inputs_changed);
+        self.op
     }
 
     /// Rebuild the TLAS from instances already written into `instances_buffer`
@@ -74,10 +102,10 @@ impl Tlas {
 
     /// In-place UPDATE of the TLAS from instances already written into
     /// `instances_buffer` — same instance count / layout, new contents
-    /// (transforms, BLAS references). Requires the TLAS was built as
-    /// [`BuildType::Updatable`]. Mirrors `Blas::update`: cheaper than a full
-    /// rebuild and, since an UPDATE keeps the same handle/address, the heap slot
-    /// stays valid so no re-point is needed. Synchronous.
+    /// (transforms, BLAS references). Requires the TLAS was built with a
+    /// [`BuildType`] that sets `ALLOW_UPDATE`. Mirrors `Blas::update`: cheaper
+    /// than a full rebuild and, since an UPDATE keeps the same handle/address, the
+    /// heap slot stays valid so no re-point is needed. Synchronous.
     #[allow(unused)]
     pub fn update(&mut self, instance_count: u32, instances_buffer: &impl Buffer) -> SrResult<()> {
         if !Self::build_flags(self.build_type).contains(vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE) {
@@ -126,11 +154,13 @@ impl Tlas {
         Ok(old)
     }
 
-    /// Map a [`BuildType`] to its Vulkan build flags. `Updatable` reproduces
-    /// the pre-rework `allow_update = true, fast_build = false` path.
+    /// Map a [`BuildType`] to its Vulkan build flags. `SometimesChanges`
+    /// reproduces the pre-rework `allow_update = true, fast_build = false` path.
     fn build_flags(build_type: BuildType) -> vk::BuildAccelerationStructureFlagsKHR {
         match build_type {
-            BuildType::RapidlyChanging =>   vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE ,
+            BuildType::RapidlyChanging => {
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+            }
             BuildType::SometimesChanges => {
                 vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
             }

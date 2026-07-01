@@ -106,7 +106,8 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         )?;
 
         // Build over 0 instances (the dummy buffer just keeps the build input
-        // non-null). `Updatable` == the pre-rework `PREFER_FAST_TRACE | ALLOW_UPDATE`.
+        // non-null). `SometimesChanges` == the pre-rework
+        // `PREFER_FAST_TRACE | ALLOW_UPDATE` TLAS flags.
         let tlas = vulkan_abstraction::Tlas::new(
             Rc::clone(&core),
             &empty_instances_buffer,

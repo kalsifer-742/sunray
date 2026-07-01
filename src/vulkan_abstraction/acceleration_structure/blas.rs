@@ -1,15 +1,15 @@
-use std::cmp::PartialEq;
 use std::hash::Hash;
 use std::rc::Rc;
 
 use crate::error::*;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::{
-    AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, CompactionQueryPool, IndexBuffer, ResourceManager, VertexBuffer,
+    AccelerationStructure, AsBuildInputs, AsBuildJob, AsState, Buffer, CompactionQueryPool, IndexBuffer, ResourceManager,
+    VertexBuffer,
 };
 use ash::vk;
 
-use crate::vulkan_abstraction::acceleration_structure::{BuildType, OpType};
+use crate::vulkan_abstraction::acceleration_structure::{BuildType, Dynamic, OpType};
 // ─── Build description (plain data — no handles, no lifetimes) ────────────────
 
 /// A single triangle geometry, described purely by device addresses + formats +
@@ -100,32 +100,8 @@ impl BlasDesc {
     }
 }
 
-
-
-#[derive(Copy, Clone, Debug)]
-
-pub enum BlasState {
-    Optimal,
-    Changing(Dynamic),
-}
-
-/// This is a heuristic on the need to rebuild instead of updating.When it changes it goes into a fast rebuild or update and after N frames unchanged it goes into a slow rebuild. Also after n updates.
-#[derive(Copy, Clone, Debug)]
-pub struct Dynamic {
-    #[allow(dead_code)]
-    frames_without_changes: u32,
-    #[allow(dead_code)]
-    number_of_updates_since_last_rebuild: u32,
-}
-impl Dynamic{
-    fn new() -> Self{
-        Self{
-            frames_without_changes: 0,
-            number_of_updates_since_last_rebuild: 0,
-        }
-    }
-}
-
+// `Dynamic`, `AsState`, and `OpType` — the shared rebuild-vs-update heuristic —
+// live in this module's `mod.rs` so both `Blas` and `Tlas` use one state machine.
 
 // ─── BLAS geometry ownership ──────────────────────────────────────────────────
 
@@ -146,10 +122,9 @@ pub struct Blas {
     geometry: BlasGeometry,
     desc: BlasDesc,
     #[allow(dead_code)]
-    state: BlasState,
-    op : Option<OpType>,
+    state: AsState,
+    op: Option<OpType>,
 }
-
 
 impl Blas {
     /// the vertex_buffer is assumed to have a vec3 position attribute as its first (not necessarily the only) attribute in memory.
@@ -198,7 +173,6 @@ impl Blas {
 
         let accel = AccelerationStructure::build_sync(core, desc.realize())?;
 
-        
         Ok(Self {
             accel,
             geometry: BlasGeometry {
@@ -206,17 +180,18 @@ impl Blas {
                 index_buffer,
             },
             desc,
-            state: BlasState::Optimal,
-            op : Some(OpType::SlowBuild)
+            state: AsState::Optimal,
+            // Built synchronously here — no op is in flight for `mark_built` to observe.
+            op: None,
         })
     }
 
     /// **Deferred** build for the render graph: create the BLAS resource **now**
     /// (its device address is valid immediately, so instance data can reference
-    /// it) in the [`Op::Unbuilt`] state, and hand back the [`AsBuildJob`]
-    /// for the graph to record into its command buffer. Call [`Self::mark_built`]
-    /// from an end-of-frame closure — once the job's submission has completed —
-    /// to flip the CPU-side state to built.
+    /// it) with the initial build [`OpType`] in flight, and hand back the
+    /// [`AsBuildJob`] for the graph to record into its command buffer. Call
+    /// [`Self::mark_built`] from an end-of-frame closure — once the job's
+    /// submission has completed — to fold that op into the heuristic state.
     ///
     /// Mirrors [`Self::new`]'s flag selection; the only difference from the
     /// synchronous path is *who* records + submits the build.
@@ -235,13 +210,12 @@ impl Blas {
 
         let (accel, job) = AccelerationStructure::build(core, desc.realize())?;
 
-        let (state, op) =  if build_type == BuildType::RapidlyChanging {
-           ( BlasState::Changing(Dynamic::new()) , Some(OpType::FastBuild))
-        }
-        else {
-            ( BlasState::Optimal , Some(OpType::SlowBuild))
+        let (state, op) = if build_type == BuildType::RapidlyChanging {
+            (AsState::Changing(Dynamic::new()), Some(OpType::FastBuild))
+        } else {
+            (AsState::Optimal, Some(OpType::SlowBuild))
         };
-        
+
         Ok((
             Self {
                 accel,
@@ -257,30 +231,24 @@ impl Blas {
         ))
     }
 
-    /// Flip a [`Self::new_deferred`] BLAS from [`Op::Unbuilt`] to
-    /// [`Op::Optimal`]. Run from an end-of-frame closure, after the build
-    /// job recorded into the graph has completed on the GPU — the graph itself
-    /// can't mutate this CPU-side state, so the completion is observed here.
+    /// Fold the operation currently in flight (recorded into the graph) back into
+    /// the heuristic state, and clear it. Run once per frame from an end-of-frame
+    /// closure, after the build/update job has completed on the GPU — the graph
+    /// can't mutate this CPU-side state, so completion is observed here. When no
+    /// op is in flight (`self.op == None`, an idle frame) this advances the
+    /// frames-without-changes counter toward a settle. See [`AsState::mark_built`].
     #[allow(dead_code)]
     pub fn mark_built(&mut self) {
-        if let Bl::Unbuilt(op) = self.state {
-             match op {
-                OpType::SlowBuild => {
-                    self.state = Op::Optimal
-                }
-                OpType::FastBuild => {
-                        if let Op:: == self.state   { 
-                            
-                        }                    
-                }
-                OpType::Update => {
-                    
-                }
-            }  
-        }
-        else {
-            unreachable!("You are marking built an unready built blas")
-        }
+        self.state.mark_built(self.op.take());
+    }
+
+    /// The operation the heuristic wants recorded this frame given whether the
+    /// geometry changed (`None` = nothing to do). Stored into `self.op` so the
+    /// matching [`Self::mark_built`] can fold it back in on completion.
+    #[allow(dead_code)]
+    pub fn plan_op(&mut self, inputs_changed: bool) -> Option<OpType> {
+        self.op = self.state.next_op(inputs_changed);
+        self.op
     }
 
     /// Build a [`TriangleGeometryDesc`] from a vertex + index buffer, using the
@@ -299,7 +267,7 @@ impl Blas {
         }
     }
 
-    pub fn state(&self) -> &Op {
+    pub fn state(&self) -> &AsState {
         &self.state
     }
 
