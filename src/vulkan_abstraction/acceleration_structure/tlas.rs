@@ -1,7 +1,7 @@
 use crate::error::*;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescriptorKind};
-use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, Buffer, RawBuffer};
+use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, RawBuffer};
 use ash::vk;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -14,9 +14,9 @@ pub struct Tlas {
     slot: DescriptorSlot,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct TlasBuildDesc {
-    instances_buffer: Arc<RawBuffer>,
+    instances_buffer: RawBuffer,
     instance_count: u32,
 }
 
@@ -24,18 +24,7 @@ impl Tlas {
     /// Build a TLAS over the `instance_count` instances already written into
     /// `instances_buffer`
     pub fn new(core: Rc<vulkan_abstraction::Core>, instances_buffer: &impl Buffer, instance_count: u32) -> SrResult<Self> {
-        let geometry = Self::make_geometry(instances_buffer);
-        let build_range_info = Self::make_build_range_info(instance_count);
-
-        let accel = AccelerationStructure::build_sync(
-            Rc::clone(&core),
-            &AsBuildInputs {
-                ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-                flags: Self::build_flags(),
-                geometries: &[geometry],
-                ranges: &[build_range_info],
-            },
-        )?;
+        let accel = AccelerationStructure::build_sync(Rc::clone(&core), Self::make_inputs(instances_buffer, instance_count))?;
 
         let slot = {
             let mut heap = core.descriptor_heap_mut();
@@ -54,17 +43,9 @@ impl Tlas {
     /// The old structure is dropped immediately; the renderer waits for device
     /// idle before this, so no in-flight frame still references it.
     pub fn rebuild_from_buffer(&mut self, instance_count: u32, instances_buffer: &impl Buffer) -> SrResult<()> {
-        let geometry = Self::make_geometry(instances_buffer);
-        let build_range_info = Self::make_build_range_info(instance_count);
-
         let accel = AccelerationStructure::build_sync(
             Rc::clone(self.accel.core()),
-            &AsBuildInputs {
-                ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-                flags: Self::build_flags(),
-                geometries: &[geometry],
-                ranges: &[build_range_info],
-            },
+            Self::make_inputs(instances_buffer, instance_count),
         )?;
 
         self.accel = accel;
@@ -78,40 +59,39 @@ impl Tlas {
         Ok(())
     }
 
-    /// External-command-buffer rebuild: record the build into `cmd_buf` instead
-    /// of submitting. `scratch` follows [`AccelerationStructure::record_build`]
-    /// (`None` allocates internally and returns it; `Some(buf)` uses the
-    /// caller's scratch and returns `None`). Returns the **old** structure plus
-    /// the (optional) owned scratch — both must be kept alive until `cmd_buf`'s
-    /// submission completes, then dropped. Not yet wired into the per-frame path.
+    /// **Deferred** rebuild for the render graph. Eagerly create the new TLAS
+    /// (its device address is valid immediately, so it can be baked into this
+    /// frame's push constants) and return it together with the [`AsBuildJob`] the
+    /// graph records into its command buffer. Does **not** mutate `self`: the new
+    /// structure is not the live one until [`Self::commit_rebuild`] installs it.
+    ///
+    /// The caller keeps the returned structure and the scratch it feeds the job
+    /// alive until the job's submission completes, then calls `commit_rebuild`
+    /// (from an end-of-frame closure) to swap it in.
     #[allow(unused)]
-    pub fn record_rebuild(
-        &mut self,
-        cmd_buf: vk::CommandBuffer,
+    pub fn prepare_rebuild(
+        &self,
         instance_count: u32,
         instances_buffer: &impl Buffer,
-        scratch: Option<&vulkan_abstraction::GpuOnlyBuffer>,
-    ) -> SrResult<(AccelerationStructure, Option<vulkan_abstraction::GpuOnlyBuffer>)> {
-        let geometry = Self::make_geometry(instances_buffer);
-        let build_range_info = Self::make_build_range_info(instance_count);
-
-        let (accel, owned_scratch) = AccelerationStructure::record_build(
+    ) -> SrResult<(AccelerationStructure, AsBuildJob)> {
+        AccelerationStructure::build(
             Rc::clone(self.accel.core()),
-            cmd_buf,
-            &AsBuildInputs {
-                ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-                flags: Self::build_flags(),
-                geometries: &[geometry],
-                ranges: &[build_range_info],
-            },
-            scratch,
-        )?;
+            Self::make_inputs(instances_buffer, instance_count),
+        )
+    }
 
-        let old = std::mem::replace(&mut self.accel, accel);
-        // The new structure's address is valid at create time, so the slot can
-        // be re-pointed now even though the build hasn't executed yet.
+    /// Install a structure produced by [`Self::prepare_rebuild`] as the live TLAS
+    /// once its build has completed on the GPU: swap it in, re-point the heap slot
+    /// at its address, and return the **old** structure for the caller to drop
+    /// (deferred past the fence that guarded the previous frame). The graph can't
+    /// perform this CPU-side swap itself, so it runs in an end-of-frame closure.
+    #[allow(unused)]
+    pub fn commit_rebuild(&mut self, built: AccelerationStructure) -> SrResult<AccelerationStructure> {
+        let old = std::mem::replace(&mut self.accel, built);
+        // The new structure's address is valid at create time, so re-pointing the
+        // slot here (after its build completed) never goes stale.
         self.write_slot()?;
-        Ok((old, owned_scratch))
+        Ok(old)
     }
 
     /// Build flags for the TLAS — identical to the pre-rework
@@ -128,7 +108,19 @@ impl Tlas {
             .write_acceleration_structure(self.slot, self.accel.device_address())
     }
 
-    fn make_geometry(instances_buffer: &impl Buffer) -> vk::AccelerationStructureGeometryKHR<'_> {
+    /// Realize the owned build inputs for a TLAS over `instance_count` instances
+    /// in `instances_buffer`. The geometry stores only the buffer's device
+    /// address, so the `'static` geometry struct borrows nothing.
+    fn make_inputs(instances_buffer: &impl Buffer, instance_count: u32) -> AsBuildInputs {
+        AsBuildInputs {
+            ty: vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+            flags: Self::build_flags(),
+            geometries: vec![Self::make_geometry(instances_buffer)],
+            ranges: vec![Self::make_build_range_info(instance_count)],
+        }
+    }
+
+    fn make_geometry(instances_buffer: &impl Buffer) -> vk::AccelerationStructureGeometryKHR<'static> {
         vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::INSTANCES)
             .flags(vk::GeometryFlagsKHR::empty())

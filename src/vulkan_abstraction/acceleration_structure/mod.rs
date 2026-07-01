@@ -11,7 +11,7 @@ pub use tlas::*;
 /// Render-graph resource description for an imported acceleration structure.
 /// (The graph's AS path is forward-looking scaffolding — see
 /// `render_graph::transient_resources`.)
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ASDesc {
     Blas(BlasDesc),
     Tlas(TlasBuildDesc)

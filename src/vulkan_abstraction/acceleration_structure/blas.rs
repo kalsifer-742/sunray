@@ -1,13 +1,14 @@
+use std::cmp::PartialEq;
 use std::hash::Hash;
 use std::rc::Rc;
 
 use crate::error::*;
 use crate::vulkan_abstraction;
 use crate::vulkan_abstraction::{
-    AccelerationStructure, AsBuildInputs, Buffer, CompactionQueryPool, IndexBuffer, ResourceManager, VertexBuffer,
+    AccelerationStructure, AsBuildInputs, AsBuildJob, Buffer, CompactionQueryPool, IndexBuffer, ResourceManager, VertexBuffer,
 };
 use ash::vk;
-
+use nalgebra::Dyn;
 // ─── Build description (plain data — no handles, no lifetimes) ────────────────
 
 /// A single triangle geometry, described purely by device addresses + formats +
@@ -42,20 +43,14 @@ pub struct BlasDesc {
 }
 
 impl BlasDesc {
-    /// Realize this description into the transient geometry + range arrays an
-    /// [`AsBuildInputs`] needs. The arrays own no borrowed data (every field is
-    /// a device address / scalar), so they are `'static`. //TODO this is unsafe since it loses the lifetime of the original data
-    unsafe fn realize(
-        &self,
-    ) -> (
-        Vec<vk::AccelerationStructureGeometryKHR<'static>>,
-        Vec<vk::AccelerationStructureBuildRangeInfoKHR>,
-    ) {
+    /// Realize this description into an owned [`AsBuildInputs`]. Every field of
+    /// every geometry is a device address / scalar — no borrowed CPU memory — so
+    /// the `<'static>` geometry structs are honest (the address stays valid as
+    /// long as the buffer behind it lives, which the owning `Blas` guarantees).
+    fn realize(&self) -> AsBuildInputs {
         let mut geometries = Vec::with_capacity(self.geometries.len());
         let mut ranges = Vec::with_capacity(self.geometries.len());
-        
-      
-        
+
         for source in &self.geometries {
             match source {
                 GeometrySource::Triangles(tri) => {
@@ -95,13 +90,19 @@ impl BlasDesc {
             }
         }
 
-        (geometries, ranges)
+        AsBuildInputs {
+            ty: vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+            flags: self.flags,
+            geometries,
+            ranges,
+        }
     }
 }
+type FastBuild = bool;
 
 pub enum BlasState {
     Optimal,
-    Unbuilt,
+    Unbuilt(FastBuild),
     Changing(Dynamic),
 }
 /// This is a heuristic on the need to rebuild instead of updating.When it changes it goes into a fast rebuild or update and after N frames unchanged it goes into a slow rebuild. Also after n updates.
@@ -111,6 +112,15 @@ pub struct Dynamic {
     #[allow(dead_code)]
     number_of_updates_since_last_rebuild: u32,
 }
+impl Dynamic{
+    fn new() -> Self{
+        Self{
+            frames_without_changes: 0,
+            number_of_updates_since_last_rebuild: 0,
+        }
+    }
+}
+
 
 // ─── BLAS geometry ownership ──────────────────────────────────────────────────
 
@@ -133,12 +143,13 @@ pub struct Blas {
     #[allow(dead_code)]
     state: BlasState,
 }
-
-pub enum BuildType{
+#[derive(Debug,Copy, Clone, PartialEq, Eq, Hash)]
+pub enum BuildType {
     RapidlyChanging,
     SometimesChanging,
-    Static
+    Static,
 }
+
 
 impl Blas {
     /// the vertex_buffer is assumed to have a vec3 position attribute as its first (not necessarily the only) attribute in memory.
@@ -150,11 +161,14 @@ impl Blas {
         index_buffer: IndexBuffer,
         build_type: BuildType,
     ) -> SrResult<Self> {
-        // PREFER_FAST_BUILD -> prioritize build time; PREFER_FAST_TRACE ->
-        // prioritize trace performance. Matches the pre-rework default flags.
+        Self::new_with_build_flags(core, vertex_buffer, index_buffer, Self::build_flags(build_type))
+    }
 
-
-        let flags = match build_type {
+    /// Map a [`BuildType`] to its Vulkan build flags. PREFER_FAST_BUILD ->
+    /// prioritize build time; PREFER_FAST_TRACE -> prioritize trace performance.
+    /// Matches the pre-rework default flags.
+    fn build_flags(build_type: BuildType) -> vk::BuildAccelerationStructureFlagsKHR {
+        match build_type {
             BuildType::RapidlyChanging => {
                 vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
             }
@@ -162,10 +176,10 @@ impl Blas {
                 vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
             }
             BuildType::Static => {
-                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION
             }
-        };
-        Self::new_with_build_flags(core, vertex_buffer, index_buffer, flags)
+        }
     }
 
     /// Build a BLAS with an explicit set of build flags. Use this to opt into
@@ -182,16 +196,7 @@ impl Blas {
             flags,
         };
 
-        let (geometries, ranges) = unsafe { desc.realize() };
-        let accel = AccelerationStructure::build_sync(
-            core,
-            &AsBuildInputs {
-                ty: vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-                flags: desc.flags,
-                geometries: &geometries,
-                ranges: &ranges,
-            },
-        )?;
+        let accel = AccelerationStructure::build_sync(core, desc.realize())?;
 
         Ok(Self {
             accel,
@@ -202,6 +207,63 @@ impl Blas {
             desc,
             state: BlasState::Optimal,
         })
+    }
+
+    /// **Deferred** build for the render graph: create the BLAS resource **now**
+    /// (its device address is valid immediately, so instance data can reference
+    /// it) in the [`BlasState::Unbuilt`] state, and hand back the [`AsBuildJob`]
+    /// for the graph to record into its command buffer. Call [`Self::mark_built`]
+    /// from an end-of-frame closure — once the job's submission has completed —
+    /// to flip the CPU-side state to built.
+    ///
+    /// Mirrors [`Self::new`]'s flag selection; the only difference from the
+    /// synchronous path is *who* records + submits the build.
+    #[allow(dead_code)]
+    pub fn new_deferred(
+        core: Rc<vulkan_abstraction::Core>,
+        vertex_buffer: VertexBuffer,
+        index_buffer: IndexBuffer,
+        build_type: BuildType,
+    ) -> SrResult<(Self, AsBuildJob)> {
+        let flags = Self::build_flags(build_type);
+        let desc = BlasDesc {
+            geometries: vec![GeometrySource::Triangles(Self::triangle_desc(&vertex_buffer, &index_buffer))],
+            flags,
+        };
+
+        let (accel, job) = AccelerationStructure::build(core, desc.realize())?;
+
+        Ok((
+            Self {
+                accel,
+                geometry: BlasGeometry {
+                    vertex_buffer,
+                    index_buffer,
+                },
+                desc,
+                state: BlasState::Unbuilt(build_type == BuildType::RapidlyChanging  ),
+            },
+            job,
+        ))
+    }
+
+    /// Flip a [`Self::new_deferred`] BLAS from [`BlasState::Unbuilt`] to
+    /// [`BlasState::Optimal`]. Run from an end-of-frame closure, after the build
+    /// job recorded into the graph has completed on the GPU — the graph itself
+    /// can't mutate this CPU-side state, so the completion is observed here.
+    #[allow(dead_code)]
+    pub fn mark_built(&mut self) {
+        if let BlasState::Unbuilt(fast_build) = self.state {
+            if fast_build {
+                self.state = BlasState::Changing(Dynamic::new());
+            }
+            else {
+                self.state = BlasState::Optimal;
+            }
+        }
+        else {
+            unreachable!("You are marking built an unready built blas")
+        }
     }
 
     /// Build a [`TriangleGeometryDesc`] from a vertex + index buffer, using the
@@ -225,7 +287,7 @@ impl Blas {
     }
 
     #[allow(unused)]
-    pub fn rebuild(&mut self, vertex_buffer: VertexBuffer, index_buffer: IndexBuffer,  build_type: BuildType,) -> SrResult<()> {
+    pub fn rebuild(&mut self, vertex_buffer: VertexBuffer, index_buffer: IndexBuffer, build_type: BuildType) -> SrResult<()> {
         *self = Self::new(Rc::clone(self.accel.core()), vertex_buffer, index_buffer, build_type)?;
         log::debug!("BLAS rebuilt");
         Ok(())
@@ -242,13 +304,7 @@ impl Blas {
             geometries: vec![GeometrySource::Triangles(Self::triangle_desc(&vertex_buffer, &index_buffer))],
             flags: self.desc.flags,
         };
-        let (geometries, ranges) = unsafe {desc.realize()} ;
-        self.accel.update_sync(&AsBuildInputs {
-            ty: vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-            flags: desc.flags,
-            geometries: &geometries,
-            ranges: &ranges,
-        })?;
+        self.accel.update_sync(desc.realize())?;
 
         self.geometry = BlasGeometry {
             vertex_buffer,
