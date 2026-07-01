@@ -939,13 +939,19 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     /// Free the runtime-loaded mesh registered under `key` by [`Self::load_mesh`].
     /// Instances referencing the key must no longer be passed to `render`.
     ///
-    /// The BLAS drop is deferred through the resource manager's end-of-frame
-    /// callback (tagged `next_frame + MAX_FRAMES_IN_FLIGHT`), so no device-wide idle
-    /// wait is needed — the callback fires once the frame timeline proves every
-    /// in-flight frame that could reference it has completed on the GPU (see
-    /// [`Self::render`]'s `resource_manager.end_of_frame` drain).
+    /// The BLAS drop (and arena-slot free) is deferred to an end-of-frame callback
+    /// tagged `next_frame + MAX_FRAMES_IN_FLIGHT`, so no device-wide idle wait is
+    /// needed — the callback fires once the frame timeline proves every in-flight
+    /// frame that could reference it has completed on the GPU (drained by
+    /// [`Self::run_due_end_of_frame_callbacks`]). The caller must stop passing `key`
+    /// as an instance from now on.
     pub fn unload_mesh(&mut self, key: &K) -> SrResult<()> {
-        self.resource_manager.remove_deferred(*key);
+        let key = *key;
+        let due = *self.core.absolute_frame_count.borrow() as u64 + 1 + MAX_FRAMES_IN_FLIGHT as u64;
+        self.end_of_frame_callbacks.push((
+            due,
+            Box::new(move |renderer: &mut Renderer<K>| renderer.resource_manager.remove(&key)),
+        ));
         Ok(())
     }
 
@@ -969,13 +975,12 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // per-frame resources of frames the timeline reported complete.
         let upcoming_frame = *self.core.absolute_frame_count.borrow() as u64 + 1;
         self.run_start_of_frame_callbacks(upcoming_frame);
+        // Drains every end-of-frame callback the GPU has now finished: per-frame
+        // buffer drops, the AS-build heuristic fold-ins (`mark_blas_built` /
+        // `mark_tlas_built`) that `build_unified_graph` scheduled, and deferred
+        // asset removals from `unload_mesh` — the render graph records the builds
+        // but can't touch the resource manager's CPU-side wrapper state.
         self.run_due_end_of_frame_callbacks();
-
-        // Fold completed AS-build ops back into their heuristic state and run
-        // deferred asset removals for every frame the GPU has finished (the render
-        // graph records the builds but can't touch this CPU-side wrapper state).
-        let completed_frame = self.completed_frame.load(Ordering::Acquire);
-        self.resource_manager.end_of_frame(completed_frame)?;
 
         // This wait now guards only the *out-of-graph* arena copy flush that
         // `start_of_frame` runs (its own synchronous submit into the meshes-info /
@@ -1396,15 +1401,32 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // any consumer: pending BLAS builds first (so the TLAS build orders itself
         // after them via graph read edges), then the TLAS build/update. The RT
         // passes below declare a read on `tlas_h`, so `compile` emits the
-        // build→trace barrier itself — no separate synchronous AS submit. `frame`
-        // is this frame's absolute number (just incremented), tagging the
-        // end-of-frame `mark_built` fold-ins.
-        let frame = *self.core.absolute_frame_count.borrow() as u64;
-        let blas_deps = self.resource_manager.queue_blas_builds(rg, frame)?;
-        let (tlas_h, tlas_address) =
-            self.resource_manager
-                .queue_tlas_build(rg, frame, instance_count, instances_buffer, &blas_deps)?;
+        // build→trace barrier itself — no separate synchronous AS submit.
+        let built_blases = self.resource_manager.queue_blas_builds(rg)?;
+        let blas_deps: Vec<_> = built_blases.iter().map(|(_, handle)| handle.clone()).collect();
+        let (tlas_h, tlas_address) = self
+            .resource_manager
+            .queue_tlas_build(rg, instance_count, instances_buffer, &blas_deps)?;
         rt_pc_base.tlas = tlas_address;
+
+        // Fold each recorded build's chosen op back into its CPU-side heuristic
+        // state once this frame's GPU work completes (the graph records the build
+        // but can't mutate that wrapper state). `frame` is this frame's absolute
+        // number (just incremented) — the same value the frame timeline signals on
+        // completion, so `run_due_end_of_frame_callbacks` fires these at the right
+        // time. Pushed straight onto the field so the `rg` (= `&mut
+        // self.render_graph`) borrow held here stays disjoint.
+        let frame = *self.core.absolute_frame_count.borrow() as u64;
+        for (key, _) in built_blases {
+            self.end_of_frame_callbacks.push((
+                frame,
+                Box::new(move |renderer: &mut Renderer<K>| renderer.resource_manager.mark_blas_built(key)),
+            ));
+        }
+        self.end_of_frame_callbacks.push((
+            frame,
+            Box::new(|renderer: &mut Renderer<K>| renderer.resource_manager.mark_tlas_built()),
+        ));
 
         let mk_img = |format: vk::Format, usage: vk::ImageUsageFlags, name: &'static str| ImageDesc {
             extent,
@@ -1991,7 +2013,7 @@ impl<K: Hash + Eq + Copy + 'static> Drop for Renderer<K> {
                 _ => log::warn!("VkQueueWaitIdle returned {e} in sunray::Renderer::drop"),
             },
         }
-        let callbacks   = std::mem::take(&mut self.end_of_frame_callbacks);
+        let callbacks = std::mem::take(&mut self.end_of_frame_callbacks);
         // The queue is idle: every pending frame is complete, so all deferred
         // deallocation callbacks can run now.
         for (_, callback) in callbacks {

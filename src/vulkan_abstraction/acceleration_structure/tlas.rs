@@ -6,7 +6,6 @@ use crate::vulkan_abstraction::{AccelerationStructure, AsBuildInputs, AsBuildJob
 use ash::vk;
 use std::rc::Rc;
 use std::sync::Arc;
-use vk_sync_fork as vk_sync;
 // Resources:
 // - https://github.com/adrien-ben/vulkan-examples-rs
 // - https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/
@@ -153,18 +152,11 @@ impl Tlas {
     /// `self.op` is set to the operation actually chosen; the caller folds it back
     /// in with [`Self::mark_built`] from an end-of-frame closure once the job's
     /// submission has completed.
-    ///
-    /// The returned [`vk_sync::AccessType`] is the access the imported structure is
-    /// in coming into this frame — `RayTracingShaderReadAccelerationStructure` for
-    /// an in-place UPDATE (the previous frame's trace read this same structure, so
-    /// the graph emits a read→build barrier), or `Nothing` for a rebuild (a fresh
-    /// structure with no prior GPU access). The caller passes it to
-    /// `RenderGraph::import_acceleration_structure`.
     pub fn queue_build(
         &mut self,
         instance_count: u32,
         instances_buffer: &impl Buffer,
-    ) -> SrResult<(Arc<AccelerationStructure>, vk::DeviceAddress, AsBuildJob, vk_sync::AccessType)> {
+    ) -> SrResult<(Arc<AccelerationStructure>, vk::DeviceAddress, AsBuildJob)> {
         let updatable = Self::build_flags(self.build_type).contains(vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE);
         let can_update = updatable && instance_count == self.last_count;
 
@@ -180,13 +172,8 @@ impl Tlas {
         };
 
         let inputs = Self::make_inputs(instances_buffer, instance_count, self.build_type);
-        let (job, initial_access) = match op {
-            // An UPDATE keeps the same structure the previous frame's trace read, so
-            // it comes in already accessed — the graph barriers read→build.
-            OpType::Update => (
-                self.accel.update(inputs)?,
-                vk_sync::AccessType::RayTracingShaderReadAccelerationStructure,
-            ),
+        let job = match op {
+            OpType::Update => self.accel.update(inputs)?,
             OpType::FastBuild | OpType::SlowBuild => {
                 let (new_accel, job) = AccelerationStructure::build(Rc::clone(self.accel.core()), inputs)?;
                 // Previous-frame's graph import of the old structure was dropped by
@@ -195,13 +182,12 @@ impl Tlas {
                 self.accel = Arc::new(new_accel);
                 self.last_count = instance_count;
                 self.write_slot()?;
-                // A fresh structure has never been accessed on the GPU.
-                (job, vk_sync::AccessType::Nothing)
+                job
             }
         };
 
         self.op = Some(op);
-        Ok((Arc::clone(&self.accel), self.accel.device_address(), job, initial_access))
+        Ok((Arc::clone(&self.accel), self.accel.device_address(), job))
     }
 
     /// Map a [`BuildType`] to its Vulkan build flags. `SometimesChanges`

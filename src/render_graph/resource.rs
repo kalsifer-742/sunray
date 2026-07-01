@@ -1,5 +1,5 @@
 use crate::render_graph::graph::{AnyRenderPass, PassResourceAccessType};
-use crate::vulkan_abstraction::acceleration_structure::ASDesc;
+use crate::vulkan_abstraction::acceleration_structure::{ASDesc, TlasBuildDesc};
 use crate::vulkan_abstraction::buffer::BufferDesc;
 use crate::vulkan_abstraction::image::ImageDesc;
 use crate::vulkan_abstraction::image::sampler::SamplerDesc;
@@ -140,9 +140,31 @@ impl Resource for AccelerationStructure {
 }
 
 // The description is only ever the phantom `Desc` on a `Handle` — AS resources are
-// imported by `Arc` (see `RenderGraph::import_acceleration_structure`), never
-// created transiently, so `Into<GraphResourceDesc>` (used only for created
-// resources) is never actually exercised for an AS.
+// imported by `Arc` (via `RenderGraph::import`), never created transiently, so
+// `Into<GraphResourceDesc>` (used only for created resources) is never actually
+// exercised for an AS.
 impl ResourceDesc for ASDesc {
     type Resource = AccelerationStructure;
+}
+
+impl RgImportable<ASDesc> for Arc<AccelerationStructure> {
+    // Placeholder desc: never consulted for an import (the shader reaches the AS by
+    // device address; the graph tracks it only for synchronization), carried solely
+    // for `Handle` typing. See the note on `ASDesc`.
+    fn import(&self) -> ASDesc {
+        ASDesc::Tlas(TlasBuildDesc {
+            instances_address: 0,
+            instance_count: 0,
+        })
+    }
+}
+
+impl From<Arc<AccelerationStructure>> for GraphResourceImportInfo {
+    fn from(val: Arc<AccelerationStructure>) -> Self {
+        GraphResourceImportInfo::RayTracingAcceleration {
+            resource: val,
+            //TODO let the caller supply the initial access state instead of defaulting to Nothing
+            access_type: vk_sync::AccessType::Nothing,
+        }
+    }
 }

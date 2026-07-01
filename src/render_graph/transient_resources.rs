@@ -512,8 +512,7 @@ impl TransientResources {
                 });
                 continue;
             }
-          
-            
+
             // Fallback: AS / sampler / anything else — collapse into a global
             // barrier so the access ordering is still expressed.
             global_prev.push(b.prev_access);

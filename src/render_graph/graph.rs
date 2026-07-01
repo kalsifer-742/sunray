@@ -10,9 +10,9 @@ pub(crate) use crate::render_graph::resource::{
 use crate::render_graph::transient_resources::TransientResources;
 use crate::vulkan_abstraction::image::ImageDesc;
 use crate::vulkan_abstraction::{
-    ASDesc, AccelerationStructure, AsBuildJob, CmdBuffer, ComputePipeline, Core, Fence, GpuOnlyBuffer, GraphicsPipeline,
+    AccelerationStructure, AsBuildJob, CmdBuffer, ComputePipeline, Core, Fence, GpuOnlyBuffer, GraphicsPipeline,
     GraphicsPipelineShaders, HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders,
-    ShaderBindingTable, TlasBuildDesc,
+    ShaderBindingTable,
 };
 use ash::vk;
 use petgraph::visit::{EdgeRef, IntoNeighbors};
@@ -500,37 +500,6 @@ impl RenderGraph {
             id: self.next_resource_id(),
             desc: TypeEquals::same(desc),
             marker: Default::default(),
-        }
-    }
-
-    /// Import an existing acceleration structure as a graph resource, so a build
-    /// pass can declare a write on it and later passes (the TLAS build reading its
-    /// BLASes, the RT pass reading the TLAS) a read — letting `compile` order the
-    /// AS builds against their consumers and emit the barrier itself. The graph
-    /// only tracks synchronization for the AS; the shader still reaches it by
-    /// device address (baked into the push constant). `initial_access` is the
-    /// access the structure is left in from the previous frame (`Nothing` if
-    /// freshly created), used to seed the cross-frame init barrier.
-    pub fn import_acceleration_structure(
-        &mut self,
-        accel: Arc<AccelerationStructure>,
-        initial_access: vk_sync::AccessType,
-    ) -> Handle<AccelerationStructure> {
-        let id = self.next_resource_id();
-        self.virtual_resources
-            .push(GraphResourceInfo::Imported(GraphResourceImportInfo::RayTracingAcceleration {
-                resource: accel,
-                access_type: initial_access,
-            }));
-        Handle {
-            // Placeholder desc: never consulted for imports (AS is imported by Arc),
-            // only carried for `Handle` typing. See `resource::ASDesc`.
-            desc: ASDesc::Tlas(TlasBuildDesc {
-                instances_address: 0,
-                instance_count: 0,
-            }),
-            id,
-            marker: PhantomData,
         }
     }
 
