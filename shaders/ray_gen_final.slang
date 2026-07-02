@@ -201,13 +201,18 @@ void ray_gen_final() {
 
                         if (dot(hit_normal, shadow_dir) > 0.0) {
                             uint shadow_ray_flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
-                            prd.dist = 1.0;
-                            RayDesc sray;
-                            sray.Origin = hitPos;
-                            sray.TMin = 0.001;
-                            sray.Direction = shadow_dir;
-                            sray.TMax = shadow_dist - 0.001;
-                            TraceRay(tlas, shadow_ray_flags, 0xFFu, 0, 0, 0, sray, prd);
+                            // Skip degenerate short segments (TMax<TMin); coincident endpoints are visible.
+                            if (shadow_dist > 0.002) {
+                                prd.dist = 1.0;
+                                RayDesc sray;
+                                sray.Origin = hitPos;
+                                sray.TMin = 0.001;
+                                sray.Direction = shadow_dir;
+                                sray.TMax = shadow_dist - 0.001;
+                                TraceRay(tlas, shadow_ray_flags, 0xFFu, 0, 0, 0, sray, prd);
+                            } else {
+                                prd.dist = -1.0;
+                            }
 
                             if (prd.dist < 0.0) {
                                 radiance += f_y_winner * throughput * spatial_r.W;
@@ -267,13 +272,18 @@ void ray_gen_final() {
                         float3 gi_spatial_dir = w_new / d_new;
                         if (dot(hit_normal, gi_spatial_dir) <= 0.0) continue;
                         uint gi_spatial_vis = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
-                        prd.dist = 1.0;
-                        RayDesc gray;
-                        gray.Origin = hitPos;
-                        gray.TMin = 0.001;
-                        gray.Direction = gi_spatial_dir;
-                        gray.TMax = d_new - 0.001;
-                        TraceRay(tlas, gi_spatial_vis, 0xFFu, 0, 0, 0, gray, prd);
+                        // Skip degenerate short segments (TMax<TMin); coincident endpoints are visible.
+                        if (d_new > 0.002) {
+                            prd.dist = 1.0;
+                            RayDesc gray;
+                            gray.Origin = hitPos;
+                            gray.TMin = 0.001;
+                            gray.Direction = gi_spatial_dir;
+                            gray.TMax = d_new - 0.001;
+                            TraceRay(tlas, gi_spatial_vis, 0xFFu, 0, 0, 0, gray, prd);
+                        } else {
+                            prd.dist = -1.0;
+                        }
                         if (prd.dist >= 0.0) continue;
 
                         float p_hat_neighbor = gi_target_pdf(hitPos, hit_normal, hit_albedo, metallic, neighbor_r.sample_pos, neighbor_r.sample_radiance);
@@ -292,13 +302,21 @@ void ray_gen_final() {
                         float gi_NdotL = max(dot(hit_normal, gi_x2_dir), 0.0);
                         if (gi_NdotL > 0.0) {
                             uint gi_final_vis = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
-                            prd.dist = 1.0;
-                            RayDesc gray2;
-                            gray2.Origin = hitPos;
-                            gray2.TMin = 0.001;
-                            gray2.Direction = gi_x2_dir;
-                            gray2.TMax = gi_x2_dist - 0.001;
-                            TraceRay(tlas, gi_final_vis, 0xFFu, 0, 0, 0, gray2, prd);
+                            // Only trace when the segment is longer than 2*epsilon;
+                            // otherwise TMax (dist-eps) < TMin (eps) builds a degenerate
+                            // ray (VUID-RuntimeSpirv-OpTraceRayKHR-06357). Near-coincident
+                            // endpoints can't be occluded, so treat as visible.
+                            if (gi_x2_dist > 0.002) {
+                                prd.dist = 1.0;
+                                RayDesc gray2;
+                                gray2.Origin = hitPos;
+                                gray2.TMin = 0.001;
+                                gray2.Direction = gi_x2_dir;
+                                gray2.TMax = gi_x2_dist - 0.001;
+                                TraceRay(tlas, gi_final_vis, 0xFFu, 0, 0, 0, gray2, prd);
+                            } else {
+                                prd.dist = -1.0;
+                            }
 
                             if (prd.dist < 0.0) {
                                 float3 gi_f_diffuse = hit_albedo * (1.0 - metallic) / 3.14159;
@@ -341,13 +359,18 @@ void ray_gen_final() {
 
                     if (cos_theta_light > 0.0 && cos_theta_surface > 0.0) {
                         uint shadow_ray_flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
-                        prd.dist = 1.0;
-                        RayDesc sray;
-                        sray.Origin = hitPos;
-                        sray.TMin = 0.001;
-                        sray.Direction = shadow_ray_dir;
-                        sray.TMax = light_dist - 0.001;
-                        TraceRay(tlas, shadow_ray_flags, 0xFFu, 0, 0, 0, sray, prd);
+                        // Skip degenerate short segments (TMax<TMin); coincident endpoints are visible.
+                        if (light_dist > 0.002) {
+                            prd.dist = 1.0;
+                            RayDesc sray;
+                            sray.Origin = hitPos;
+                            sray.TMin = 0.001;
+                            sray.Direction = shadow_ray_dir;
+                            sray.TMax = light_dist - 0.001;
+                            TraceRay(tlas, shadow_ray_flags, 0xFFu, 0, 0, 0, sray, prd);
+                        } else {
+                            prd.dist = -1.0;
+                        }
 
                         if (prd.dist < 0.0) {
                             float solid_angle_pdf = (light_dist * light_dist) / max(cos_theta_light * light_area * float(num_lights), 1e-4);

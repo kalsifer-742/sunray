@@ -283,13 +283,18 @@ void ray_gen_ris() {
             current_r.W = 0.0;
         } else {
             uint vis_flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
-            prd.dist = 1.0;
-            RayDesc vray;
-            vray.Origin = hitPos + hit_normal * 0.001;
-            vray.TMin = 0.001;
-            vray.Direction = vis_dir;
-            vray.TMax = vis_dist - 0.001;
-            TraceRay(tlas, vis_flags, 0xFFu, 0, 0, 0, vray, prd);
+            // Skip degenerate short segments (TMax<TMin); coincident endpoints are visible.
+            if (vis_dist > 0.002) {
+                prd.dist = 1.0;
+                RayDesc vray;
+                vray.Origin = hitPos + hit_normal * 0.001;
+                vray.TMin = 0.001;
+                vray.Direction = vis_dir;
+                vray.TMax = vis_dist - 0.001;
+                TraceRay(tlas, vis_flags, 0xFFu, 0, 0, 0, vray, prd);
+            } else {
+                prd.dist = -1.0;
+            }
             if (prd.dist >= 0.0) {
                 current_r.W = 0.0; // occluded
             }
@@ -365,13 +370,18 @@ void ray_gen_ris() {
 
                 if (nee_cos_surf > 0.0 && nee_cos_light > 0.0) {
                     uint nee_flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
-                    prd.dist = 1.0;
-                    RayDesc sray;
-                    sray.Origin = sample_pos + sample_normal * 0.001;
-                    sray.TMin = 0.001;
-                    sray.Direction = to_light;
-                    sray.TMax = nee_dist - 0.001;
-                    TraceRay(tlas, nee_flags, 0xFFu, 0, 0, 0, sray, prd);
+                    // Skip degenerate short segments (TMax<TMin); coincident endpoints are visible.
+                    if (nee_dist > 0.002) {
+                        prd.dist = 1.0;
+                        RayDesc sray;
+                        sray.Origin = sample_pos + sample_normal * 0.001;
+                        sray.TMin = 0.001;
+                        sray.Direction = to_light;
+                        sray.TMax = nee_dist - 0.001;
+                        TraceRay(tlas, nee_flags, 0xFFu, 0, 0, 0, sray, prd);
+                    } else {
+                        prd.dist = -1.0;
+                    }
 
                     if (prd.dist < 0.0) {
                         float nee_pdf_sa = (nee_dist * nee_dist) / max(nee_cos_light * nee_area * float(nee_num_lights), 0.0001);
