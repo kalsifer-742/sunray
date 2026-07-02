@@ -90,8 +90,21 @@ impl Instance {
     ) -> vk::Bool32 {
         let callback_data = unsafe { *callback_data };
         let msg_id_number = callback_data.message_id_number;
-        let msg_id_name = unsafe { CStr::from_ptr(callback_data.p_message_id_name) }.to_str().unwrap();
-        let msg_text = unsafe { CStr::from_ptr(callback_data.p_message) }.to_str().unwrap();
+        // This is an `extern "system"` FFI callback: a panic here can't unwind
+        // across the C boundary and aborts the process (`STATUS_STACK_BUFFER_OVERRUN`
+        // on Windows). `p_message_id_name` is allowed to be null, and validation
+        // messages (object names, file paths) are not guaranteed UTF-8 — so never
+        // `to_str().unwrap()`; null-check and use the lossy conversion, which can't
+        // panic. Resize floods debug messages, which is why it surfaced there.
+        let cstr_lossy = |p: *const std::ffi::c_char| -> std::borrow::Cow<'static, str> {
+            if p.is_null() {
+                std::borrow::Cow::Borrowed("")
+            } else {
+                std::borrow::Cow::Owned(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+            }
+        };
+        let msg_id_name = cstr_lossy(callback_data.p_message_id_name);
+        let msg_text = cstr_lossy(callback_data.p_message);
 
         match (message_severity, message_type, msg_id_number) {
             (vk::DebugUtilsMessageSeverityFlagsEXT::WARNING, vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION, 0x675dc32e) => {

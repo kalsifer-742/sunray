@@ -1,4 +1,4 @@
-use crate::render_graph::graph::{AnyRenderPass, PassResourceAccessType};
+use crate::render_graph::graph::PassResourceAccessType;
 use crate::vulkan_abstraction::acceleration_structure::{ASDesc, TlasBuildDesc};
 use crate::vulkan_abstraction::buffer::BufferDesc;
 use crate::vulkan_abstraction::image::ImageDesc;

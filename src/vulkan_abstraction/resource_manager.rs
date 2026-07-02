@@ -9,6 +9,7 @@ use crate::render_graph::resource::Handle;
 use crate::vulkan_abstraction::image::sampler::SamplerDesc;
 use crate::vulkan_abstraction::{AccelerationStructure, ArenaBuffer, AsBuildJob, Buffer, EntityGpuData, Material};
 use crate::{error::SrResult, vulkan_abstraction};
+use vk_sync_fork as vk_sync;
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
 
@@ -56,16 +57,17 @@ pub(crate) struct ResourceManager<K: Hash + Eq + Copy> {
     samplers: HashMap<SamplerDesc, vulkan_abstraction::Sampler>,
     default_sampler: vulkan_abstraction::Sampler,
 
-    /// Pending staging→GPU copy regions for the arena buffers; flushed by the
-    /// callback `queue_copy` schedules for the upcoming frame.
+    /// Pending staging→GPU copy regions for the arena buffers, produced by asset
+    /// loads. Drained each frame by [`Self::take_queued_copies`] and recorded as a
+    /// transfer prologue in the render graph (`RenderGraph::add_prologue_buffer_copies`),
+    /// so the copy rides the frame's submission ordered before the shader reads.
     buffer_copies_queued: Vec<(vk::Buffer, vk::Buffer, vk::BufferCopy)>,
     /// Deferred work keyed by the absolute frame at whose start it must run
-    /// (arena copy flushes, deferred slot frees). Drained by
-    /// [`Self::start_of_frame`] — nothing runs unconditionally every frame.
-    //TODO the copy flush should become a transfer pass recorded at the head of
-    //     the render graph instead of its own synchronous submit, and the
-    //     free callbacks should key off GPU completion (the frame timeline)
-    //     rather than the CPU-side frame counter + the renderer's wait-idle.
+    /// (currently just deferred arena slot frees scheduled by `remove`). Drained
+    /// by [`Self::start_of_frame`] — nothing runs unconditionally every frame.
+    //TODO the free callbacks should key off GPU completion (the frame timeline)
+    //     rather than the CPU-side frame counter; the renderer's per-frame
+    //     slot-reuse wait currently makes the CPU-counter timing safe.
     start_of_frame_callbacks: Vec<(u64, FrameCallback<K>)>,
     /// BLAS build jobs produced by [`vulkan_abstraction::Blas::new_deferred`] at
     /// asset-load time, waiting to be recorded into the next frame's graph by
@@ -166,9 +168,10 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
     }
 
     /// Run the deferred work due at the start of `upcoming_frame` (the frame
-    /// about to be rendered): arena copy flushes scheduled by asset loads and
-    /// slot-free processing scheduled by `remove`. A callback may schedule
-    /// further callbacks; ones due this same frame run before this returns.
+    /// about to be rendered): currently the arena slot-free processing scheduled
+    /// by `remove`. A callback may schedule further callbacks; ones due this same
+    /// frame run before this returns. (Arena copies now ride the render graph — see
+    /// [`Self::take_queued_copies`].)
     pub fn start_of_frame(&mut self, upcoming_frame: u64) -> SrResult<()> {
         let mut i = 0;
         while i < self.start_of_frame_callbacks.len() {
@@ -182,61 +185,24 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         Ok(())
     }
 
-    /// Flush the queued arena staging→GPU copies in one synchronous submit.
-    /// Runs as the start-of-frame callback `queue_copy` schedules.
-    //TODO this can be moved to a render pass at the start of each frame
-    fn flush_queued_copies(&mut self) -> SrResult<()> {
-        if self.buffer_copies_queued.is_empty() {
-            return Ok(());
-        }
-
+    /// Drain the queued arena staging→GPU copies, collapsing redundant writes to
+    /// the same destination region (keeping the latest) so the graph never records
+    /// two unordered copies to one slot. The renderer records the result as a
+    /// transfer prologue at the head of the frame's graph submission (ordered
+    /// before the shader reads by [`RenderGraph::add_prologue_buffer_copies`]),
+    /// replacing the old synchronous flush + device-wide idle wait.
+    pub fn take_queued_copies(&mut self) -> Vec<(vk::Buffer, vk::Buffer, vk::BufferCopy)> {
         let copies = std::mem::take(&mut self.buffer_copies_queued);
-
+        if copies.is_empty() {
+            return copies;
+        }
         let mut seen: HashMap<(vk::Buffer, vk::DeviceSize, vk::DeviceSize), usize> = HashMap::new();
         for (i, (_, dst, region)) in copies.iter().enumerate() {
             seen.insert((*dst, region.dst_offset, region.size), i);
         }
-        let copies: Vec<_> = seen.values().map(|&i| copies[i]).collect();
-
-        let device = self.core.device().inner();
-        let graphics_queue = self.core.graphics_queue();
-        let cmd_pool = self.core.graphics_cmd_pool();
-
-        let cmd_buf = vulkan_abstraction::cmd_buffer::new_command_buffer(cmd_pool, device)?;
-        let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-        unsafe {
-            device.begin_command_buffer(cmd_buf, &begin_info)?;
-
-            for (src, dst, region) in &copies {
-                device.cmd_copy_buffer(cmd_buf, *src, *dst, std::slice::from_ref(region));
-            }
-
-            let unique_dsts: std::collections::HashSet<vk::Buffer> = copies.iter().map(|(_, dst, _)| *dst).collect();
-            let barriers: Vec<vk::BufferMemoryBarrier2> = unique_dsts
-                .into_iter()
-                .map(|buf| {
-                    vk::BufferMemoryBarrier2::default()
-                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                        .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags2::COMPUTE_SHADER)
-                        .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-                        .buffer(buf)
-                        .offset(0)
-                        .size(vk::WHOLE_SIZE)
-                })
-                .collect();
-
-            let dependency_info = vk::DependencyInfo::default().buffer_memory_barriers(&barriers);
-            device.cmd_pipeline_barrier2(cmd_buf, &dependency_info);
-
-            device.end_command_buffer(cmd_buf)?;
-        }
-
-        graphics_queue.submit_sync(cmd_buf)?;
-        unsafe { device.free_command_buffers(cmd_pool.inner(), &[cmd_buf]) };
-
-        Ok(())
+        let mut kept: Vec<usize> = seen.into_values().collect();
+        kept.sort_unstable();
+        kept.into_iter().map(|i| copies[i]).collect()
     }
 
     // ─── Per-frame data ──────────────────────────────────────────────────────
@@ -385,7 +351,13 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         blas_deps: &[Handle<AccelerationStructure>],
     ) -> SrResult<(Handle<AccelerationStructure>, vk::DeviceAddress)> {
         let (accel, address, job) = self.tlas.queue_build(instance_count, instances_buffer)?;
-        let handle = rg.import(accel);
+        // Import carrying the access the previous frame's RT trace left the TLAS in:
+        // an in-place UPDATE writes the same structure the last frame read, so
+        // `compile` needs this to emit the cross-frame read→build barrier (a full
+        // rebuild lands on fresh memory, making the barrier harmlessly conservative).
+        // This is what lets the build→trace hand-off be a barrier rather than a
+        // device-wide idle once true frame overlap is enabled.
+        let handle = rg.import_with_usage(accel, vk_sync::AccessType::RayTracingShaderReadAccelerationStructure);
         rg.add_as_build_pass("tlas_build", &handle, blas_deps, job)?;
         Ok((handle, address))
     }
@@ -545,13 +517,8 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
     // ─── Internal helpers ────────────────────────────────────────────────────
 
     fn queue_copy(&mut self, src: vk::Buffer, dst: vk::Buffer, region: vk::BufferCopy) {
-        // First copy since the last flush: schedule one flush callback for the
-        // upcoming frame (the flush drains the whole queue, so later copies
-        // queued before it runs piggyback on the same callback).
-        if self.buffer_copies_queued.is_empty() {
-            let due = self.next_frame();
-            self.schedule_at_frame(due, Self::flush_queued_copies);
-        }
+        // Just enqueue: the renderer drains these via `take_queued_copies` each
+        // frame and records them as a transfer prologue in the render graph.
         self.buffer_copies_queued.push((src, dst, region));
     }
 }

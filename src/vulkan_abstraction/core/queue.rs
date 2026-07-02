@@ -118,6 +118,47 @@ impl Queue {
         Ok(())
     }
 
+    /// General timeline-aware submit: each wait/signal is `(semaphore, value,
+    /// stage2)`. `value` is used for timeline semaphores and ignored for binary
+    /// ones, so this covers both. Used by the render graph (waits the previous
+    /// frame's graph timeline + signals this frame's) and the blit (waits the
+    /// graph timeline + signals the frame timeline).
+    pub fn submit_async_timelines(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        waits: &[(vk::Semaphore, u64, vk::PipelineStageFlags2)],
+        signals: &[(vk::Semaphore, u64, vk::PipelineStageFlags2)],
+        signal_fence: vk::Fence,
+    ) -> SrResult<()> {
+        let wait_infos: Vec<vk::SemaphoreSubmitInfo> = waits
+            .iter()
+            .map(|(sem, value, stage)| {
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(*sem)
+                    .value(*value)
+                    .stage_mask(*stage)
+            })
+            .collect();
+        let signal_infos: Vec<vk::SemaphoreSubmitInfo> = signals
+            .iter()
+            .map(|(sem, value, stage)| {
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(*sem)
+                    .value(*value)
+                    .stage_mask(*stage)
+            })
+            .collect();
+        let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer)];
+        let submit_info = vk::SubmitInfo2::default()
+            .wait_semaphore_infos(&wait_infos)
+            .command_buffer_infos(&cmd_buf_infos)
+            .signal_semaphore_infos(&signal_infos);
+
+        unsafe { self.device.inner().queue_submit2(self.queue, &[submit_info], signal_fence) }?;
+
+        Ok(())
+    }
+
     pub fn submit_sync(&self, command_buffer: vk::CommandBuffer) -> SrResult<()> {
         let cmd_buf_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer)];
         let submit_info = vk::SubmitInfo2::default().command_buffer_infos(&cmd_buf_infos);

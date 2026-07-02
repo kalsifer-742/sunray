@@ -10,13 +10,13 @@ pub(crate) use crate::render_graph::resource::{
 use crate::render_graph::transient_resources::TransientResources;
 use crate::vulkan_abstraction::image::ImageDesc;
 use crate::vulkan_abstraction::{
-    AccelerationStructure, AsBuildJob, CmdBuffer, ComputePipeline, Core, Fence, GpuOnlyBuffer, GraphicsPipeline,
+    AccelerationStructure, AsBuildJob, CmdBuffer, ComputePipeline, Core, GpuOnlyBuffer, GraphicsPipeline,
     GraphicsPipelineShaders, HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders,
-    ShaderBindingTable,
+    ShaderBindingTable, TimelineSemaphore,
 };
 use ash::vk;
-use petgraph::visit::{EdgeRef, IntoNeighbors};
-use std::collections::{BTreeMap, HashMap};
+use petgraph::visit::EdgeRef;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -272,7 +272,14 @@ pub struct RenderGraph {
     virtual_resources: Vec<GraphResourceInfo>,
     temporal_resources: Vec<TemporalResource>,
     passes: Vec<AnyRenderPass>,
-    transient_resources: TransientResources,
+    /// Frame-in-flight double buffering: one transient pool per slot
+    /// (`frame % MAX_FRAMES_IN_FLIGHT`). Each pool frees + rebuilds only its own
+    /// backing on `populate`, so recording frame N never frees the transient
+    /// memory frame N-1's in-flight GPU work is still reading.
+    /// ponytail: N independent pools means the pipeline cache is duplicated per
+    /// slot (a handful of extra pipeline builds, then steady-state cached). A
+    /// shared cache is a future rework — not worth the entanglement now.
+    transient_resources: Vec<TransientResources>,
     /// At most one swapchain target per graph; remembered so the compile step can
     /// flag the present-target layout transition without scanning every resource.
     swapchain_resource_id: Option<u32>,
@@ -281,9 +288,30 @@ pub struct RenderGraph {
     /// later stage can sync against the graph with a barrier instead of a
     /// device-wait-idle; nothing consumes it yet.
     resource_end_states: HashMap<u32, ResourceEndState>,
-    /// Lives across `compile` / `run` cycles so the same primary command buffer
-    /// is re-recorded each frame rather than reallocated.
-    cmd_buffer: CmdBuffer,
+    /// One primary command buffer per frame-in-flight slot, re-recorded when its
+    /// slot comes around (reuse gated by [`Self::wait_for_slot_reuse`]).
+    cmd_buffers: Vec<CmdBuffer>,
+    /// This frame's passes are retired here after submission, kept per slot until
+    /// the slot is reused N frames later. Passes own the AS-build scratch the GPU
+    /// reads during the submission, so they must outlive it — see `run` / `reset`.
+    retired_passes: Vec<Vec<AnyRenderPass>>,
+    /// This frame's imported/created virtual resources are retired here after
+    /// submission, kept per slot until the slot is reused N frames later. Imports
+    /// hold the `Arc` that keeps a resource's backing alive (notably the TLAS,
+    /// which `Tlas::queue_build` swaps for a freshly-allocated structure every
+    /// frame); dropping them at the next `reset` — as the pre-overlap code did,
+    /// when the previous frame was always already idle — would free memory the
+    /// in-flight previous frame is still reading. See `run` / `reset`.
+    retired_resources: Vec<Vec<GraphResourceInfo>>,
+    /// Arena staging→GPU copies to record as a transfer prologue at the head of
+    /// this frame's submission (handed over by the resource manager on asset
+    /// load). Cleared on `reset`. See [`Self::add_prologue_buffer_copies`].
+    prologue_copies: Vec<(vk::Buffer, vk::Buffer, vk::BufferCopy)>,
+    /// Signaled with the absolute frame count when each frame's graph submission
+    /// completes. Drives CPU slot-reuse gating, the cross-frame temporal
+    /// ping-pong wait (frame F's graph waits F-1's), and the blit's wait on the
+    /// graph — together replacing the old per-frame fence + device-wait-idle.
+    graph_timeline: TimelineSemaphore,
     /// Cached so `run` can submit and `compile` can record without the caller
     /// having to re-thread `Core` through every call.
     core: Rc<Core>,
@@ -293,19 +321,68 @@ pub struct RenderGraph {
 //   not overwritten though while still allowing new resources to be added,also while on a built state it should be able to handle n frames in flight with internal sync to minimize the wait idle time and allow multiple frame to be run concurrently, this
 impl RenderGraph {
     pub fn new(core: Rc<Core>) -> SrResult<Self> {
-        let cmd_buffer = CmdBuffer::new(Rc::clone(&core))?;
+        let cmd_buffers = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| CmdBuffer::new(Rc::clone(&core)))
+            .collect::<SrResult<Vec<_>>>()?;
+        let transient_resources = (0..MAX_FRAMES_IN_FLIGHT).map(|_| TransientResources::default()).collect();
+        let retired_passes = (0..MAX_FRAMES_IN_FLIGHT).map(|_| Vec::new()).collect();
+        let retired_resources = (0..MAX_FRAMES_IN_FLIGHT).map(|_| Vec::new()).collect();
+        let graph_timeline = TimelineSemaphore::new(Rc::clone(&core), 0)?;
         Ok(RenderGraph {
             next_pass_id: 0,
             next_resource_id: 0,
             passes: vec![],
             virtual_resources: vec![],
             temporal_resources: vec![],
-            transient_resources: TransientResources::default(),
+            transient_resources,
             swapchain_resource_id: None,
             resource_end_states: HashMap::new(),
-            cmd_buffer,
+            cmd_buffers,
+            retired_passes,
+            retired_resources,
+            prologue_copies: vec![],
+            graph_timeline,
             core,
         })
+    }
+
+    /// The frame-in-flight slot the current absolute frame maps to. `reset`,
+    /// `compile` and `run` all run *after* `build_unified_graph` has incremented
+    /// the absolute frame count, so this reads the frame being recorded.
+    fn current_slot(&self) -> usize {
+        (*self.core.absolute_frame_count.borrow() as usize) % MAX_FRAMES_IN_FLIGHT
+    }
+
+    /// Block until the frame that last used the upcoming frame's slot
+    /// (`frame - MAX_FRAMES_IN_FLIGHT`) has finished its graph submission, so this
+    /// slot's command buffer, transient pool and retired passes can be safely
+    /// re-recorded / freed on the CPU. Call once at the very top of a frame,
+    /// before touching any slot state (including the resource manager's arena slot
+    /// reclamation). Non-blocking in steady state — that frame completed long ago.
+    /// Must be called *before* `build_unified_graph` increments the frame count.
+    pub fn wait_for_slot_reuse(&self) -> SrResult<()> {
+        let upcoming = *self.core.absolute_frame_count.borrow() as u64 + 1;
+        if upcoming > MAX_FRAMES_IN_FLIGHT as u64 {
+            self.graph_timeline.wait(upcoming - MAX_FRAMES_IN_FLIGHT as u64)?;
+        }
+        Ok(())
+    }
+
+    /// The graph completion timeline (signaled with the absolute frame count by
+    /// each `run`). The caller makes its post-graph work (the blit) wait on this
+    /// instead of a CPU fence, so it can be enqueued without stalling.
+    pub fn graph_timeline_inner(&self) -> vk::Semaphore {
+        self.graph_timeline.inner()
+    }
+
+    /// Hand the graph a batch of arena staging→GPU buffer copies to record as a
+    /// transfer prologue at the head of this frame's submission (before any pass),
+    /// followed by a transfer→shader-read barrier. The arena buffers are
+    /// program-lifetime with CPU-side frame ring buffering and are only reached by
+    /// device address in shaders, so they are *not* tracked as graph resources —
+    /// this only guarantees the copy is ordered before the reads.
+    pub fn add_prologue_buffer_copies(&mut self, mut copies: Vec<(vk::Buffer, vk::Buffer, vk::BufferCopy)>) {
+        self.prologue_copies.append(&mut copies);
     }
 
     /// Clear all per-frame state (passes, virtual resources, transient bindings,
@@ -315,17 +392,27 @@ impl RenderGraph {
     /// the renderer, rebuilt each frame, but the underlying primary command
     /// buffer is reused".
     pub fn reset(&mut self) {
+        let slot = self.current_slot();
         self.next_pass_id = 0;
         self.next_resource_id = 0;
         self.passes.clear();
         self.virtual_resources.clear();
+        self.prologue_copies.clear();
         self.swapchain_resource_id = None;
         self.resource_end_states.clear();
-        self.transient_resources.free_internal_state();
-        // `temporal_resources` is intentionally NOT cleared: its backing memory
-        // is owned by the graph for its whole lifetime so history/ping-pong data
-        // survives the rebuild. Re-wire each one with
-        // `register_temporal_resource` while rebuilding this frame's passes.
+        // Free the previous occupant of this slot (frame N - MAX_FRAMES_IN_FLIGHT):
+        // its passes own the AS-build scratch the GPU read, and `wait_for_slot_reuse`
+        // proved that frame's submission is complete. This slot's transient pool is
+        // freed + rebuilt by `populate` during `compile`.
+        self.retired_passes[slot].clear();
+        // Same reuse gate frees the previous occupant's retired imports/created
+        // resources (the `Arc`s keeping their backings — e.g. that frame's TLAS —
+        // alive); `run` parked them here after submission.
+        self.retired_resources[slot].clear();
+        // `transient_resources[slot]` (freed by `populate`), `temporal_resources`
+        // and each pool's `pipeline_cache` intentionally persist across the rebuild
+        // so history / ping-pong data and interned pipelines survive. Re-wire each
+        // temporal resource with `register_temporal_resource` while rebuilding.
     }
 
     pub(super) fn next_pass_id(&mut self) -> u32 {
@@ -502,6 +589,36 @@ impl RenderGraph {
             marker: Default::default(),
         }
     }
+    /// Like [`Self::import`], but overrides the access the resource is treated as
+    /// carrying *into* this compile with `usage` — the state the previous frame's
+    /// submission left it in. `compile` seeds a cross-frame init barrier from it
+    /// (see `imported_initial_access`), so the caller can thread a resource's
+    /// end-state back in and let the graph emit the hand-off barrier instead of a
+    /// device-wide idle. Samplers / swapchain images carry no cross-frame access,
+    /// so `usage` is ignored for them.
+    pub fn import_with_usage<Desc: ResourceDesc>(
+        &mut self,
+        res: impl RgImportable<Desc> + Into<GraphResourceImportInfo>,
+        usage: vk_sync::AccessType,
+    ) -> Handle<<Desc as ResourceDesc>::Resource>
+    where
+        Desc: TypeEquals<Other = <<Desc as ResourceDesc>::Resource as Resource>::Desc>,
+    {
+        let desc = res.import();
+        let mut import = res.into();
+        match &mut import {
+            GraphResourceImportInfo::Image { access_type, .. }
+            | GraphResourceImportInfo::Buffer { access_type, .. }
+            | GraphResourceImportInfo::RayTracingAcceleration { access_type, .. } => *access_type = usage,
+            GraphResourceImportInfo::Sampler { .. } | GraphResourceImportInfo::SwapchainImage { .. } => {}
+        }
+        self.virtual_resources.push(GraphResourceInfo::Imported(import));
+        Handle {
+            id: self.next_resource_id(),
+            desc: TypeEquals::same(desc),
+            marker: Default::default(),
+        }
+    }
 
     pub fn add_render_pass(&mut self, render_pass: impl Into<AnyRenderPass>) {
         self.passes.push(render_pass.into())
@@ -566,7 +683,8 @@ impl RenderGraph {
     pub(crate) fn cache_compute_pipeline(&mut self, spirv: &[u8]) -> SrResult<PipelineHandle> {
         let key = pipeline_cache_key(0, &[spirv]);
         let core = Rc::clone(&self.core);
-        self.transient_resources.pipeline_cache.intern(key, &core, || {
+        let slot = self.current_slot();
+        self.transient_resources[slot].pipeline_cache.intern(key, &core, || {
             let pipeline = ComputePipeline::<HeapComputePass>::new(core.clone_device(), spirv)?;
             Ok(CachedPipeline::Compute(Rc::new(pipeline)))
         })
@@ -576,7 +694,8 @@ impl RenderGraph {
     pub(crate) fn cache_raytracing_pipeline(&mut self, shaders: &RayTracingPipelineShaders) -> SrResult<PipelineHandle> {
         let key = pipeline_cache_key(1, &[&shaders.ray_gen, &shaders.miss, &shaders.closest_hit, &shaders.any_hit]);
         let core = Rc::clone(&self.core);
-        self.transient_resources.pipeline_cache.intern(key, &core, || {
+        let slot = self.current_slot();
+        self.transient_resources[slot].pipeline_cache.intern(key, &core, || {
             let pipeline = Rc::new(RayTracingPipeline::new(Rc::clone(&core), shaders)?);
             let sbt = Rc::new(ShaderBindingTable::new(&core, &pipeline)?);
             Ok(CachedPipeline::RayTracing(pipeline, sbt))
@@ -596,7 +715,8 @@ impl RenderGraph {
             ],
         );
         let core = Rc::clone(&self.core);
-        self.transient_resources.pipeline_cache.intern(key, &core, || {
+        let slot = self.current_slot();
+        self.transient_resources[slot].pipeline_cache.intern(key, &core, || {
             let pipeline = GraphicsPipeline::new(Rc::clone(&core), shaders)?;
             Ok(CachedPipeline::Graphics(Rc::new(pipeline)))
         })
@@ -646,6 +766,7 @@ impl RenderGraph {
         // for example you could build a tlas the next frame if this is seen as an internal or created on the spot data structure, but exporting it would block the cpu on interacting with it until the previous frame has ended.
         // To further emphasise this there will need to be a dedicated way to handle multiple data based of frames in flight , transformation matrices and the camera should only live as long as a frame.
 
+        let slot = self.current_slot();
         let pass_count = self.passes.len();
 
         let mut resource_usages: BTreeMap<u32, ResourceLifetimeUsage> = BTreeMap::new();
@@ -775,8 +896,7 @@ impl RenderGraph {
         }
         let components: Vec<PassComponent> = components_by_root.into_values().collect();
 
-        self.transient_resources
-            .populate(Rc::clone(&self.core), &self.virtual_resources, &components, &resource_usages)?;
+        self.transient_resources[slot].populate(Rc::clone(&self.core), &self.virtual_resources, &components, &resource_usages)?;
 
         // Topological order of passes. petgraph's toposort fails iff there is a
         // cycle, which would be a logic bug since hazards only ever produce
@@ -796,14 +916,47 @@ impl RenderGraph {
         }
 
         let device = self.core.device().inner().clone();
-        // The persistent cmd buffer was allocated in `RenderGraph::new`. Reset
-        // it before re-recording — the pool was created with
-        // `RESET_COMMAND_BUFFER`, so per-buffer reset is allowed. No
-        // `ONE_TIME_SUBMIT` flag since the buffer is re-used across compiles.
-        let raw_cb = self.cmd_buffer.inner();
+        // This slot's command buffer was allocated in `RenderGraph::new`. Reset it
+        // before re-recording — the pool was created with `RESET_COMMAND_BUFFER`,
+        // so per-buffer reset is allowed. No `ONE_TIME_SUBMIT` flag since the buffer
+        // is re-used every N frames; `wait_for_slot_reuse` guaranteed this slot's
+        // previous submission is complete before we reset it.
+        let raw_cb = self.cmd_buffers[slot].inner();
         unsafe {
             device.reset_command_buffer(raw_cb, vk::CommandBufferResetFlags::empty())?;
             device.begin_command_buffer(raw_cb, &vk::CommandBufferBeginInfo::default())?;
+        }
+
+        // Transfer prologue: arena staging→GPU copies (queued by the resource
+        // manager on asset load) recorded at the head of this submission, then one
+        // buffer barrier so the RT/compute passes that read the arenas (by device
+        // address) see the writes. Recorded outside the hazard graph on purpose —
+        // the arenas are program-lifetime, CPU ring-buffered, and never graph
+        // resources (see `add_prologue_buffer_copies`).
+        if !self.prologue_copies.is_empty() {
+            let unique_dsts: HashSet<vk::Buffer> = self.prologue_copies.iter().map(|(_, dst, _)| *dst).collect();
+            let barriers: Vec<vk::BufferMemoryBarrier2> = unique_dsts
+                .into_iter()
+                .map(|buf| {
+                    vk::BufferMemoryBarrier2::default()
+                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                        .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags2::COMPUTE_SHADER)
+                        .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .buffer(buf)
+                        .offset(0)
+                        .size(vk::WHOLE_SIZE)
+                })
+                .collect();
+            unsafe {
+                for (src, dst, region) in &self.prologue_copies {
+                    device.cmd_copy_buffer(raw_cb, *src, *dst, std::slice::from_ref(region));
+                }
+                let dep = vk::DependencyInfo::default().buffer_memory_barriers(&barriers);
+                device.cmd_pipeline_barrier2(raw_cb, &dep);
+            }
         }
 
         // Initial layout transitions for created (transient) images. Their memory
@@ -859,7 +1012,7 @@ impl RenderGraph {
         }
 
         if !init_barriers.is_empty() {
-            self.transient_resources.emit_barriers(&device, raw_cb, &init_barriers);
+            self.transient_resources[slot].emit_barriers(&device, raw_cb, &init_barriers);
         }
 
         // Drive each pass in topological order. We borrow `self.passes` mutably
@@ -869,8 +1022,8 @@ impl RenderGraph {
             let pass_id = dep_graph[*node];
 
             if let Some(barriers) = incoming.remove(&pass_id) {
-                self.transient_resources.emit_barriers(&device, raw_cb, &barriers);
-                self.transient_resources.recorded_barriers.push((pass_id, barriers));
+                self.transient_resources[slot].emit_barriers(&device, raw_cb, &barriers);
+                self.transient_resources[slot].recorded_barriers.push((pass_id, barriers));
             }
 
             let common = match &mut self.passes[pass_id] {
@@ -881,7 +1034,7 @@ impl RenderGraph {
             };
             if let Some(render) = common.render.as_mut() {
                 let mut cb_handle = raw_cb;
-                render(&mut cb_handle, &self.transient_resources)?;
+                render(&mut cb_handle, &self.transient_resources[slot])?;
             }
         }
 
@@ -906,20 +1059,45 @@ impl RenderGraph {
         self.resource_end_states.get(&handle.id)
     }
 
-    /// Submit the recorded command buffer to the graphics queue, signaling
-    /// `signal_fence` when GPU execution completes. The caller owns the fence
-    /// and is responsible for waiting on it before the next `compile`
-    /// re-records into the same command buffer.
-    pub fn run(
-        &mut self,
-        signal_fence: &mut Fence,
-        wait_semaphores: &[vk::Semaphore],
-        wait_stages: &[vk::PipelineStageFlags],
-    ) -> SrResult<()> {
-        let fence_handle = signal_fence.submit()?;
+    /// Submit this frame's recorded command buffer to the graphics queue,
+    /// signaling `graph_timeline` with the absolute frame count when it completes.
+    ///
+    /// The submission waits on `graph_timeline >= frame - 1`: the graph has no way
+    /// to express cross-compile temporal dependencies (the accumulation / denoise /
+    /// reservoir ping-pong buffers frame F reads were written by frame F-1), so it
+    /// conservatively orders the whole graph after the previous frame's. This
+    /// serializes GPU graph work but leaves the CPU free to record ahead — the
+    /// overlap this buys is CPU-of-frame-F+1 against GPU-of-frame-F. Any binary
+    /// `wait_semaphores` (async transfers) are added on top.
+    ///
+    /// Retires this frame's passes into the slot's bin afterwards: they own the
+    /// AS-build scratch the GPU reads, so they must outlive the submission — the
+    /// bin is cleared when the slot is reused N frames later (see `reset`).
+    pub fn run(&mut self, wait_semaphores: &[vk::Semaphore], wait_stages: &[vk::PipelineStageFlags]) -> SrResult<()> {
+        let slot = self.current_slot();
+        let frame = *self.core.absolute_frame_count.borrow() as u64;
+
+        let mut waits: Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> = vec![(
+            self.graph_timeline.inner(),
+            frame.saturating_sub(1),
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+        )];
+        for (sem, stage) in wait_semaphores.iter().zip(wait_stages.iter()) {
+            // Binary semaphore: value ignored.
+            waits.push((*sem, 0, vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64)));
+        }
+        let signals = [(self.graph_timeline.inner(), frame, vk::PipelineStageFlags2::ALL_COMMANDS)];
+
         self.core
             .graphics_queue()
-            .submit_async(self.cmd_buffer.inner(), wait_semaphores, wait_stages, &[], fence_handle)?;
+            .submit_async_timelines(self.cmd_buffers[slot].inner(), &waits, &signals, vk::Fence::null())?;
+
+        self.retired_passes[slot] = std::mem::take(&mut self.passes);
+        // Park this frame's imported/created resources alongside its passes; the
+        // `Arc`s they hold (the freshly-built TLAS in particular) must outlive the
+        // submission the GPU is now running. Freed when this slot is reused (`reset`),
+        // gated by `wait_for_slot_reuse`.
+        self.retired_resources[slot] = std::mem::take(&mut self.virtual_resources);
         Ok(())
     }
 }
@@ -1076,6 +1254,10 @@ mod tests {
 
         let core = Rc::new(Core::new(false, false, vk::Format::R8G8B8A8_UNORM).expect("Core::new failed"));
         let mut rg = RenderGraph::new(Rc::clone(&core)).expect("RenderGraph::new failed");
+        // Simulate being on frame 1 so `run` signals a valid (>0) timeline value
+        // and the slot index is well-defined.
+        *core.absolute_frame_count.borrow_mut() += 1;
+        let slot = rg.current_slot();
 
         let img_a = rg.create_resource(image(64, "img_a"));
         let img_b = rg.create_resource(image(64, "img_b"));
@@ -1130,7 +1312,7 @@ mod tests {
 
         // Print the transient state — the report now includes the barrier
         // trace recorded by compile.
-        println!("{:?}", rg.transient_resources);
+        println!("{:?}", rg.transient_resources[slot]);
 
         // Both render closures must have fired, producer before consumer.
         {
@@ -1138,20 +1320,25 @@ mod tests {
             assert_eq!(*trace, vec!["producer", "consumer"], "topo order violated");
         }
         // Persistent cmd buffer must be recorded.
-        let recorded_cb = rg.cmd_buffer.inner();
+        let recorded_cb = rg.cmd_buffers[slot].inner();
         assert_ne!(recorded_cb, vk::CommandBuffer::null());
         // At least one barrier must have been recorded (producer→consumer RAW on img_a).
         assert!(
-            !rg.transient_resources.recorded_barriers.is_empty(),
+            !rg.transient_resources[slot].recorded_barriers.is_empty(),
             "expected at least one recorded barrier between producer and consumer"
         );
 
-        // Submit + wait. The graph stays usable for re-compile after run.
-        let mut fence = Fence::new_unsignaled(Rc::clone(core.device())).expect("Fence::new");
-        rg.run(&mut fence, &[], &[]).expect("run failed");
-        fence.wait().expect("fence wait failed");
+        // Submit + wait. The graph stays usable for re-compile after run; the
+        // submission's completion is tracked by the graph timeline, so wait the
+        // queue idle here instead of a per-submit fence.
+        rg.run(&[], &[]).expect("run failed");
+        core.graphics_queue().wait_idle().expect("queue wait_idle failed");
 
         // The same primary command buffer persists; not reallocated by run().
-        assert_eq!(rg.cmd_buffer.inner(), recorded_cb, "cmd_buffer was reallocated across run()");
+        assert_eq!(
+            rg.cmd_buffers[slot].inner(),
+            recorded_cb,
+            "cmd_buffer was reallocated across run()"
+        );
     }
 }

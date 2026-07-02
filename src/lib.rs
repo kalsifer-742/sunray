@@ -154,13 +154,22 @@ pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
 
     prev_view_proj: nalgebra::Matrix4<f32>, //used to calculate motion vectors
 
+    /// Per-frame-in-flight camera-matrices UBOs, indexed by the frame's slot
+    /// (`absolute_frame % MAX_FRAMES_IN_FLIGHT`). The RT shaders reach these by
+    /// device address baked into the push constant, so the buffer (and thus its
+    /// address) must stay registered while the frame's GPU work runs. Recreating
+    /// a fresh buffer every frame churned addresses that the driver/GPU-AV would
+    /// race against an in-flight overlapping frame's read; a persistent slot pool
+    /// keeps the address stable and is only *written* (never destroyed), the write
+    /// gated by `wait_for_slot_reuse`. See the reservoir/temporal buffers for the
+    /// same pattern.
+    matrices_pool: Vec<vulkan_abstraction::UniformBuffer<CameraMatrices>>,
+
     /// Persistent render graph.
     /// Re-populated each frame (passes / imports change because the ping-pong
     /// indices and per-frame descriptor sets do), but the underlying command
     /// buffer is reused across `compile` calls.
     pub render_graph: RenderGraph,
-    /// Fence signaled when the render graph's submission completes.
-    render_graph_fence: vulkan_abstraction::Fence,
 
     /// Timeline semaphore signaled with the **absolute frame count** when a
     /// frame's GPU work (including the final blit) completes. This replaces
@@ -296,7 +305,11 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         )?;
 
         let mut render_graph = RenderGraph::new(Rc::clone(&core))?;
-        let render_graph_fence = vulkan_abstraction::Fence::new_unsignaled(Rc::clone(core.device()))?;
+
+        // Per-slot camera-matrices UBOs (stable device addresses; see field doc).
+        let matrices_pool = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| vulkan_abstraction::UniformBuffer::<CameraMatrices>::new(Rc::clone(&core), 1))
+            .collect::<SrResult<Vec<_>>>()?;
 
         // Temporal (cross-frame) resources: the graph owns the backing memory and
         // preserves it across the per-frame rebuild, so each holds its history.
@@ -373,7 +386,6 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             scene_groups: HashMap::new(),
 
             render_graph,
-            render_graph_fence,
 
             frame_timeline,
             completed_frame,
@@ -392,6 +404,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             postprocess_spirv,
 
             prev_view_proj: nalgebra::zero(),
+            matrices_pool,
 
             image_extent,
             image_format,
@@ -974,6 +987,16 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // ── Start of frame: scheduled callbacks + deferred deallocation of the
         // per-frame resources of frames the timeline reported complete.
         let upcoming_frame = *self.core.absolute_frame_count.borrow() as u64 + 1;
+
+        // Gate reuse of this frame's render-graph slot (its command buffer,
+        // transient pool and retired passes) on the completion of the frame that
+        // used it N frames ago. Done first, before the resource manager reclaims
+        // arena slots (which also assumes that frame is done). Non-blocking in
+        // steady state — this replaced the former device-wide idle wait between
+        // frames, and with it (plus the in-graph arena copy prologue) consecutive
+        // frames overlap: the CPU records frame N+1 while the GPU runs frame N.
+        self.render_graph.wait_for_slot_reuse()?;
+
         self.run_start_of_frame_callbacks(upcoming_frame);
         // Drains every end-of-frame callback the GPU has now finished: per-frame
         // buffer drops, the AS-build heuristic fold-ins (`mark_blas_built` /
@@ -981,20 +1004,6 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // asset removals from `unload_mesh` — the render graph records the builds
         // but can't touch the resource manager's CPU-side wrapper state.
         self.run_due_end_of_frame_callbacks();
-
-        // This wait now guards only the *out-of-graph* arena copy flush that
-        // `start_of_frame` runs (its own synchronous submit into the meshes-info /
-        // emissive arenas, which in-flight frames' RT passes read): without it that
-        // copy could race an in-flight read. It is a no-op on steady frames (the
-        // flush only submits after an asset load). The TLAS/BLAS builds no longer
-        // need it — they're recorded into the graph below and ordered by barriers.
-        //TODO the last device-wide wait: fold the arena flush into a graph transfer
-        //     pass (ordered against the arena reads) and rotate N command
-        //     buffers/fences in the graph, then this wait can go and consecutive
-        //     frames can actually overlap on the GPU.
-        unsafe {
-            self.core.device().inner().device_wait_idle()?;
-        }
 
         self.resource_manager.start_of_frame(upcoming_frame)?;
 
@@ -1013,8 +1022,11 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // a member of `Matrices`) is a ROW of the intended matrix, so the
         // shader's `float4x4(m.vi0, m.vi1, m.vi2, m.vi3)` reconstructs the
         // matrix correctly without any per-shader `transpose()` call.
-        let mut matrices_buffer =
-            vulkan_abstraction::UniformBuffer::<CameraMatrices>::new(Rc::clone(&self.core), 1 as vk::DeviceSize)?;
+        // Write into this frame's slot of the persistent matrices pool (stable
+        // address, no per-frame create/destroy). `wait_for_slot_reuse` above proved
+        // the frame that last used this slot finished its graph, so overwriting the
+        // buffer's contents here can't race an in-flight read.
+        let matrices_slot = (upcoming_frame as usize) % MAX_FRAMES_IN_FLIGHT;
         // Destructure-copy first: `CameraMatrices` is `repr(C, packed)`, so
         // taking references to its fields (which a method call would) is UB.
         let CameraMatrices {
@@ -1023,12 +1035,13 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             view_proj,
             prev_view_proj,
         } = matrices;
-        matrices_buffer.map_mut()?[0] = CameraMatrices {
+        self.matrices_pool[matrices_slot].map_mut()?[0] = CameraMatrices {
             view_inverse: view_inverse.transpose(),
             proj_inverse: proj_inverse.transpose(),
             view_proj: view_proj.transpose(),
             prev_view_proj: prev_view_proj.transpose(),
         };
+        let matrices_address = self.matrices_pool[matrices_slot].get_device_address();
 
         let frame_data = self.resource_manager.frame_instance_data(instances)?;
         let instance_count = frame_data.as_instances.len() as u32;
@@ -1093,7 +1106,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // callback that frees it is already tagged with this frame.
 
         let frame_gpu_data = FrameGpuData {
-            matrices_address: matrices_buffer.get_device_address(),
+            matrices_address,
             entity_transforms_slot: transforms_buffer.raw().storage_slot(),
             emissive_indirection_slot: emissive_indirection_buffer.raw().storage_slot(),
         };
@@ -1102,11 +1115,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             self.build_image_dependent_data(&[dst_image])?;
         }
 
-        // Wait the render graph's previous frame BEFORE we touch graph state:
-        // build_unified_graph -> compile() resets and re-records the persistent
-        // cmd buffer, which is UB while the GPU may still be reading it.
-        self.render_graph_fence.wait()?;
-
+        // The graph's slot (command buffer + transient pool) was already gated for
+        // reuse by `wait_for_slot_reuse` at the top of the frame, and nothing has
+        // been submitted since, so `build_unified_graph` can safely re-record it.
         let result_extent = self.image_extent;
         let postprocess_out = {
             let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
@@ -1142,42 +1153,46 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             .map(|_| vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR)
             .collect::<Vec<_>>();
 
-        // No `device_wait_idle` here: the previous graph submission was already
-        // waited on via `render_graph_fence` before `build_unified_graph` (nothing
-        // is submitted between that wait and here), and this frame's cross-resource
-        // ordering — including the AS-build→trace hazard and the cross-frame TLAS
-        // read→build barrier — is expressed as graph barriers by `compile`.
-        self.render_graph
-            .run(&mut self.render_graph_fence, &wait_semaphores, &wait_stages)?;
-        self.render_graph_fence.wait()?;
+        // Submit the graph. `run` signals `graph_timeline` with `frame_value` on
+        // completion and internally waits the previous frame's graph (the
+        // cross-compile temporal ping-pong dependency, plus the in-graph AS-build→
+        // trace and cross-frame TLAS read→build barriers `compile` emits). No CPU
+        // wait here: the blit below waits `graph_timeline` on the GPU, so the CPU is
+        // free to start recording the next frame — consecutive frames overlap.
+        self.render_graph.run(&wait_semaphores, &wait_stages)?;
 
         // === Blit postprocess result -> caller's target (outside the graph) ===
-        // The blit submission signals the frame timeline with this frame's
-        // absolute number — that's the frame's "render end" signal.
-        let single_stage = [vk::PipelineStageFlags::ALL_GRAPHICS];
-        let (wait_sems, wait_dst_stages): (&[vk::Semaphore], &[vk::PipelineStageFlags]) = if wait_sem == vk::Semaphore::null() {
-            (&[], &[])
-        } else {
-            (std::slice::from_ref(&wait_sem), &single_stage)
-        };
+        // The blit reads the post-process image the graph just wrote, so it waits
+        // `graph_timeline >= frame_value` at the transfer stage — the GPU-side
+        // hand-off that replaced the old CPU fence wait. It also waits the caller's
+        // optional `wait_sem` (e.g. the acquired swapchain image), and signals
+        // `frame_timeline` with this frame's number — the frame's "render end".
+        let mut blit_waits: Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> = vec![(
+            self.render_graph.graph_timeline_inner(),
+            frame_value,
+            vk::PipelineStageFlags2::TRANSFER,
+        )];
+        if wait_sem != vk::Semaphore::null() {
+            blit_waits.push((wait_sem, 0, vk::PipelineStageFlags2::ALL_COMMANDS));
+        }
+        let blit_signals = [(
+            self.frame_timeline.inner(),
+            frame_value,
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+        )];
 
         let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
         let blit_fence = idd.blit_cmd_buf.fence_mut().submit()?;
         let blit_cmd = idd.blit_cmd_buf.inner();
-        self.core.graphics_queue().submit_async_with_timeline(
-            blit_cmd,
-            wait_sems,
-            wait_dst_stages,
-            (self.frame_timeline.inner(), frame_value),
-            blit_fence,
-        )?;
+        self.core
+            .graphics_queue()
+            .submit_async_timelines(blit_cmd, &blit_waits, &blit_signals, blit_fence)?;
 
         // ── End of frame: the frame-local buffers stay alive until the GPU is
         // done with this frame, then get dropped on the render thread.
         self.end_of_frame_callbacks.push((
             frame_value,
             Box::new(move |_renderer| {
-                drop(matrices_buffer);
                 drop(instances_buffer);
                 drop(transforms_buffer);
                 drop(emissive_indirection_buffer);
@@ -1394,8 +1409,15 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         self.relative_frame_count += 1;
         *self.core.absolute_frame_count.borrow_mut() += 1;
 
+        // Arena staging→GPU copies queued by asset loads: hand them to the graph so
+        // it records them as a transfer prologue at the head of this submission
+        // (ordered before the shader reads). Drained before the `rg` borrow so it
+        // stays disjoint from `self.resource_manager`.
+        let arena_copies = self.resource_manager.take_queued_copies();
+
         let rg = &mut self.render_graph;
         rg.reset();
+        rg.add_prologue_buffer_copies(arena_copies);
 
         // Record this frame's acceleration-structure builds into the graph before
         // any consumer: pending BLAS builds first (so the TLAS build orders itself
