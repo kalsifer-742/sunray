@@ -39,7 +39,7 @@ use vulkan_abstraction::buffer::BufferDesc;
 use vulkan_abstraction::image::ImageDesc;
 
 //TODO finello
-pub const DENOISE_PASSES: u32 = 8;
+pub const DENOISE_PASSES: u32 = 4;
 //TODO finello
 pub const EXPOSURE: f32 = 1.0;
 
@@ -233,10 +233,14 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     ) -> SrResult<Self> {
         let with_validation_layer = env_var_as_bool(ENABLE_VALIDATION_LAYER_ENV_VAR).unwrap_or(IS_DEBUG_BUILD);
         let with_gpuav = env_var_as_bool(ENABLE_GPUAV_ENV_VAR_NAME).unwrap_or(false);
-        // Map the ENABLE_NVIDIA_AFTERMATH env var (legacy) onto the new
-        // DiagnosticTool enum. When the user wants RenderDoc / RGP support,
-        // add the corresponding env vars here and switch the match arm.
-        let diagnostics = if env_var_as_bool(ENABLE_NVIDIA_AFTERMATH_VAR_NAME).unwrap_or(false) {
+        // Select the GPU diagnostic backend from env. `ENABLE_NSIGHT` forces
+        // VK_EXT_debug_utils on (even without validation) and emits per-pass
+        // command-buffer labels + object names so an Nsight Graphics capture is
+        // readable and can inspect the descriptor heap (which RenderDoc can't).
+        // `ENABLE_NVIDIA_AFTERMATH` (legacy) keeps the crash-dump path.
+        let diagnostics = if env_var_as_bool(ENABLE_NSIGHT_VAR_NAME).unwrap_or(false) {
+            DiagnosticTool::NvidiaNsightGraphics
+        } else if env_var_as_bool(ENABLE_NVIDIA_AFTERMATH_VAR_NAME).unwrap_or(false) {
             DiagnosticTool::NvidiaAftermath
         } else {
             DiagnosticTool::None
@@ -1199,6 +1203,31 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             }),
         ));
 
+        // Whole-frame serialization: block until this frame fully completes on
+        // the GPU before returning, so the next frame's CPU recording can't
+        // overlap this frame's in-flight GPU work. ON BY DEFAULT.
+        //
+        // ponytail: serialized by default; opt into overlap with SUNRAY_SERIALIZE_FRAMES=0,
+        //           real fix is per-in-flight-slot duplication of every per-frame resource.
+        //
+        // Why: frame overlap causes an async use-after-free that crashes inside
+        // the NVIDIA driver (`nvoglv64` null-deref on a driver worker thread,
+        // NOT a DEVICE_LOST) — the driver consumes a per-frame resource on its
+        // own thread after the CPU has already recycled it a frame later. It is
+        // invisible to the validation layer (the fault happens after the
+        // validated submit call returns) and only whole-frame serialization
+        // avoids it. The earlier temporal-barrier fix (`RenderGraph::compile`
+        // threads each temporal backing's end access into next frame's compile)
+        // was necessary but not sufficient. Overlap is also low value here: graph
+        // GPU work is already serialized (`RenderGraph::run` waits
+        // `graph_timeline >= N-1`) and the workload is heavily GPU-bound, so
+        // CPU-record-ahead buys almost nothing. Properly fixing overlap needs
+        // every per-frame-referenced resource duplicated per in-flight slot — a
+        // rework to do only if profiling shows CPU-ahead actually matters.
+        if env_var_as_bool(SERIALIZE_FRAMES_VAR_NAME).unwrap_or(true) {
+            self.frame_timeline.wait(frame_value)?;
+        }
+
         Ok(frame_value)
     }
 
@@ -2013,6 +2042,8 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 const ENABLE_VALIDATION_LAYER_ENV_VAR: &str = "ENABLE_VALIDATION_LAYER"; // defaults to 0 in debug build, to 1 in release build
 const ENABLE_GPUAV_ENV_VAR_NAME: &str = "ENABLE_GPUAV"; // does nothing unless validation layer is enabled, defaults to 0
 const ENABLE_NVIDIA_AFTERMATH_VAR_NAME: &str = "ENABLE_NVIDIA_AFTERMATH"; // does nothing unless validation layer is enabled, defaults to 0
+const ENABLE_NSIGHT_VAR_NAME: &str = "ENABLE_NSIGHT"; // forces debug-utils labels/naming for Nsight Graphics captures, defaults to 0
+const SERIALIZE_FRAMES_VAR_NAME: &str = "SUNRAY_SERIALIZE_FRAMES"; // whole-frame serialization; defaults to 1 (on). Set to 0 to opt into frame overlap (has a known async-UAF driver crash — see render()).
 const ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR: &str = "ENABLE_SHADER_DEBUG_SYMBOLS"; // defaults to 0 in debug build, to 1 in release build
 const IS_DEBUG_BUILD: bool = cfg!(debug_assertions);
 

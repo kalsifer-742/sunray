@@ -275,12 +275,18 @@ impl TransientResources {
 
         // ---------- Phase 4: bind each handle into its slot's memory, wrap, pre-reserve descriptors. ----------
         let device = core.device().inner();
+        let name_objects = core.debug_labels_enabled();
         for (res_id, p) in pending {
             let slot = self.resource_slots[&res_id];
             let alloc = &slot_allocations[slot as usize];
             match p {
                 PendingTransient::Image { handle, reqs, desc } => {
                     unsafe { device.bind_image_memory(handle, alloc.memory(), alloc.offset()) }?;
+                    if name_objects {
+                        if let Ok(cname) = std::ffi::CString::new(desc.name) {
+                            core.set_debug_object_name(handle, &cname);
+                        }
+                    }
                     let image = Image::from_aliased(Rc::clone(&core), handle, desc.extent, desc.format, reqs.size)?;
                     // TODO: this descriptor pre-assignment exists for the legacy single-
                     //       slot-per-resource model; the heap rework will replace it.
@@ -294,6 +300,11 @@ impl TransientResources {
                 }
                 PendingTransient::Buffer { handle, reqs: _, desc } => {
                     unsafe { device.bind_buffer_memory(handle, alloc.memory(), alloc.offset()) }?;
+                    if name_objects {
+                        if let Ok(cname) = std::ffi::CString::new(desc.name) {
+                            core.set_debug_object_name(handle, &cname);
+                        }
+                    }
                     let buffer = RawBuffer::from_aliased(Rc::clone(&core), handle, desc.byte_size, desc.usage)?;
                     // TODO: same legacy-descriptor caveat as the image path above.
                     if desc.usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER) {

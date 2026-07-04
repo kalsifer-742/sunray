@@ -176,10 +176,14 @@ impl Instance {
         let supported_debug_extensions = Self::filter_supported_exts(entry, None, &Self::DEBUG_EXTENSIONS)?;
         let enable_layer_settings = enable_validation_layer
             && !Self::filter_supported_exts(entry, Some(Self::VALIDATION_LAYER_NAME), &[ext::layer_settings::NAME])?.is_empty();
-        let enable_debug_utils = enable_validation_layer && supported_debug_extensions.contains(&ext::debug_utils::NAME);
+        // Debug-utils is enabled for validation *or* when a capture tool wants
+        // object names / command-buffer labels (Nsight Graphics, RenderDoc) —
+        // those are usually run without the validation layer.
+        let enable_debug_utils =
+            (enable_validation_layer || diagnostics.wants_debug_labels()) && supported_debug_extensions.contains(&ext::debug_utils::NAME);
 
         let instance_extensions = {
-            if enable_validation_layer {
+            if enable_debug_utils {
                 instance_exts
                     .iter()
                     .copied()
@@ -211,6 +215,15 @@ impl Instance {
             validation_setting(c"gpuav_shader_instrumentation", with_gpuav), // instrument shaders to validate descriptors (aka shader instrumentality project)
             validation_setting(c"gpuav_validate_ray_query", false), // ignore gpuav warning that rayQuery feature is not supported
             validation_setting(c"validate_sync", true),
+            // Submit-time sync validation follows the timeline-semaphore ordering
+            // *across* queue submits, so it can catch a cross-frame hazard the
+            // per-command-buffer pass misses (exactly our overlap case).
+            validation_setting(c"syncval_submit_time_validation", true),
+            // Heuristic tracking of hazards reached through descriptor indexing /
+            // buffer-device-address (bindless). Our reservoir ping-pong is read
+            // via BDA, which plain syncval doesn't follow — this is what lets it
+            // flag an unsynchronized cross-frame reservoir read/write.
+            validation_setting(c"syncval_shader_accesses_heuristic", true),
             validation_setting(c"validate_best_practices", true),
         ];
         let mut layer_settings_create_info = if enable_layer_settings {
@@ -278,6 +291,11 @@ impl Instance {
     }
     pub fn diagnostics(&self) -> &DiagnosticsContext {
         &self.diagnostics
+    }
+    /// Whether `VK_EXT_debug_utils` was enabled at instance creation (so device
+    /// object naming / command-buffer labels are usable).
+    pub fn debug_utils_enabled(&self) -> bool {
+        self.debug_utils_instance.is_some()
     }
     pub fn diagnostics_mut(&mut self) -> &mut DiagnosticsContext {
         &mut self.diagnostics

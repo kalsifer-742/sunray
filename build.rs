@@ -100,13 +100,13 @@ fn compile_slang_shader(module_name: &str, entry_point: &str, out_file_name: &st
     // emit maximal SPIR-V debug info so Aftermath/RenderDoc resolve source.
     let session_options = if debug {
         slang::CompilerOptions::default()
-            .optimization(slang::OptimizationLevel::None)
+            .optimization(slang::OptimizationLevel::None)//TODO level of opt
             .debug_information(slang::DebugInfoLevel::Maximal)
             .matrix_layout_row(false)
             .capability(descriptor_heap_cap)
     } else {
         slang::CompilerOptions::default()
-            .optimization(slang::OptimizationLevel::High)
+            .optimization(slang::OptimizationLevel::Maximal)
             .matrix_layout_row(false)
             .capability(descriptor_heap_cap)
     };

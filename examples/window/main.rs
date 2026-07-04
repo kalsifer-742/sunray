@@ -20,6 +20,7 @@ use winit::{
     raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle},
     window::{CursorGrabMode, Window},
 };
+use winit::dpi::LogicalSize;
 
 mod utils;
 
@@ -94,7 +95,7 @@ impl App {
 
         // The scene's instance list belongs to the caller: keep it here and
         // pass it to `render_to_swapchain` every frame.
-        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/Room.glb")?;
+        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/ReflectionRoom.glb")?;
         self.scene_instances = scene_instances;
         log::info!("Loaded {} unique BLASes from scene", self.scene_instances.len());
 
@@ -321,7 +322,7 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        let window = event_loop.create_window(Window::default_attributes()).unwrap();
+        let window = event_loop.create_window(Window::default_attributes().with_inner_size(LogicalSize::new(2650, 1440))).unwrap();
         let window_size = window.inner_size().into();
         self.window = Some(window);
 

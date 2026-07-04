@@ -288,6 +288,13 @@ pub struct RenderGraph {
     /// later stage can sync against the graph with a barrier instead of a
     /// device-wait-idle; nothing consumes it yet.
     resource_end_states: HashMap<u32, ResourceEndState>,
+    /// `(temporal_index, copy_index, resource_id)` for every temporal backing
+    /// registered into *this* frame's build. After `compile` computes each
+    /// resource's end access, it threads that access back into the matching
+    /// `temporal_resources[ti].imports[ci]` so *next* frame's compile emits the
+    /// cross-frame barrier for the ping-pong write→read (mirrors what
+    /// `Tlas::queue_build` does explicitly for the TLAS). Cleared on `reset`.
+    registered_temporal: Vec<(usize, usize, u32)>,
     /// One primary command buffer per frame-in-flight slot, re-recorded when its
     /// slot comes around (reuse gated by [`Self::wait_for_slot_reuse`]).
     cmd_buffers: Vec<CmdBuffer>,
@@ -312,6 +319,11 @@ pub struct RenderGraph {
     /// ping-pong wait (frame F's graph waits F-1's), and the blit's wait on the
     /// graph — together replacing the old per-frame fence + device-wait-idle.
     graph_timeline: TimelineSemaphore,
+    /// Interned `'static` checkpoint markers, keyed by pass name. Aftermath reads
+    /// `p_checkpoint_marker` back *after* a DEVICE_LOST, so the string must
+    /// outlive the frame — leaked once per unique pass name (a bounded set).
+    /// Only populated when the Aftermath diagnostic tool is active.
+    checkpoint_markers: HashMap<String, &'static std::ffi::CStr>,
     /// Cached so `run` can submit and `compile` can record without the caller
     /// having to re-thread `Core` through every call.
     core: Rc<Core>,
@@ -337,6 +349,8 @@ impl RenderGraph {
             transient_resources,
             swapchain_resource_id: None,
             resource_end_states: HashMap::new(),
+            registered_temporal: Vec::new(),
+            checkpoint_markers: HashMap::new(),
             cmd_buffers,
             retired_passes,
             retired_resources,
@@ -400,6 +414,7 @@ impl RenderGraph {
         self.prologue_copies.clear();
         self.swapchain_resource_id = None;
         self.resource_end_states.clear();
+        self.registered_temporal.clear();
         // Free the previous occupant of this slot (frame N - MAX_FRAMES_IN_FLIGHT):
         // its passes own the AS-build scratch the GPU read, and `wait_for_slot_reuse`
         // proved that frame's submission is complete. This slot's transient pool is
@@ -460,8 +475,18 @@ impl RenderGraph {
         let graph_desc: GraphResourceDesc = desc.clone().into();
 
         let mut backings: Vec<GraphResourceImportInfo> = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            backings.push(self.allocate_temporal_backing(&graph_desc)?);
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let backing = self.allocate_temporal_backing(&graph_desc)?;
+            // Name each ping-pong copy for GPU captures, e.g.
+            // "ReSTIR GI Reservoir Buffer[0]" (no-op without debug-utils).
+            if self.core.debug_labels_enabled() {
+                if let Some(name) = graph_desc_name(&graph_desc) {
+                    if let Ok(cname) = std::ffi::CString::new(format!("{name}[{i}]")) {
+                        name_import(&self.core, &backing, &cname);
+                    }
+                }
+            }
+            backings.push(backing);
         }
         let imports: [GraphResourceImportInfo; MAX_FRAMES_IN_FLIGHT] = backings
             .try_into()
@@ -493,9 +518,13 @@ impl RenderGraph {
     ) -> [Handle<R>; MAX_FRAMES_IN_FLIGHT] {
         let imports = self.temporal_resources[exported.index].imports.clone();
         std::array::from_fn(|i| {
+            let id = self.next_resource_id();
             self.virtual_resources.push(GraphResourceInfo::Imported(imports[i].clone()));
+            // Remember this backing's resource id so `compile` can thread its
+            // end-of-frame access back into the stored import (cross-frame sync).
+            self.registered_temporal.push((exported.index, i, id));
             Handle {
-                id: self.next_resource_id(),
+                id,
                 desc: exported.desc.clone(),
                 marker: PhantomData,
             }
@@ -865,6 +894,21 @@ impl RenderGraph {
             );
         }
 
+        // Cross-frame sync for temporal (ping-pong / history) resources: thread
+        // each backing's end access this frame back into its stored import, so
+        // *next* frame's compile emits the read→write (or write→read) barrier for
+        // the same physical backing across the frame boundary. Without this the
+        // imports always re-enter as `Nothing` and the hazard graph — which only
+        // orders passes *within* one compile — never synchronizes the ping-pong
+        // reuse, leaving frame N's reservoir/accumulation write unordered against
+        // frame N+1's read of the same memory. The TLAS gets this treatment
+        // explicitly via `Tlas::queue_build`; temporal resources get it here.
+        for &(ti, ci, rid) in &self.registered_temporal {
+            if let Some(end) = self.resource_end_states.get(&rid) {
+                set_import_access(&mut self.temporal_resources[ti].imports[ci], end.end_access);
+            }
+        }
+
         // Weakly-connected components via union-find over dependency edges. Any resource
         // shared by multiple passes already produced at least one hazard edge above, so
         // passes that share a resource end up in the same component.
@@ -1015,6 +1059,27 @@ impl RenderGraph {
             self.transient_resources[slot].emit_barriers(&device, raw_cb, &init_barriers);
         }
 
+        // Pass names, gathered up front (the loop borrows `self.passes` mutably):
+        // used both for GPU-capture labels and the optional graph dump below.
+        let pass_names: Vec<String> = self.passes.iter().map(pass_common_name).collect();
+        // Pre-build nul-terminated labels only when a capture tool is active.
+        let labels_on = self.core.debug_labels_enabled();
+        let pass_clabels: Vec<Option<std::ffi::CString>> = if labels_on {
+            pass_names.iter().map(|n| std::ffi::CString::new(n.as_str()).ok()).collect()
+        } else {
+            Vec::new()
+        };
+        // Per-pass Aftermath checkpoints: a completed checkpoint means the GPU
+        // reached that pass, so after a DEVICE_LOST the last one logged names the
+        // faulting pass. No-op unless Aftermath is active.
+        let checkpoints_on =
+            self.core.diagnostic_tool() == crate::vulkan_abstraction::diagnostics::DiagnosticTool::NvidiaAftermath;
+        let pass_markers: Vec<&'static std::ffi::CStr> = if checkpoints_on {
+            pass_names.iter().map(|n| self.intern_marker(n)).collect()
+        } else {
+            Vec::new()
+        };
+
         // Drive each pass in topological order. We borrow `self.passes` mutably
         // (closures are FnMut) but only `self.transient_resources` immutably, so
         // the disjoint-field split borrow is fine.
@@ -1024,6 +1089,17 @@ impl RenderGraph {
             if let Some(barriers) = incoming.remove(&pass_id) {
                 self.transient_resources[slot].emit_barriers(&device, raw_cb, &barriers);
                 self.transient_resources[slot].recorded_barriers.push((pass_id, barriers));
+            }
+
+            if checkpoints_on {
+                self.core.cmd_set_checkpoint(raw_cb, pass_markers[pass_id]);
+            }
+
+            // Bracket the pass in a debug-utils label so it shows as a named
+            // scope in an Nsight Graphics / RenderDoc capture (no-op otherwise).
+            let has_label = labels_on && matches!(pass_clabels.get(pass_id), Some(Some(_)));
+            if has_label {
+                self.core.cmd_begin_debug_label(raw_cb, pass_clabels[pass_id].as_ref().unwrap());
             }
 
             let common = match &mut self.passes[pass_id] {
@@ -1036,11 +1112,114 @@ impl RenderGraph {
                 let mut cb_handle = raw_cb;
                 render(&mut cb_handle, &self.transient_resources[slot])?;
             }
+
+            if has_label {
+                self.core.cmd_end_debug_label(raw_cb);
+            }
         }
 
         unsafe { device.end_command_buffer(raw_cb)? };
 
+        // Optional per-frame graph dump (DOT + text) for offline visualization —
+        // enabled by setting `SUNRAY_GRAPH_DUMP_DIR`. Cheap gate: only builds the
+        // dump when the env var is present.
+        if let Ok(dir) = std::env::var("SUNRAY_GRAPH_DUMP_DIR") {
+            self.dump_graph(&dir, &pass_names, &dep_graph, &init_barriers, slot);
+        }
+
         Ok(())
+    }
+
+    /// Return a `'static` checkpoint marker for `name`, leaking a fresh
+    /// `CString` the first time each name is seen (pass names are a bounded set,
+    /// so this leaks a handful of strings total over the program's life).
+    fn intern_marker(&mut self, name: &str) -> &'static std::ffi::CStr {
+        if let Some(m) = self.checkpoint_markers.get(name) {
+            return *m;
+        }
+        let leaked: &'static std::ffi::CStr = Box::leak(
+            std::ffi::CString::new(name)
+                .unwrap_or_default()
+                .into_boxed_c_str(),
+        );
+        self.checkpoint_markers.insert(name.to_owned(), leaked);
+        leaked
+    }
+
+    /// Build and write a [`graph_debug::GraphDump`] for the just-compiled frame.
+    /// Split out of `compile` to keep that function readable; only called when
+    /// `SUNRAY_GRAPH_DUMP_DIR` is set.
+    fn dump_graph(
+        &self,
+        dir: &str,
+        pass_names: &[String],
+        dep_graph: &petgraph::graph::DiGraph<usize, PassDependency>,
+        init_barriers: &[ResourceBarrier],
+        slot: usize,
+    ) {
+        use crate::render_graph::graph_debug::{GraphDump, ResourceDumpInfo};
+
+        let transient = &self.transient_resources[slot];
+        let resources: Vec<ResourceDumpInfo> = self
+            .virtual_resources
+            .iter()
+            .enumerate()
+            .map(|(id, info)| {
+                let id = id as u32;
+                let (kind, detail, import_access) = match info {
+                    GraphResourceInfo::Created(GraphResourceDesc::Image(d)) => (
+                        "created-image",
+                        format!("{} {}x{}", d.name, d.extent.width, d.extent.height),
+                        None,
+                    ),
+                    GraphResourceInfo::Created(GraphResourceDesc::Buffer(d)) => {
+                        ("created-buffer", format!("{} {}B", d.name, d.byte_size), None)
+                    }
+                    GraphResourceInfo::Created(GraphResourceDesc::Sampler(_)) => ("created-sampler", String::new(), None),
+                    GraphResourceInfo::Created(GraphResourceDesc::RaytracingAS(_)) => ("created-as", String::new(), None),
+                    GraphResourceInfo::Imported(import) => {
+                        let access = Some(imported_initial_access(import));
+                        match import {
+                            GraphResourceImportInfo::Image { resource, .. } => {
+                                let e = resource.extent();
+                                ("imported-image", format!("{}x{}", e.width, e.height), access)
+                            }
+                            GraphResourceImportInfo::SwapchainImage { resource } => {
+                                let e = resource.extent();
+                                ("imported-swapchain", format!("{}x{}", e.width, e.height), access)
+                            }
+                            GraphResourceImportInfo::Buffer { resource, .. } => {
+                                ("imported-buffer", format!("{}B", resource.byte_size()), access)
+                            }
+                            GraphResourceImportInfo::Sampler { .. } => ("imported-sampler", String::new(), access),
+                            GraphResourceImportInfo::RayTracingAcceleration { .. } => ("imported-as", String::new(), access),
+                        }
+                    }
+                };
+                ResourceDumpInfo {
+                    id,
+                    kind,
+                    detail,
+                    slot: transient.resource_slots.get(&id).copied(),
+                    import_access,
+                }
+            })
+            .collect();
+
+        let edges: Vec<(usize, usize, &[ResourceBarrier])> = dep_graph
+            .edge_references()
+            .map(|e| (dep_graph[e.source()], dep_graph[e.target()], e.weight().barriers.as_slice()))
+            .collect();
+
+        let dump = GraphDump {
+            frame: *self.core.absolute_frame_count.borrow() as u64,
+            pass_names: pass_names.to_vec(),
+            edges,
+            resources,
+            init_barriers,
+            aliasing_report: format!("{transient:?}"),
+        };
+        dump.write_to(dir);
     }
 
     /// End states of every resource as collected by the last [`Self::compile`],
@@ -1112,6 +1291,51 @@ fn imported_initial_access(import: &GraphResourceImportInfo) -> vk_sync::AccessT
         GraphResourceImportInfo::Buffer { access_type, .. } => *access_type,
         GraphResourceImportInfo::RayTracingAcceleration { access_type, .. } => *access_type,
         GraphResourceImportInfo::Sampler { .. } | GraphResourceImportInfo::SwapchainImage { .. } => vk_sync::AccessType::Nothing,
+    }
+}
+
+/// Overwrite the carried cross-frame access of an import (no-op for the variants
+/// that don't track one). Used to thread a temporal backing's end-of-frame
+/// access into next frame's compile — see the write-back loop in `compile`.
+fn set_import_access(import: &mut GraphResourceImportInfo, access: vk_sync::AccessType) {
+    match import {
+        GraphResourceImportInfo::Image { access_type, .. } => *access_type = access,
+        GraphResourceImportInfo::Buffer { access_type, .. } => *access_type = access,
+        GraphResourceImportInfo::RayTracingAcceleration { access_type, .. } => *access_type = access,
+        GraphResourceImportInfo::Sampler { .. } | GraphResourceImportInfo::SwapchainImage { .. } => {}
+    }
+}
+
+/// The static name carried by an image/buffer resource desc (used for object
+/// naming). `None` for descs that don't carry a name.
+fn graph_desc_name(desc: &GraphResourceDesc) -> Option<&'static str> {
+    match desc {
+        GraphResourceDesc::Image(d) => Some(d.name),
+        GraphResourceDesc::Buffer(d) => Some(d.name),
+        GraphResourceDesc::Sampler(_) | GraphResourceDesc::RaytracingAS(_) => None,
+    }
+}
+
+/// Attach a debug-utils name to whatever concrete vk handle an import wraps.
+fn name_import(core: &Core, import: &GraphResourceImportInfo, name: &std::ffi::CStr) {
+    match import {
+        GraphResourceImportInfo::Image { resource, .. } | GraphResourceImportInfo::SwapchainImage { resource } => {
+            core.set_debug_object_name(resource.inner(), name)
+        }
+        GraphResourceImportInfo::Buffer { resource, .. } => core.set_debug_object_name(resource.inner(), name),
+        GraphResourceImportInfo::RayTracingAcceleration { resource, .. } => core.set_debug_object_name(resource.inner(), name),
+        GraphResourceImportInfo::Sampler { .. } => {}
+    }
+}
+
+/// The `PassCommonData::name` of any pass variant. Used for GPU-capture labels
+/// and the graph dump.
+fn pass_common_name(pass: &AnyRenderPass) -> String {
+    match pass {
+        AnyRenderPass::Rt(rt) => rt.common.name.clone(),
+        AnyRenderPass::Raster(r) => r.common.name.clone(),
+        AnyRenderPass::Compute(c) => c.common.name.clone(),
+        AnyRenderPass::Transfer(t) => t.common.name.clone(),
     }
 }
 

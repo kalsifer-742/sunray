@@ -120,11 +120,15 @@ impl Core {
             &surface_support,
         )?);
 
-        // Load device-side checkpoint function pointers (no-op when diagnostics == None).
+        // Load device-side checkpoint + debug-utils function pointers (no-op when
+        // diagnostics == None and debug_utils is off).
         {
             let inst_handle = instance.inner().clone();
             let dev_handle = device.inner().clone();
-            instance.diagnostics_mut().load_device(&inst_handle, &dev_handle);
+            let debug_utils_available = instance.debug_utils_enabled();
+            instance
+                .diagnostics_mut()
+                .load_device(&inst_handle, &dev_handle, debug_utils_available);
         }
 
         let mut allocator = Allocator::new(&AllocatorCreateDesc {
@@ -277,6 +281,30 @@ impl Core {
 
     pub fn diagnostic_tool(&self) -> vulkan_abstraction::DiagnosticTool {
         self.instance.diagnostics().tool()
+    }
+
+    /// Open a labeled command-buffer region for GPU captures (Nsight Graphics /
+    /// RenderDoc). No-op without `VK_EXT_debug_utils`. Balance with
+    /// [`Self::cmd_end_debug_label`].
+    pub fn cmd_begin_debug_label(&self, cmd: vk::CommandBuffer, label: &std::ffi::CStr) {
+        self.instance.diagnostics().cmd_begin_label(cmd, label);
+    }
+
+    /// Close the most recent [`Self::cmd_begin_debug_label`] region.
+    pub fn cmd_end_debug_label(&self, cmd: vk::CommandBuffer) {
+        self.instance.diagnostics().cmd_end_label(cmd);
+    }
+
+    /// Name a Vulkan object for GPU captures. No-op without `VK_EXT_debug_utils`.
+    /// The object type is derived from the handle's `vk::Handle::TYPE`.
+    pub fn set_debug_object_name<H: vk::Handle>(&self, handle: H, name: &std::ffi::CStr) {
+        self.instance.diagnostics().set_object_name(handle, name);
+    }
+
+    /// Whether debug-utils labels/naming are active (a capture tool or
+    /// validation enabled them). Cheap gate for label-emitting code paths.
+    pub fn debug_labels_enabled(&self) -> bool {
+        self.instance.diagnostics().labels_enabled()
     }
 }
 
