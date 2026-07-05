@@ -72,7 +72,7 @@ impl Swapchain {
         }
     }
 
-    fn build_swapchain(
+    fn build_swapchain( //TODO format and present mod to be asked from outside
         core: &Rc<vulkan_abstraction::Core>,
         surface: vk::SurfaceKHR,
         window_extent: (u32, u32),
@@ -105,15 +105,19 @@ impl Swapchain {
         let swapchain = {
             let present_modes = &device.surface_support_details().surface_present_modes;
             let present_mode = if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
-                vk::PresentModeKHR::MAILBOX
+                vk::PresentModeKHR::MAILBOX //TODO Frames in flight + 2
             } else if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
-                vk::PresentModeKHR::IMMEDIATE
-            } else {
-                vk::PresentModeKHR::FIFO
+                vk::PresentModeKHR::IMMEDIATE //TODO Frames in flight + 1
+            } else if present_modes.contains(&vk::PresentModeKHR::FIFO_RELAXED) {
+                vk::PresentModeKHR::FIFO_RELAXED //TODO Frames in flight + 1
+            }
+            else {
+                vk::PresentModeKHR::FIFO  //TODO Frames in flight + 1
             };
 
             let surface_capabilities = &device.surface_support_details().surface_capabilities;
-            let mut image_count = surface_capabilities.min_image_count + 1;
+            let mut image_count = surface_capabilities.min_image_count + 1; //TODO this needs to be dictated by frames in flight
+
             if surface_capabilities.max_image_count > 0 && image_count > surface_capabilities.max_image_count {
                 image_count = surface_capabilities.max_image_count;
             }
@@ -250,9 +254,9 @@ pub(crate) struct SwapchainData {
     /// One per swapchain image: signaled when the image is PRESENT_SRC, waited by present.
     pub(crate) ready_to_present_sems: Vec<vulkan_abstraction::Semaphore>,
     /// One pre-recorded GENERAL -> PRESENT_SRC barrier per swapchain image.
-    pub(crate) present_barrier_cmd_bufs: Vec<vulkan_abstraction::CmdBuffer>,
+    pub(crate) present_barrier_cmd_bufs: Vec<vulkan_abstraction::CmdBuffer>, //TODO this needs to be move to a method for better rg integration
 
-    pub(crate) frame_count: u64,
+    pub(crate) frame_count: u64, //TODO need to unify the frame across the board maybe with a last frame of resize and a total frame count
 }
 
 /// Everything an external present-finalize pass (e.g. an egui overlay) needs
@@ -291,7 +295,7 @@ impl SwapchainData {
     /// Per-swapchain-image objects: the pre-recorded GENERAL -> PRESENT_SRC
     /// barrier command buffers and the present-wait semaphores. Rebuilt
     /// whenever the swapchain (and so its image list) is rebuilt.
-    pub(crate) fn build_per_image_objects(
+    pub(crate) fn build_per_image_objects( //TODO this is the rg job
         core: &Rc<vulkan_abstraction::Core>,
         swapchain: &Swapchain,
     ) -> SrResult<(Vec<vulkan_abstraction::CmdBuffer>, Vec<vulkan_abstraction::Semaphore>)> {

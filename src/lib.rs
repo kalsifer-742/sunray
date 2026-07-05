@@ -1151,7 +1151,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // against the RT trace by graph barriers, so they no longer contribute a
         // wait here (this drains whatever other transfer producers may have queued;
         // currently none).
-        let wait_semaphores = self.core.transfer_semaphores_mut().drain(..).collect::<Vec<_>>();
+        let wait_semaphores = self.core.transfer_semaphores_mut().drain(..).collect::<Vec<_>>(); //TODO they should always be put inside a render graph frame.
         let wait_stages = wait_semaphores
             .iter()
             .map(|_| vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR)
@@ -1934,6 +1934,8 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     }
 
     //TODO this needs to be reworked for a better integration with the graph or kept as default last pass
+    // This needs to be converted into a generic blit pass that can be added to the graph as a special pass on the graphics queue? Need to inform.
+    // There needs to exists than a method for presentation blitting which does the underlying blitting
     fn cmd_blit_image(
         core: &vulkan_abstraction::Core,
         cmd_buf: vk::CommandBuffer,
