@@ -377,7 +377,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         let swapchain_data = match surface {
             Some(surface_khr) => {
                 let surface = Surface::new(core.entry(), core.instance(), surface_khr);
-                Some(SwapchainData::new(&core, surface, window_extent)?)
+                // Default format / present mode (None → surface-preferred). The
+                // plumbing exists to pin them from here if a caller needs to.
+                Some(SwapchainData::new(&core, surface, window_extent, None, None)?)
             }
             None => None,
         };
@@ -981,12 +983,19 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     /// semaphore is signaled with it when the frame's GPU work (including the
     /// final blit) completes, so "wait for this render to end" is
     /// `wait_frame(value)` — there is no per-frame fence to track.
+    /// `present`, when `Some`, routes the final blit through the render graph's
+    /// `run_present`: the graph command buffer itself blits the post-process
+    /// result into the borrowed swapchain image and transitions it to
+    /// `PRESENT_SRC`, signaling the given binary semaphore for `queue_present`.
+    /// When `None` (offscreen / warm-up), the graph runs plain and the external
+    /// `blit_cmd_buf` copies the result into `dst_image` as before.
     pub fn render(
         &mut self,
         dst_image: vk::Image,
         wait_sem: vk::Semaphore,
         camera: &Camera,
         instances: &[(K, Vec<vk::TransformMatrixKHR>)],
+        present: Option<(&vulkan_abstraction::Image, vk::Semaphore)>,
     ) -> SrResult<u64> {
         // ── Start of frame: scheduled callbacks + deferred deallocation of the
         // per-frame resources of frames the timeline reported complete.
@@ -1125,7 +1134,13 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         let result_extent = self.image_extent;
         let postprocess_out = {
             let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
-            idd.blit_cmd_buf.fence_mut().wait()?;
+            // Only the offscreen path reuses `blit_cmd_buf` (waiting its fence so the
+            // graph doesn't overwrite the result image while the last blit still
+            // reads it). On the present path the blit lives inside the graph
+            // submission, ordered by `graph_timeline`, so there is no external fence.
+            if present.is_none() {
+                idd.blit_cmd_buf.fence_mut().wait()?;
+            }
             Arc::clone(&idd.postprocess_result_image)
         };
 
@@ -1133,7 +1148,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // accumulation, the 8 a-trous denoise passes, and postprocess. Every pass
         // is heap + Slang; the intermediate G-buffer / RT-output images are
         // graph-internal (transient) resources.
-        self.build_unified_graph(
+        let source_h = self.build_unified_graph(
             &postprocess_out,
             result_extent,
             &frame_gpu_data,
@@ -1157,40 +1172,53 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             .map(|_| vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR)
             .collect::<Vec<_>>();
 
-        // Submit the graph. `run` signals `graph_timeline` with `frame_value` on
-        // completion and internally waits the previous frame's graph (the
-        // cross-compile temporal ping-pong dependency, plus the in-graph AS-build→
-        // trace and cross-frame TLAS read→build barriers `compile` emits). No CPU
-        // wait here: the blit below waits `graph_timeline` on the GPU, so the CPU is
-        // free to start recording the next frame — consecutive frames overlap.
-        self.render_graph.run(&wait_semaphores, &wait_stages)?;
+        match present {
+            // === Present path: the blit + PRESENT_SRC transition live *inside* the
+            // graph submission (`run_present`), so there is no separate blit submit.
+            // Waits: the acquired swapchain image (+ any async transfers). Signals:
+            // `frame_timeline` (frame end) and the binary present semaphore that
+            // `queue_present` waits on. The internal `graph_timeline >= N-1` wait /
+            // `= N` signal is added by `run_present`.
+            Some((swapchain_image, present_sem)) => {
+                let mut extra_waits: Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> = Vec::new();
+                if wait_sem != vk::Semaphore::null() {
+                    extra_waits.push((wait_sem, 0, vk::PipelineStageFlags2::TRANSFER));
+                }
+                for (sem, stage) in wait_semaphores.iter().zip(wait_stages.iter()) {
+                    extra_waits.push((*sem, 0, vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64)));
+                }
+                let extra_signals = [
+                    (self.frame_timeline.inner(), frame_value, vk::PipelineStageFlags2::ALL_COMMANDS),
+                    (present_sem, 0, vk::PipelineStageFlags2::ALL_COMMANDS),
+                ];
+                self.render_graph
+                    .run_present(&source_h, swapchain_image, &extra_waits, &extra_signals)?;
+            }
+            // === Offscreen path: run the graph plain, then blit the result into the
+            // caller's target with the external `blit_cmd_buf` as before. The blit
+            // waits `graph_timeline >= frame_value` (GPU hand-off) and signals
+            // `frame_timeline` = frame_value (frame end).
+            None => {
+                self.render_graph.run(&wait_semaphores, &wait_stages)?;
 
-        // === Blit postprocess result -> caller's target (outside the graph) ===
-        // The blit reads the post-process image the graph just wrote, so it waits
-        // `graph_timeline >= frame_value` at the transfer stage — the GPU-side
-        // hand-off that replaced the old CPU fence wait. It also waits the caller's
-        // optional `wait_sem` (e.g. the acquired swapchain image), and signals
-        // `frame_timeline` with this frame's number — the frame's "render end".
-        let mut blit_waits: Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> = vec![(
-            self.render_graph.graph_timeline_inner(),
-            frame_value,
-            vk::PipelineStageFlags2::TRANSFER,
-        )];
-        if wait_sem != vk::Semaphore::null() {
-            blit_waits.push((wait_sem, 0, vk::PipelineStageFlags2::ALL_COMMANDS));
+                let blit_waits = [(
+                    self.render_graph.graph_timeline_inner(),
+                    frame_value,
+                    vk::PipelineStageFlags2::TRANSFER,
+                )];
+                let blit_signals = [(
+                    self.frame_timeline.inner(),
+                    frame_value,
+                    vk::PipelineStageFlags2::ALL_COMMANDS,
+                )];
+                let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
+                let blit_fence = idd.blit_cmd_buf.fence_mut().submit()?;
+                let blit_cmd = idd.blit_cmd_buf.inner();
+                self.core
+                    .graphics_queue()
+                    .submit_async_timelines(blit_cmd, &blit_waits, &blit_signals, blit_fence)?;
+            }
         }
-        let blit_signals = [(
-            self.frame_timeline.inner(),
-            frame_value,
-            vk::PipelineStageFlags2::ALL_COMMANDS,
-        )];
-
-        let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
-        let blit_fence = idd.blit_cmd_buf.fence_mut().submit()?;
-        let blit_cmd = idd.blit_cmd_buf.inner();
-        self.core
-            .graphics_queue()
-            .submit_async_timelines(blit_cmd, &blit_waits, &blit_signals, blit_fence)?;
 
         // ── End of frame: the frame-local buffers stay alive until the GPU is
         // done with this frame, then get dropped on the render thread.
@@ -1301,27 +1329,41 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             }
         };
 
-        let rendered_frame = self.render(frame.image, img_acquired_sem, camera, instances)?;
-        self.swapchain_data.as_mut().unwrap().img_rendered_frames[frame_index] = rendered_frame;
-
-        match finalize {
-            Some(finalize) => finalize(&frame)?,
-            None => {
-                let sc = self.swapchain_data.as_mut().unwrap();
-                let barrier_cmd_buf = &mut sc.present_barrier_cmd_bufs[frame.image_index];
-                let barrier_fence = barrier_cmd_buf.fence_mut().submit()?;
-                let barrier_cmd = barrier_cmd_buf.inner();
-                self.core.graphics_queue().submit_async(
-                    barrier_cmd,
-                    &[],
-                    &[],
-                    std::slice::from_ref(&frame.ready_to_present_sem),
-                    barrier_fence,
-                )?;
-            }
+        // TODO overlays (egui/imgui) go here, as a graph pass drawing onto the
+        // swapchain image *before* the PRESENT_SRC transition inside `run_present`.
+        // The old `finalize` hook transitioned + signaled itself, which no longer
+        // fits now that the graph owns the present tail — reworked when overlays land.
+        if finalize.is_some() {
+            return Err(SrError::new_custom(
+                "render_to_swapchain_with: `finalize` overlay hook is not yet supported with graph-owned present".to_string(),
+            ));
         }
 
-        // Present, waiting on the PRESENT_SRC transition.
+        // Wrap the acquired swapchain image as a borrowed, non-owning `Image` so the
+        // graph's `run_present` can blit into it and transition it to PRESENT_SRC —
+        // the swapchain is known to the graph *only* here, at run.
+        let swapchain_image = vulkan_abstraction::Image::from_swapchain_image(
+            Rc::clone(&self.core),
+            frame.image,
+            vk::Extent3D {
+                width: frame.extent.width,
+                height: frame.extent.height,
+                depth: 1,
+            },
+            self.swapchain_data.as_ref().unwrap().swapchain.format(),
+        );
+
+        let rendered_frame = self.render(
+            frame.image,
+            img_acquired_sem,
+            camera,
+            instances,
+            Some((&swapchain_image, frame.ready_to_present_sem)),
+        )?;
+        self.swapchain_data.as_mut().unwrap().img_rendered_frames[frame_index] = rendered_frame;
+
+        // Present, waiting on the present semaphore `run_present` signaled after the
+        // PRESENT_SRC transition.
         let sc = self.swapchain_data.as_ref().unwrap();
         let swapchains = [sc.swapchain.inner()];
         let image_indices = [frame.image_index as u32];
@@ -1351,7 +1393,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         frame_gpu_data: &FrameGpuData,
         instance_count: u32,
         instances_buffer: &impl vulkan_abstraction::Buffer,
-    ) -> SrResult<()> {
+    ) -> SrResult<Handle<vulkan_abstraction::Image>> {
         let frame_count = self.relative_frame_count;
         let width = extent.width;
         let height = extent.height;
@@ -1604,6 +1646,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // 4. Postprocess: read the final denoise output, tonemap into the output.
         let final_idx = ((DENOISE_PASSES - 1) % 2) as usize;
         let denoise_input_h = if final_idx == 0 { denoise_a_h } else { denoise_b_h };
+        let source_h = postprocess_out_h.clone();
         Self::add_postprocess_pass(
             rg,
             postprocess_spirv,
@@ -1615,7 +1658,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         )?;
 
         rg.compile()?;
-        Ok(())
+        // The post-process output is the frame's final image; the caller blits it
+        // to the swapchain (or an offscreen target) after `run`/`run_present`.
+        Ok(source_h)
     }
 
     /// Builds the heap-mode raytracing push constant for a frame: the non-image
@@ -1926,7 +1971,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // and the first ReSTIR audition is just one RIS candidate per pixel.
         const WARMUP_FRAMES: u32 = 16;
         for _ in 0..WARMUP_FRAMES {
-            let frame = self.render(dst_image.inner(), vk::Semaphore::null(), camera, instances)?;
+            let frame = self.render(dst_image.inner(), vk::Semaphore::null(), camera, instances, None)?;
             self.wait_frame(frame)?;
         }
 

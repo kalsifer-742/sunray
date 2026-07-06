@@ -339,9 +339,6 @@ impl TransientResources {
                 GraphResourceImportInfo::RayTracingAcceleration { resource, .. } => {
                     self.external_raytracing_ac.insert(res_id, resource.clone());
                 }
-                GraphResourceImportInfo::SwapchainImage { resource } => {
-                    self.external_images.insert(res_id, resource.clone());
-                }
             }
         }
 
@@ -676,7 +673,7 @@ impl std::fmt::Debug for TransientResources {
 
 /// Pick the right `vk::ImageAspectFlags` for a given format. Used when building
 /// image subresource ranges for layout transitions in `emit_barriers`.
-fn aspect_for(format: vk::Format) -> vk::ImageAspectFlags {
+pub(crate) fn aspect_for(format: vk::Format) -> vk::ImageAspectFlags {
     match format {
         vk::Format::D16_UNORM | vk::Format::D32_SFLOAT | vk::Format::X8_D24_UNORM_PACK32 => vk::ImageAspectFlags::DEPTH,
         vk::Format::D16_UNORM_S8_UINT | vk::Format::D24_UNORM_S8_UINT | vk::Format::D32_SFLOAT_S8_UINT => {

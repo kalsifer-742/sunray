@@ -18,7 +18,7 @@ use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescrip
 use crate::{error::SrResult, utils, vulkan_abstraction};
 use vk_sync_fork as vk_sync;
 
-pub struct Image {
+pub struct Image { //TODO rethink allocation ownership strategy
     core: Rc<vulkan_abstraction::Core>,
     image: vk::Image,
     allocation: gpu_allocator::vulkan::Allocation,
@@ -38,6 +38,10 @@ pub struct Image {
     /// alias slot in `TransientResources`); in that case `Drop` still destroys
     /// the `vk::Image` + view but skips `Allocator::free`.
     owns_memory: bool,
+    /// True when this Image owns the `vk::Image` handle and must destroy it on
+    /// drop. False for a borrowed handle owned elsewhere (e.g. a swapchain image
+    /// wrapped via [`Image::from_swapchain_image`]); `Drop` must not destroy it.
+    owns_image: bool,
 }
 //TODO no more lazy slot allocation
 //TODO why are the written slot always read optimal
@@ -203,6 +207,7 @@ impl Image {
             storage_slot: Cell::new(None),
             sampled_slot: Cell::new(None),
             owns_memory: true,
+            owns_image: true,
         })
     }
 
@@ -272,7 +277,42 @@ impl Image {
             storage_slot: Cell::new(None),
             sampled_slot: Cell::new(None),
             owns_memory: false,
+            owns_image: true,
         })
+    }
+
+    /// Wrap a swapchain-owned `vk::Image` as a graph-importable [`Image`] without
+    /// taking ownership: `Drop` destroys neither the image (the swapchain does)
+    /// nor a view (none is created — the presentation blit + layout transition
+    /// operate on the raw image, not a view). Used by the render graph's present
+    /// pass to blit the post-process result into the acquired swapchain image.
+    pub fn from_swapchain_image(
+        core: Rc<vulkan_abstraction::Core>,
+        image: vk::Image,
+        extent: vk::Extent3D,
+        format: vk::Format,
+    ) -> Self {
+        Self {
+            core,
+            image,
+            allocation: gpu_allocator::vulkan::Allocation::default(),
+            byte_size: 0,
+            image_view: vk::ImageView::null(),
+            image_subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            extent,
+            format,
+            view_type: vk::ImageViewType::TYPE_2D,
+            storage_slot: Cell::new(None),
+            sampled_slot: Cell::new(None),
+            owns_memory: false,
+            owns_image: false,
+        }
     }
 
     pub fn map(&mut self) -> SrResult<&[u8]> {
@@ -452,8 +492,13 @@ impl Drop for Image {
         }
 
         unsafe {
-            device.destroy_image_view(self.image_view, None);
-            device.destroy_image(self.image, None);
+            if self.image_view != vk::ImageView::null() {
+                device.destroy_image_view(self.image_view, None);
+            }
+            // Borrowed handles (e.g. a swapchain image) are destroyed by their owner.
+            if self.owns_image {
+                device.destroy_image(self.image, None);
+            }
         }
 
         // Aliased images don't own their memory (it's held by a transient slot in

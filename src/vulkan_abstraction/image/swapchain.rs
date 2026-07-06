@@ -8,7 +8,6 @@
 use std::rc::Rc;
 
 use ash::{khr, vk};
-
 use crate::{MAX_FRAMES_IN_FLIGHT, error::*, vulkan_abstraction};
 
 /// RAII wrapper that destroys the `vk::SurfaceKHR` on drop.
@@ -49,6 +48,7 @@ pub struct Swapchain {
     image_views: Vec<vk::ImageView>,
     image_extent: vk::Extent2D,
     image_format: vk::Format,
+    presentation_mode: vk::PresentModeKHR,
 }
 
 impl Swapchain {
@@ -72,51 +72,87 @@ impl Swapchain {
         }
     }
 
-    fn build_swapchain( //TODO format and present mod to be asked from outside
+    /// `requested_format` / `requested_present_mode`: caller preferences. Each is
+    /// honored when the surface supports it, otherwise a sensible default is
+    /// chosen (BGRA8-SRGB; lowest-latency present mode available). Returns the
+    /// format and present mode actually selected so the owner can preserve them
+    /// across a rebuild.
+    fn build_swapchain(
         core: &Rc<vulkan_abstraction::Core>,
         surface: vk::SurfaceKHR,
         window_extent: (u32, u32),
         old_swapchain: Option<vk::SwapchainKHR>,
-    ) -> SrResult<(vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>, vk::Extent2D, vk::Format)> {
+        requested_format: Option<vk::Format>,
+        requested_present_mode: Option<vk::PresentModeKHR>,
+    ) -> SrResult<(vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>, vk::Extent2D, vk::Format, vk::PresentModeKHR)> {
         let instance = core.instance();
         let device = core.device();
         let swapchain_device = khr::swapchain::Device::load(instance, device.inner());
 
         let surface_format = {
             let formats = &device.surface_support_details().surface_formats;
-            let bgra8_srgb_nonlinear = formats.iter().find(|surface_format| {
-                surface_format.format == vk::Format::B8G8R8A8_SRGB
-                    && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+            // Honor a caller-requested format when the surface offers it (preferring
+            // the SRGB_NONLINEAR color space); otherwise default to BGRA8-SRGB, then
+            // the first supported format.
+            let requested = requested_format.and_then(|fmt| {
+                formats
+                    .iter()
+                    .find(|sf| sf.format == fmt && sf.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+                    .or_else(|| formats.iter().find(|sf| sf.format == fmt))
+                    .copied()
             });
-
-            if let Some(format) = bgra8_srgb_nonlinear {
-                *format
+            if let Some(sf) = requested {
+                sf
             } else {
-                let format = *formats.first().ok_or(SrError::new_custom(
-                    "Physical device does not support any surface formats".to_string(),
-                ))?;
-                log::warn!("BGRA8 SRGB unsupported by this device; falling back to {format:?}");
-                format
+                let bgra8_srgb_nonlinear = formats.iter().find(|surface_format| {
+                    surface_format.format == vk::Format::B8G8R8A8_SRGB
+                        && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+                });
+                if let Some(format) = bgra8_srgb_nonlinear {
+                    log::warn!("Requested format {requested_format:?} unsupported by this device; falling back to {format:?}");
+                    *format
+                } else {
+                    let format = *formats.first().ok_or(SrError::new_custom(
+                        "Physical device does not support any surface formats".to_string(),
+                    ))?;
+                    log::warn!("BGRA8 SRGB unsupported by this device; falling back to {format:?}");
+                    format
+                }
             }
         };
 
         let image_extent = Self::get_extent(window_extent, &device.surface_support_details());
 
-        let swapchain = {
-            let present_modes = &device.surface_support_details().surface_present_modes;
-            let present_mode = if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
-                vk::PresentModeKHR::MAILBOX //TODO Frames in flight + 2
-            } else if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
-                vk::PresentModeKHR::IMMEDIATE //TODO Frames in flight + 1
-            } else if present_modes.contains(&vk::PresentModeKHR::FIFO_RELAXED) {
-                vk::PresentModeKHR::FIFO_RELAXED //TODO Frames in flight + 1
-            }
-            else {
-                vk::PresentModeKHR::FIFO  //TODO Frames in flight + 1
-            };
+        let present_modes = &device.surface_support_details().surface_present_modes;
+        // Honor a caller-requested present mode when supported; otherwise pick the
+        // lowest-latency mode available.
+        let present_mode = requested_present_mode
+            .filter(|pm| present_modes.contains(pm))
+            .unwrap_or_else(|| {
+                let present_mode = if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
+                    vk::PresentModeKHR::MAILBOX
+                } else if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
+                    vk::PresentModeKHR::IMMEDIATE
+                } else if present_modes.contains(&vk::PresentModeKHR::FIFO_RELAXED) {
+                    vk::PresentModeKHR::FIFO_RELAXED
+                } else {
+                    vk::PresentModeKHR::FIFO
+                };
+                log::warn!("Requested presentation mode {requested_present_mode:?} unsupported by this device; falling back to {present_mode:?}");
+                present_mode
+            });
 
+        let swapchain = {
             let surface_capabilities = &device.surface_support_details().surface_capabilities;
-            let mut image_count = surface_capabilities.min_image_count + 1; //TODO this needs to be dictated by frames in flight
+            // Image count is dictated by frames in flight: MAILBOX needs an extra
+            // image so there's always one free to render into while another is
+            // queued for display (+2); the sequential modes need one more than the
+            // frames the CPU keeps in flight (+1). Clamped to the surface's range.
+            let desired_image_count = match present_mode {
+                vk::PresentModeKHR::MAILBOX => MAX_FRAMES_IN_FLIGHT as u32 + 2,
+                _ => MAX_FRAMES_IN_FLIGHT as u32 + 1,
+            };
+            let mut image_count = desired_image_count.max(surface_capabilities.min_image_count);
 
             if surface_capabilities.max_image_count > 0 && image_count > surface_capabilities.max_image_count {
                 image_count = surface_capabilities.max_image_count;
@@ -129,7 +165,7 @@ impl Swapchain {
                 .image_color_space(surface_format.color_space)
                 .image_extent(image_extent)
                 .image_array_layers(1)
-                // TRANSFER_DST: the renderer blits its post-process result into the
+                // TODO TRANSFER_DST: the renderer blits its post-process result into the
                 // swapchain image. COLOR_ATTACHMENT: needed for a future egui overlay
                 // pass (dynamic rendering, load-op) — see docs/bevy_integration.md §6.
                 .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
@@ -165,13 +201,19 @@ impl Swapchain {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok((swapchain, images, image_views, image_extent, surface_format.format))
+        Ok((swapchain, images, image_views, image_extent, surface_format.format, present_mode))
     }
 
-    pub fn new(core: Rc<vulkan_abstraction::Core>, surface: vk::SurfaceKHR, window_extent: (u32, u32)) -> SrResult<Self> {
+    pub fn new(
+        core: Rc<vulkan_abstraction::Core>,
+        surface: vk::SurfaceKHR,
+        window_extent: (u32, u32),
+        format: Option<vk::Format>,
+        present_mode: Option<vk::PresentModeKHR>,
+    ) -> SrResult<Self> {
         let swapchain_device = khr::swapchain::Device::load(core.instance(), core.device().inner());
-        let (swapchain, images, image_views, image_extent, image_format) =
-            Self::build_swapchain(&core, surface, window_extent, None)?;
+        let (swapchain, images, image_views, image_extent, image_format, presentation_mode) =
+            Self::build_swapchain(&core, surface, window_extent, None, format, present_mode)?;
 
         Ok(Self {
             core,
@@ -181,6 +223,7 @@ impl Swapchain {
             image_views,
             image_extent,
             image_format,
+            presentation_mode,
         })
     }
 
@@ -210,8 +253,15 @@ impl Swapchain {
         self.image_views = vec![];
         self.images = vec![];
 
-        let (swapchain, images, image_views, image_extent, image_format) =
-            Self::build_swapchain(&self.core, surface, window_extent, Some(self.swapchain))?;
+        // Preserve the format and present mode the swapchain was created with.
+        let (swapchain, images, image_views, image_extent, image_format, presentation_mode) = Self::build_swapchain(
+            &self.core,
+            surface,
+            window_extent,
+            Some(self.swapchain),
+            Some(self.image_format),
+            Some(self.presentation_mode),
+        )?;
 
         unsafe { self.swapchain_device.destroy_swapchain(self.swapchain, None) };
 
@@ -220,6 +270,7 @@ impl Swapchain {
         self.image_views = image_views;
         self.image_extent = image_extent;
         self.image_format = image_format;
+        self.presentation_mode = presentation_mode;
 
         Ok(())
     }
@@ -272,8 +323,14 @@ pub struct SwapchainFrame {
 }
 
 impl SwapchainData {
-    pub(crate) fn new(core: &Rc<vulkan_abstraction::Core>, surface: Surface, window_extent: (u32, u32)) -> SrResult<Self> {
-        let swapchain = Swapchain::new(Rc::clone(core), surface.inner(), window_extent)?;
+    pub(crate) fn new(
+        core: &Rc<vulkan_abstraction::Core>,
+        surface: Surface,
+        window_extent: (u32, u32),
+        format: Option<vk::Format>,
+        present_mode: Option<vk::PresentModeKHR>,
+    ) -> SrResult<Self> {
+        let swapchain = Swapchain::new(Rc::clone(core), surface.inner(), window_extent, format, present_mode)?;
 
         let img_acquired_sems = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| vulkan_abstraction::Semaphore::new(Rc::clone(core)))

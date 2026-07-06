@@ -1,6 +1,5 @@
 use crate::MAX_FRAMES_IN_FLIGHT;
 use crate::error::{SrError, SrResult};
-use crate::render_graph::error::GraphError;
 use crate::render_graph::pass_builder::{
     ComputeRenderPass, PassCommonDataBuilder, RasterRenderPass, RaytracingRenderPass, TransferPass, TransferPassBuilder,
 };
@@ -8,7 +7,6 @@ pub(crate) use crate::render_graph::resource::{
     GraphResourceDesc, GraphResourceImportInfo, GraphResourceInfo, Handle, Resource, ResourceDesc, RgImportable,
 };
 use crate::render_graph::transient_resources::TransientResources;
-use crate::vulkan_abstraction::image::ImageDesc;
 use crate::vulkan_abstraction::{
     AccelerationStructure, AsBuildJob, CmdBuffer, ComputePipeline, Core, GpuOnlyBuffer, GraphicsPipeline,
     GraphicsPipelineShaders, HeapComputePass, Image, Pipeline, RawBuffer, RayTracingPipeline, RayTracingPipelineShaders,
@@ -280,9 +278,6 @@ pub struct RenderGraph {
     /// slot (a handful of extra pipeline builds, then steady-state cached). A
     /// shared cache is a future rework — not worth the entanglement now.
     transient_resources: Vec<TransientResources>,
-    /// At most one swapchain target per graph; remembered so the compile step can
-    /// flag the present-target layout transition without scanning every resource.
-    swapchain_resource_id: Option<u32>,
     /// Per-resource end state (last use + final access) collected by `compile`,
     /// keyed by resource id. See [`ResourceEndState`] — temp impl, exposed so a
     /// later stage can sync against the graph with a barrier instead of a
@@ -318,6 +313,7 @@ pub struct RenderGraph {
     /// completes. Drives CPU slot-reuse gating, the cross-frame temporal
     /// ping-pong wait (frame F's graph waits F-1's), and the blit's wait on the
     /// graph — together replacing the old per-frame fence + device-wait-idle.
+    /// TODO to be removed for the outside frame timeline semaphore
     graph_timeline: TimelineSemaphore,
     /// Interned `'static` checkpoint markers, keyed by pass name. Aftermath reads
     /// `p_checkpoint_marker` back *after* a DEVICE_LOST, so the string must
@@ -347,7 +343,6 @@ impl RenderGraph {
             virtual_resources: vec![],
             temporal_resources: vec![],
             transient_resources,
-            swapchain_resource_id: None,
             resource_end_states: HashMap::new(),
             registered_temporal: Vec::new(),
             checkpoint_markers: HashMap::new(),
@@ -412,7 +407,6 @@ impl RenderGraph {
         self.passes.clear();
         self.virtual_resources.clear();
         self.prologue_copies.clear();
-        self.swapchain_resource_id = None;
         self.resource_end_states.clear();
         self.registered_temporal.clear();
         // Free the previous occupant of this slot (frame N - MAX_FRAMES_IN_FLIGHT):
@@ -639,7 +633,7 @@ impl RenderGraph {
             GraphResourceImportInfo::Image { access_type, .. }
             | GraphResourceImportInfo::Buffer { access_type, .. }
             | GraphResourceImportInfo::RayTracingAcceleration { access_type, .. } => *access_type = usage,
-            GraphResourceImportInfo::Sampler { .. } | GraphResourceImportInfo::SwapchainImage { .. } => {}
+            GraphResourceImportInfo::Sampler { .. } => {}
         }
         self.virtual_resources.push(GraphResourceInfo::Imported(import));
         Handle {
@@ -751,38 +745,40 @@ impl RenderGraph {
         })
     }
 
-    /// Import the current frame's swapchain image as the graph's present target.
-    /// At most one swapchain may be imported per graph; subsequent calls return
-    /// `GraphError::SwapchainAlreadyImported`. The returned handle can be used as
-    /// any other image handle for reads/writes; compile will tag the final
-    /// transition into `PRESENT_SRC_KHR` on this resource.
-    pub fn import_swapchain(&mut self, image: Arc<Image>) -> SrResult<Handle<Image>> {
-        //TODO this approach doesn't work I'll change it later so that the swapchain can change without actually rebuild the graph
-        if self.swapchain_resource_id.is_some() {
-            return Err(SrError::new(
-                GraphError::SwapchainAlreadyImported.into(),
-                "render graph already has a swapchain import".to_string(),
-            ));
+    /// Bare `vkCmdBlitImage` from `src` (already in TRANSFER_SRC) to `dst` (already
+    /// in TRANSFER_DST) — the caller owns the surrounding layout barriers. Scales if
+    /// the extents differ (nearest). Used by [`Self::run_present`].
+    fn record_present_blit(core: &Core, cb: vk::CommandBuffer, src: &Image, dst: &Image) {
+        let device = core.device().inner();
+        let src_ext = src.extent();
+        let dst_ext = dst.extent();
+        let layers = vk::ImageSubresourceLayers::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_array_layer(0)
+            .layer_count(1)
+            .mip_level(0);
+        let blit = vk::ImageBlit::default()
+            .src_subresource(layers)
+            .src_offsets([
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D { x: src_ext.width as i32, y: src_ext.height as i32, z: 1 },
+            ])
+            .dst_subresource(layers)
+            .dst_offsets([
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D { x: dst_ext.width as i32, y: dst_ext.height as i32, z: 1 },
+            ]);
+        unsafe {
+            device.cmd_blit_image(
+                cb,
+                src.inner(),
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                dst.inner(),
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[blit],
+                vk::Filter::NEAREST,
+            );
         }
-        let desc = ImageDesc {
-            extent: image.extent(),
-            format: image.format(),
-            tiling: vk::ImageTiling::OPTIMAL,
-            location: gpu_allocator::MemoryLocation::GpuOnly,
-            usage: vk::ImageUsageFlags::empty(),
-            name: "swapchain",
-        };
-        let id = self.next_resource_id();
-        self.virtual_resources
-            .push(GraphResourceInfo::Imported(GraphResourceImportInfo::SwapchainImage {
-                resource: image,
-            }));
-        self.swapchain_resource_id = Some(id);
-        Ok(Handle {
-            id,
-            desc,
-            marker: Default::default(),
-        })
     }
 
     pub fn compile(&mut self) -> SrResult<()> {
@@ -1118,7 +1114,9 @@ impl RenderGraph {
             }
         }
 
-        unsafe { device.end_command_buffer(raw_cb)? };
+        // The command buffer is left *open* on purpose: `run` (offscreen) or
+        // `run_present` (swapchain) append their tail — nothing, or the
+        // blit-to-swapchain + PRESENT_SRC transition — then end and submit it.
 
         // Optional per-frame graph dump (DOT + text) for offline visualization —
         // enabled by setting `SUNRAY_GRAPH_DUMP_DIR`. Cheap gate: only builds the
@@ -1183,10 +1181,6 @@ impl RenderGraph {
                             GraphResourceImportInfo::Image { resource, .. } => {
                                 let e = resource.extent();
                                 ("imported-image", format!("{}x{}", e.width, e.height), access)
-                            }
-                            GraphResourceImportInfo::SwapchainImage { resource } => {
-                                let e = resource.extent();
-                                ("imported-swapchain", format!("{}x{}", e.width, e.height), access)
                             }
                             GraphResourceImportInfo::Buffer { resource, .. } => {
                                 ("imported-buffer", format!("{}B", resource.byte_size()), access)
@@ -1254,6 +1248,139 @@ impl RenderGraph {
     /// bin is cleared when the slot is reused N frames later (see `reset`).
     pub fn run(&mut self, wait_semaphores: &[vk::Semaphore], wait_stages: &[vk::PipelineStageFlags]) -> SrResult<()> {
         let slot = self.current_slot();
+        let raw_cb = self.cmd_buffers[slot].inner();
+        unsafe { self.core.device().inner().end_command_buffer(raw_cb)? };
+
+        // Any binary transfer waits, converted to the timeline tuple form (value
+        // ignored for binary semaphores).
+        let extra_waits: Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> = wait_semaphores
+            .iter()
+            .zip(wait_stages.iter())
+            .map(|(sem, stage)| (*sem, 0, vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64)))
+            .collect();
+        self.submit_current(&extra_waits, &[])
+    }
+
+    /// Presentation variant of [`Self::run`]: append the swapchain blit tail to
+    /// this frame's (still-open) command buffer, then end + submit it. Records, in
+    /// order:
+    ///   1. a barrier taking `source` from its graph end-access → TRANSFER_SRC and
+    ///      the acquired `swapchain_image` from UNDEFINED → TRANSFER_DST,
+    ///   2. `vkCmdBlitImage` source → swapchain (scales, nearest),
+    ///   3. a barrier taking the swapchain image TRANSFER_DST → PRESENT_SRC.
+    ///
+    /// The swapchain never enters the graph as a resource — it is known only here,
+    /// at run, as a borrowed non-owning [`Image`] wrapper over the acquired image
+    /// (see [`Image::from_swapchain_image`]). `extra_signals` carries the binary
+    /// present semaphore the caller's `queue_present` waits on, plus whatever
+    /// frame-completion timeline the caller tracks.
+    pub fn run_present(
+        &mut self,
+        source: &Handle<Image>,
+        swapchain_image: &Image,
+        extra_waits: &[(vk::Semaphore, u64, vk::PipelineStageFlags2)],
+        extra_signals: &[(vk::Semaphore, u64, vk::PipelineStageFlags2)],
+    ) -> SrResult<()> {
+        let slot = self.current_slot();
+        let raw_cb = self.cmd_buffers[slot].inner();
+        let device = self.core.device().inner().clone();
+
+        let src_end = self
+            .end_state(source)
+            .map(|e| e.end_access)
+            .unwrap_or(vk_sync::AccessType::Nothing);
+        let src_img = self.transient_resources[slot].image(source)?;
+        let src_vk = src_img.inner();
+        let src_fmt = src_img.format();
+        let dst_vk = swapchain_image.inner();
+        let dst_fmt = swapchain_image.format();
+
+        let full_range = |fmt: vk::Format| vk::ImageSubresourceRange {
+            aspect_mask: crate::render_graph::transient_resources::aspect_for(fmt),
+            base_mip_level: 0,
+            level_count: vk::REMAINING_MIP_LEVELS,
+            base_array_layer: 0,
+            layer_count: vk::REMAINING_ARRAY_LAYERS,
+        };
+        // `previous_accesses` takes a slice, so `src_end` needs a local backing it.
+        let src_prev = [src_end];
+
+        // 1. source → TRANSFER_SRC, swapchain UNDEFINED → TRANSFER_DST (discard).
+        let pre = [
+            vk_sync::ImageBarrier {
+                previous_accesses: &src_prev,
+                next_accesses: &[vk_sync::AccessType::TransferRead],
+                previous_layout: vk_sync::ImageLayout::Optimal,
+                next_layout: vk_sync::ImageLayout::Optimal,
+                discard_contents: false,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image: src_vk,
+                range: full_range(src_fmt),
+            },
+            vk_sync::ImageBarrier {
+                previous_accesses: &[vk_sync::AccessType::Nothing],
+                next_accesses: &[vk_sync::AccessType::TransferWrite],
+                previous_layout: vk_sync::ImageLayout::Optimal,
+                next_layout: vk_sync::ImageLayout::Optimal,
+                discard_contents: true,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image: dst_vk,
+                range: full_range(dst_fmt),
+            },
+        ];
+        vk_sync::cmd::pipeline_barrier(&device, raw_cb, None, &[], &pre);
+
+        // 2. the blit itself.
+        Self::record_present_blit(&self.core, raw_cb, src_img, swapchain_image);
+
+        // 3a. swapchain TRANSFER_DST → PRESENT_SRC, and
+        // 3b. source TRANSFER_SRC → back to its graph end-access (GENERAL storage).
+        // The source is an *imported* storage image reused every frame; its heap
+        // descriptor was written for GENERAL, so it must be handed back in GENERAL
+        // or next frame's postprocess access hits a layout mismatch
+        // (VUID-vkCmdDraw-None-09600). `src_prev` still holds `[src_end]`.
+        let post = [
+            vk_sync::ImageBarrier {
+                previous_accesses: &[vk_sync::AccessType::TransferWrite],
+                next_accesses: &[vk_sync::AccessType::Present],
+                previous_layout: vk_sync::ImageLayout::Optimal,
+                next_layout: vk_sync::ImageLayout::Optimal,
+                discard_contents: false,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image: dst_vk,
+                range: full_range(dst_fmt),
+            },
+            vk_sync::ImageBarrier {
+                previous_accesses: &[vk_sync::AccessType::TransferRead],
+                next_accesses: &src_prev,
+                previous_layout: vk_sync::ImageLayout::Optimal,
+                next_layout: vk_sync::ImageLayout::Optimal,
+                discard_contents: false,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image: src_vk,
+                range: full_range(src_fmt),
+            },
+        ];
+        vk_sync::cmd::pipeline_barrier(&device, raw_cb, None, &[], &post);
+
+        unsafe { device.end_command_buffer(raw_cb)? };
+        self.submit_current(extra_waits, extra_signals)
+    }
+
+    /// End + submit this frame's recorded command buffer, waiting on
+    /// `graph_timeline >= frame - 1` (the cross-compile temporal ping-pong order)
+    /// plus `extra_waits`, and signaling `graph_timeline = frame` plus
+    /// `extra_signals`. Retires this frame's passes / imports into the slot bin.
+    fn submit_current(
+        &mut self,
+        extra_waits: &[(vk::Semaphore, u64, vk::PipelineStageFlags2)],
+        extra_signals: &[(vk::Semaphore, u64, vk::PipelineStageFlags2)],
+    ) -> SrResult<()> {
+        let slot = self.current_slot();
         let frame = *self.core.absolute_frame_count.borrow() as u64;
 
         let mut waits: Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> = vec![(
@@ -1261,11 +1388,10 @@ impl RenderGraph {
             frame.saturating_sub(1),
             vk::PipelineStageFlags2::ALL_COMMANDS,
         )];
-        for (sem, stage) in wait_semaphores.iter().zip(wait_stages.iter()) {
-            // Binary semaphore: value ignored.
-            waits.push((*sem, 0, vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64)));
-        }
-        let signals = [(self.graph_timeline.inner(), frame, vk::PipelineStageFlags2::ALL_COMMANDS)];
+        waits.extend_from_slice(extra_waits);
+
+        let mut signals = vec![(self.graph_timeline.inner(), frame, vk::PipelineStageFlags2::ALL_COMMANDS)];
+        signals.extend_from_slice(extra_signals);
 
         self.core
             .graphics_queue()
@@ -1290,7 +1416,7 @@ fn imported_initial_access(import: &GraphResourceImportInfo) -> vk_sync::AccessT
         GraphResourceImportInfo::Image { access_type, .. } => *access_type,
         GraphResourceImportInfo::Buffer { access_type, .. } => *access_type,
         GraphResourceImportInfo::RayTracingAcceleration { access_type, .. } => *access_type,
-        GraphResourceImportInfo::Sampler { .. } | GraphResourceImportInfo::SwapchainImage { .. } => vk_sync::AccessType::Nothing,
+        GraphResourceImportInfo::Sampler { .. } => vk_sync::AccessType::Nothing,
     }
 }
 
@@ -1302,7 +1428,7 @@ fn set_import_access(import: &mut GraphResourceImportInfo, access: vk_sync::Acce
         GraphResourceImportInfo::Image { access_type, .. } => *access_type = access,
         GraphResourceImportInfo::Buffer { access_type, .. } => *access_type = access,
         GraphResourceImportInfo::RayTracingAcceleration { access_type, .. } => *access_type = access,
-        GraphResourceImportInfo::Sampler { .. } | GraphResourceImportInfo::SwapchainImage { .. } => {}
+        GraphResourceImportInfo::Sampler { .. } => {}
     }
 }
 
@@ -1319,9 +1445,7 @@ fn graph_desc_name(desc: &GraphResourceDesc) -> Option<&'static str> {
 /// Attach a debug-utils name to whatever concrete vk handle an import wraps.
 fn name_import(core: &Core, import: &GraphResourceImportInfo, name: &std::ffi::CStr) {
     match import {
-        GraphResourceImportInfo::Image { resource, .. } | GraphResourceImportInfo::SwapchainImage { resource } => {
-            core.set_debug_object_name(resource.inner(), name)
-        }
+        GraphResourceImportInfo::Image { resource, .. } => core.set_debug_object_name(resource.inner(), name),
         GraphResourceImportInfo::Buffer { resource, .. } => core.set_debug_object_name(resource.inner(), name),
         GraphResourceImportInfo::RayTracingAcceleration { resource, .. } => core.set_debug_object_name(resource.inner(), name),
         GraphResourceImportInfo::Sampler { .. } => {}
@@ -1355,6 +1479,7 @@ impl<T: Sized> TypeEquals for T {
 mod tests {
     use super::*;
     use crate::vulkan_abstraction::buffer::BufferDesc;
+    use crate::vulkan_abstraction::image::ImageDesc;
     use crate::vulkan_abstraction::image::sampler::SamplerDesc;
     use gpu_allocator::MemoryLocation;
 

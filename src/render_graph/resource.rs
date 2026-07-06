@@ -71,12 +71,6 @@ pub enum GraphResourceImportInfo {
         resource: Arc<AccelerationStructure>,
         access_type: vk_sync::AccessType,
     },
-    /// Swapchain target image. Only one swapchain resource may exist per graph.
-    /// The Arc is the current frame's acquired image; replace by calling
-    /// `RenderGraph::import_swapchain` again on the next frame.
-    SwapchainImage {
-        resource: Arc<Image>,
-    },
 }
 
 impl From<GraphResourceImportInfo> for GraphResourceInfo {
