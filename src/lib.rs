@@ -171,12 +171,8 @@ pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
     /// buffer is reused across `compile` calls.
     pub render_graph: RenderGraph,
 
-    /// Timeline semaphore signaled with the **absolute frame count** when a
-    /// frame's GPU work (including the final blit) completes. This replaces
-    /// per-frame fences as the "wait for render end" primitive: waiting for
-    /// frame N is `frame_timeline.wait(N)`.
-    frame_timeline: vulkan_abstraction::TimelineSemaphore,
-    /// Last frame value the watcher thread observed on `frame_timeline`.
+    /// Last frame value the watcher thread observed on the graph timeline (the
+    /// single frame-completion timeline — see [`RenderGraph::wait_graph_timeline`]).
     completed_frame: Arc<AtomicU64>,
     /// Tells the watcher thread to exit (set in `Drop`).
     frame_watcher_shutdown: Arc<AtomicBool>,
@@ -330,9 +326,9 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             num_pixels,
         ))?;
 
-        // Frame timeline: signaled with the absolute frame count when each
-        // frame's GPU work completes. Starts at 0 = "frame 0 (nothing) done".
-        let frame_timeline = vulkan_abstraction::TimelineSemaphore::new(Rc::clone(&core), 0)?;
+        // Frame completion is tracked on the render graph's timeline (signaled with
+        // the absolute frame count by each frame's submission). It starts at 0 =
+        // "frame 0 (nothing) done"; the renderer no longer keeps a second timeline.
         let completed_frame = Arc::new(AtomicU64::new(0));
         let frame_watcher_shutdown = Arc::new(AtomicBool::new(false));
 
@@ -342,7 +338,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // resources. `ash::Device` is Send + Sync, so the raw waits are fine here.
         let frame_watcher = {
             let device = core.device().inner().clone();
-            let timeline = frame_timeline.inner();
+            let timeline = render_graph.graph_timeline_inner();
             let completed = Arc::clone(&completed_frame);
             let shutdown = Arc::clone(&frame_watcher_shutdown);
             std::thread::Builder::new()
@@ -393,7 +389,6 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
             render_graph,
 
-            frame_timeline,
             completed_frame,
             frame_watcher_shutdown,
             frame_watcher: Some(frame_watcher),
@@ -1175,10 +1170,10 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         match present {
             // === Present path: the blit + PRESENT_SRC transition live *inside* the
             // graph submission (`run_present`), so there is no separate blit submit.
-            // Waits: the acquired swapchain image (+ any async transfers). Signals:
-            // `frame_timeline` (frame end) and the binary present semaphore that
-            // `queue_present` waits on. The internal `graph_timeline >= N-1` wait /
-            // `= N` signal is added by `run_present`.
+            // Waits: the acquired swapchain image (+ any async transfers). Signals
+            // (on top of the graph timeline `= N` that `run_present` adds): the
+            // binary present semaphore `queue_present` waits on. `graph_timeline = N`
+            // is now the single "frame N complete" signal (blit is in-submit).
             Some((swapchain_image, present_sem)) => {
                 let mut extra_waits: Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> = Vec::new();
                 if wait_sem != vk::Semaphore::null() {
@@ -1187,17 +1182,17 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
                 for (sem, stage) in wait_semaphores.iter().zip(wait_stages.iter()) {
                     extra_waits.push((*sem, 0, vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64)));
                 }
-                let extra_signals = [
-                    (self.frame_timeline.inner(), frame_value, vk::PipelineStageFlags2::ALL_COMMANDS),
-                    (present_sem, 0, vk::PipelineStageFlags2::ALL_COMMANDS),
-                ];
+                let extra_signals = [(present_sem, 0, vk::PipelineStageFlags2::ALL_COMMANDS)];
                 self.render_graph
                     .run_present(&source_h, swapchain_image, &extra_waits, &extra_signals)?;
             }
-            // === Offscreen path: run the graph plain, then blit the result into the
-            // caller's target with the external `blit_cmd_buf` as before. The blit
-            // waits `graph_timeline >= frame_value` (GPU hand-off) and signals
-            // `frame_timeline` = frame_value (frame end).
+            // === Offscreen path: run the graph plain (signals `graph_timeline = N`
+            // at graph-body completion), then blit the result into the caller's
+            // target with the external `blit_cmd_buf`. The blit waits
+            // `graph_timeline >= N` (GPU hand-off) and signals only its own fence —
+            // the offscreen readback (`render_to_host_memory`) waits that fence for
+            // the final image, and warm-up frames only need body completion (which
+            // `graph_timeline = N` already reports).
             None => {
                 self.render_graph.run(&wait_semaphores, &wait_stages)?;
 
@@ -1206,17 +1201,12 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
                     frame_value,
                     vk::PipelineStageFlags2::TRANSFER,
                 )];
-                let blit_signals = [(
-                    self.frame_timeline.inner(),
-                    frame_value,
-                    vk::PipelineStageFlags2::ALL_COMMANDS,
-                )];
                 let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
                 let blit_fence = idd.blit_cmd_buf.fence_mut().submit()?;
                 let blit_cmd = idd.blit_cmd_buf.inner();
                 self.core
                     .graphics_queue()
-                    .submit_async_timelines(blit_cmd, &blit_waits, &blit_signals, blit_fence)?;
+                    .submit_async_timelines(blit_cmd, &blit_waits, &[], blit_fence)?;
             }
         }
 
@@ -1253,16 +1243,16 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // every per-frame-referenced resource duplicated per in-flight slot — a
         // rework to do only if profiling shows CPU-ahead actually matters.
         if env_var_as_bool(SERIALIZE_FRAMES_VAR_NAME).unwrap_or(true) {
-            self.frame_timeline.wait(frame_value)?;
+            self.render_graph.wait_graph_timeline(frame_value)?;
         }
 
         Ok(frame_value)
     }
 
     /// Block until frame `frame_value` (as returned by [`Self::render`]) has
-    /// completed on the GPU.
+    /// completed on the GPU (graph timeline reached `frame_value`).
     pub fn wait_frame(&self, frame_value: u64) -> SrResult<()> {
-        self.frame_timeline.wait(frame_value)
+        self.render_graph.wait_graph_timeline(frame_value)
     }
 
     /// Read-only access to the internal swapchain (present only when the
@@ -1307,7 +1297,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
         // Wait (on the frame timeline) for the frame that used this in-flight
         // slot MAX_FRAMES_IN_FLIGHT frames ago before reusing its semaphore.
-        self.frame_timeline.wait(img_rendered_frame)?;
+        self.render_graph.wait_graph_timeline(img_rendered_frame)?;
 
         let frame = {
             let sc = self.swapchain_data.as_ref().unwrap();
@@ -1973,6 +1963,13 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         for _ in 0..WARMUP_FRAMES {
             let frame = self.render(dst_image.inner(), vk::Semaphore::null(), camera, instances, None)?;
             self.wait_frame(frame)?;
+        }
+
+        // `wait_frame` waits the graph timeline (graph-body completion). The final
+        // read needs the *blit* into `dst_image` to have finished too, so wait its
+        // fence before mapping.
+        if let Some(idd) = self.image_dependant_data.get_mut(&dst_image.inner()) {
+            idd.blit_cmd_buf.fence_mut().wait()?;
         }
 
         dst_image.get_raw_image_data_with_no_padding()

@@ -384,6 +384,14 @@ impl RenderGraph {
         self.graph_timeline.inner()
     }
 
+    /// Block until the graph timeline reaches `value` (the absolute frame count a
+    /// frame's submission signals on completion). This is now the single
+    /// frame-completion timeline — the renderer's former separate `frame_timeline`
+    /// was collapsed into it once the present blit moved inside the graph submit.
+    pub fn wait_graph_timeline(&self, value: u64) -> SrResult<()> {
+        self.graph_timeline.wait(value)
+    }
+
     /// Hand the graph a batch of arena staging→GPU buffer copies to record as a
     /// transfer prologue at the head of this frame's submission (before any pass),
     /// followed by a transfer→shader-read barrier. The arena buffers are
