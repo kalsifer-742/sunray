@@ -359,7 +359,7 @@ impl RenderGraph {
     /// `compile` and `run` all run *after* `build_unified_graph` has incremented
     /// the absolute frame count, so this reads the frame being recorded.
     fn current_slot(&self) -> usize {
-        (*self.core.absolute_frame_count.borrow() as usize) % MAX_FRAMES_IN_FLIGHT
+        *self.core.absolute_frame_count.borrow() % MAX_FRAMES_IN_FLIGHT
     }
 
     /// Block until the frame that last used the upcoming frame's slot
@@ -481,12 +481,11 @@ impl RenderGraph {
             let backing = self.allocate_temporal_backing(&graph_desc)?;
             // Name each ping-pong copy for GPU captures, e.g.
             // "ReSTIR GI Reservoir Buffer[0]" (no-op without debug-utils).
-            if self.core.debug_labels_enabled() {
-                if let Some(name) = graph_desc_name(&graph_desc) {
-                    if let Ok(cname) = std::ffi::CString::new(format!("{name}[{i}]")) {
-                        name_import(&self.core, &backing, &cname);
-                    }
-                }
+            if self.core.debug_labels_enabled()
+                && let Some(name) = graph_desc_name(&graph_desc)
+                && let Ok(cname) = std::ffi::CString::new(format!("{name}[{i}]"))
+            {
+                name_import(&self.core, &backing, &cname);
             }
             backings.push(backing);
         }
@@ -769,12 +768,20 @@ impl RenderGraph {
             .src_subresource(layers)
             .src_offsets([
                 vk::Offset3D { x: 0, y: 0, z: 0 },
-                vk::Offset3D { x: src_ext.width as i32, y: src_ext.height as i32, z: 1 },
+                vk::Offset3D {
+                    x: src_ext.width as i32,
+                    y: src_ext.height as i32,
+                    z: 1,
+                },
             ])
             .dst_subresource(layers)
             .dst_offsets([
                 vk::Offset3D { x: 0, y: 0, z: 0 },
-                vk::Offset3D { x: dst_ext.width as i32, y: dst_ext.height as i32, z: 1 },
+                vk::Offset3D {
+                    x: dst_ext.width as i32,
+                    y: dst_ext.height as i32,
+                    z: 1,
+                },
             ]);
         unsafe {
             device.cmd_blit_image(
@@ -1103,7 +1110,8 @@ impl RenderGraph {
             // scope in an Nsight Graphics / RenderDoc capture (no-op otherwise).
             let has_label = labels_on && matches!(pass_clabels.get(pass_id), Some(Some(_)));
             if has_label {
-                self.core.cmd_begin_debug_label(raw_cb, pass_clabels[pass_id].as_ref().unwrap());
+                self.core
+                    .cmd_begin_debug_label(raw_cb, pass_clabels[pass_id].as_ref().unwrap());
             }
 
             let common = match &mut self.passes[pass_id] {
@@ -1141,13 +1149,9 @@ impl RenderGraph {
     /// so this leaks a handful of strings total over the program's life).
     fn intern_marker(&mut self, name: &str) -> &'static std::ffi::CStr {
         if let Some(m) = self.checkpoint_markers.get(name) {
-            return *m;
+            return m;
         }
-        let leaked: &'static std::ffi::CStr = Box::leak(
-            std::ffi::CString::new(name)
-                .unwrap_or_default()
-                .into_boxed_c_str(),
-        );
+        let leaked: &'static std::ffi::CStr = Box::leak(std::ffi::CString::new(name).unwrap_or_default().into_boxed_c_str());
         self.checkpoint_markers.insert(name.to_owned(), leaked);
         leaked
     }

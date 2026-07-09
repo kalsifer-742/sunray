@@ -282,10 +282,8 @@ impl TransientResources {
             match p {
                 PendingTransient::Image { handle, reqs, desc } => {
                     unsafe { device.bind_image_memory(handle, alloc.memory(), alloc.offset()) }?;
-                    if name_objects {
-                        if let Ok(cname) = std::ffi::CString::new(desc.name) {
-                            core.set_debug_object_name(handle, &cname);
-                        }
+                    if name_objects && let Ok(cname) = std::ffi::CString::new(desc.name) {
+                        core.set_debug_object_name(handle, &cname);
                     }
                     let image = Image::from_aliased(Rc::clone(&core), handle, desc.extent, desc.format, reqs.size)?;
                     // TODO: this descriptor pre-assignment exists for the legacy single-
@@ -300,10 +298,8 @@ impl TransientResources {
                 }
                 PendingTransient::Buffer { handle, reqs: _, desc } => {
                     unsafe { device.bind_buffer_memory(handle, alloc.memory(), alloc.offset()) }?;
-                    if name_objects {
-                        if let Ok(cname) = std::ffi::CString::new(desc.name) {
-                            core.set_debug_object_name(handle, &cname);
-                        }
+                    if name_objects && let Ok(cname) = std::ffi::CString::new(desc.name) {
+                        core.set_debug_object_name(handle, &cname);
                     }
                     let buffer = RawBuffer::from_aliased(Rc::clone(&core), handle, desc.byte_size, desc.usage)?;
                     // TODO: same legacy-descriptor caveat as the image path above.

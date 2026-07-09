@@ -18,7 +18,8 @@ use crate::vulkan_abstraction::descriptor_heap::{DescriptorSlot, ResourceDescrip
 use crate::{error::SrResult, utils, vulkan_abstraction};
 use vk_sync_fork as vk_sync;
 
-pub struct Image { //TODO rethink allocation ownership strategy
+pub struct Image {
+    //TODO rethink allocation ownership strategy
     core: Rc<vulkan_abstraction::Core>,
     image: vk::Image,
     allocation: gpu_allocator::vulkan::Allocation,

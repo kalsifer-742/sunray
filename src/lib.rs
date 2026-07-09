@@ -20,10 +20,6 @@ pub use camera::*;
 use error::*;
 pub use scene::*;
 
-use std::hash::Hash;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::{collections::HashMap, rc::Rc, sync::Arc};
-use std::path::Path;
 use crate::render_graph::graph::{ExportedTemporalResource, RenderGraph};
 use crate::render_graph::pass_builder::{
     ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
@@ -34,6 +30,10 @@ use crate::vulkan_abstraction::swapchain::{SwapchainData, SwapchainFrame};
 use crate::vulkan_abstraction::{Buffer, HostAccessibleBuffer, PostprocessPushConstant, Reservoir, ReservoirGI};
 use ash::vk;
 use render_graph::resource::Handle;
+use std::hash::Hash;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::{collections::HashMap, rc::Rc, sync::Arc};
 use vk_sync_fork as vk_sync;
 use vulkan_abstraction::buffer::BufferDesc;
 use vulkan_abstraction::image::ImageDesc;
@@ -399,7 +399,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             None => None,
         };
 
-        let mut renderer = Self {
+        let renderer = Self {
             postprocess_result_image,
 
             swapchain_data,
@@ -709,7 +709,8 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
     /// Rebuild the internal swapchain (and everything tied to its images) when
     /// the surface extent changed. No-op without a surface.
-    fn resize_swapchain(&mut self, window_extent: (u32, u32)) -> SrResult<()> { //TODO this can be reworked after the swapchain changes
+    fn resize_swapchain(&mut self, window_extent: (u32, u32)) -> SrResult<()> {
+        //TODO this can be reworked after the swapchain changes
         let Some(sc) = self.swapchain_data.as_mut() else {
             return Ok(());
         };
@@ -736,11 +737,10 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
     /// Load a glTF file's default scene. See [`Self::load_scene`] for the
     /// return contract.
-    pub fn load_gltf(&mut self, path: impl AsRef<Path>,) -> SrResult<(u64, Vec<(K, Vec<vk::TransformMatrixKHR>)>)>
+    pub fn load_gltf(&mut self, path: impl AsRef<Path>) -> SrResult<(u64, Vec<(K, Vec<vk::TransformMatrixKHR>)>)>
     where
         K: From<ResourceKey>,
     {
-       
         let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
         let (default_scene, scene_data) = gltf.create_default_scene()?;
         self.load_scene(&default_scene, scene_data)
@@ -786,7 +786,6 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         let blas_keys = self
             .resource_manager
             .add_scene_assets(blases, textures, sampler_descs, images, &mut make_key)?;
-        drop(make_key);
         self.scene_groups.insert(group, group_keys);
 
         // Group the per-instance transforms by BLAS key, preserving order.

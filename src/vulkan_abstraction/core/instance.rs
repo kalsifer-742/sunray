@@ -179,8 +179,8 @@ impl Instance {
         // Debug-utils is enabled for validation *or* when a capture tool wants
         // object names / command-buffer labels (Nsight Graphics, RenderDoc) —
         // those are usually run without the validation layer.
-        let enable_debug_utils =
-            (enable_validation_layer || diagnostics.wants_debug_labels()) && supported_debug_extensions.contains(&ext::debug_utils::NAME);
+        let enable_debug_utils = (enable_validation_layer || diagnostics.wants_debug_labels())
+            && supported_debug_extensions.contains(&ext::debug_utils::NAME);
 
         let instance_extensions = {
             if enable_debug_utils {

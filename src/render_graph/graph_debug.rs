@@ -77,7 +77,10 @@ impl GraphDump<'_> {
             for b in self.init_barriers {
                 let _ = write!(lbl, "\\n{}", escape(&self.barrier_label(b)));
             }
-            let _ = writeln!(s, "  frame_entry [shape=note, style=filled, fillcolor=\"#ffe8b3\", label=\"{lbl}\"];");
+            let _ = writeln!(
+                s,
+                "  frame_entry [shape=note, style=filled, fillcolor=\"#ffe8b3\", label=\"{lbl}\"];"
+            );
         }
 
         for (src, dst, barriers) in &self.edges {

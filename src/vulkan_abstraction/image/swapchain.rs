@@ -7,8 +7,8 @@
 
 use std::rc::Rc;
 
-use ash::{khr, vk};
 use crate::{MAX_FRAMES_IN_FLIGHT, error::*, vulkan_abstraction};
+use ash::{khr, vk};
 
 /// RAII wrapper that destroys the `vk::SurfaceKHR` on drop.
 pub struct Surface {
@@ -84,7 +84,14 @@ impl Swapchain {
         old_swapchain: Option<vk::SwapchainKHR>,
         requested_format: Option<vk::Format>,
         requested_present_mode: Option<vk::PresentModeKHR>,
-    ) -> SrResult<(vk::SwapchainKHR, Vec<vk::Image>, Vec<vk::ImageView>, vk::Extent2D, vk::Format, vk::PresentModeKHR)> {
+    ) -> SrResult<(
+        vk::SwapchainKHR,
+        Vec<vk::Image>,
+        Vec<vk::ImageView>,
+        vk::Extent2D,
+        vk::Format,
+        vk::PresentModeKHR,
+    )> {
         let instance = core.instance();
         let device = core.device();
         let swapchain_device = khr::swapchain::Device::load(instance, device.inner());
@@ -201,7 +208,14 @@ impl Swapchain {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok((swapchain, images, image_views, image_extent, surface_format.format, present_mode))
+        Ok((
+            swapchain,
+            images,
+            image_views,
+            image_extent,
+            surface_format.format,
+            present_mode,
+        ))
     }
 
     pub fn new(
@@ -359,7 +373,8 @@ impl SwapchainData {
     /// Per-swapchain-image objects: the pre-recorded GENERAL -> PRESENT_SRC
     /// barrier command buffers and the present-wait semaphores. Rebuilt
     /// whenever the swapchain (and so its image list) is rebuilt.
-    pub(crate) fn build_per_image_objects( //TODO this is the rg job
+    pub(crate) fn build_per_image_objects(
+        //TODO this is the rg job
         core: &Rc<vulkan_abstraction::Core>,
         swapchain: &Swapchain,
     ) -> SrResult<(Vec<vulkan_abstraction::CmdBuffer>, Vec<vulkan_abstraction::Semaphore>)> {
