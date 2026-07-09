@@ -117,7 +117,10 @@ impl EguiPaint {
     /// Paint the extracted egui frame onto `image` (the just-rendered swapchain
     /// image, currently in `GENERAL`), then transition it to `PRESENT_SRC` and
     /// submit, signaling `ready_sem`. Replaces the plain present barrier for the
-    /// frame.
+    /// frame. The submit waits `render_done_sem >= render_done_value` — the graph
+    /// timeline point at which the renderer's in-graph blit into `image` completed
+    /// (frame overlap means there is no longer a `device_wait_idle` to lean on).
+    #[allow(clippy::too_many_arguments)]
     pub fn paint_frame(
         &mut self,
         image: vk::Image,
@@ -126,6 +129,8 @@ impl EguiPaint {
         img_index: usize,
         extracted: &ExtractedEgui,
         ready_sem: vk::Semaphore,
+        render_done_sem: vk::Semaphore,
+        render_done_value: u64,
     ) -> SrResult<()> {
         self.apply_texture_deltas(&extracted.textures_delta)?;
 
@@ -302,7 +307,13 @@ impl EguiPaint {
         }
 
         let fence = self.cmd_bufs[img_index].fence_mut().submit()?;
-        self.core.graphics_queue().submit_async(cmd, &[], &[], &[ready_sem], fence)?;
+        // Wait the graph timeline (renderer's in-graph blit into `image`), signal the
+        // binary present sem `queue_present` waits on.
+        let waits = [(render_done_sem, render_done_value, vk::PipelineStageFlags2::ALL_COMMANDS)];
+        let signals = [(ready_sem, 0u64, vk::PipelineStageFlags2::ALL_COMMANDS)];
+        self.core
+            .graphics_queue()
+            .submit_async_timelines(cmd, &waits, &signals, fence)?;
 
         Ok(())
     }

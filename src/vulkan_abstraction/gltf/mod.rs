@@ -1,5 +1,5 @@
 use std::{collections::HashMap, rc::Rc};
-
+use std::path::Path;
 use crate::{
     error::{SrError, SrResult},
     vulkan_abstraction,
@@ -55,7 +55,7 @@ pub struct Gltf {
 }
 
 impl Gltf {
-    pub fn new(core: Rc<vulkan_abstraction::Core>, path: &str) -> SrResult<Self> {
+    pub fn new(core: Rc<vulkan_abstraction::Core>, path: impl AsRef<Path>,) -> SrResult<Self> {
         let (document, buffers, images) = gltf::import(path)?;
 
         Ok(Self {

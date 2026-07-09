@@ -28,9 +28,10 @@ use std::collections::HashMap;
 
 use bevy_a11y::AccessibilityPlugin;
 use bevy_app::{App, Startup, TaskPoolPlugin, Update};
-use bevy_asset::{AssetPlugin, AssetServer, Assets};
+use bevy_asset::{AssetPlugin, AssetServer, Assets, Handle};
 use bevy_diagnostic::FrameCountPlugin;
 use bevy_ecs::prelude::*;
+use bevy_gltf::{Gltf, GltfMesh};
 use bevy_input::ButtonInput;
 use bevy_input::InputPlugin;
 use bevy_input::keyboard::KeyCode;
@@ -56,6 +57,10 @@ use sunray::bevy_integration::{
 /// renderer's direct loader resolves against the CWD.
 const ASSET_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets");
 
+/// The `.glb` the BLAS/TLAS stress harness imports (resolved against the asset
+/// root, so a bare file name). Its meshes become the churn pool.
+const STRESS_GLB: &str = "Room.glb";
+
 /// Simple fly-camera state stored next to the camera's `Transform`.
 #[derive(Component)]
 struct FlyCam {
@@ -78,6 +83,123 @@ struct SceneManager {
     /// File → root entity of scenes loaded through Bevy's asset pipeline
     /// ([`SunrayGltfScene`]). These stack additively.
     bevy_loaded: HashMap<String, Entity>,
+}
+
+/// BLAS/TLAS allocation stress harness. Imports [`STRESS_GLB`] through Bevy's
+/// asset pipeline (loading its meshes on the CPU), then — when enabled —
+/// randomly spawns/despawns one `SunrayMeshInstance` per mesh every frame. Each
+/// unique mesh asset maps to one BLAS (built on first reference, freed when its
+/// last instance is despawned — see `bevy_integration/asset.rs`), and the TLAS
+/// is rebuilt every frame from the live instance set, so the churn hammers the
+/// BLAS allocator and TLAS-rebuild path.
+#[derive(Resource)]
+struct StressTest {
+    /// Handle kept alive so the glTF (and its meshes) stay CPU-resident.
+    gltf: Handle<Gltf>,
+    /// One `Handle<Mesh>` per glTF mesh primitive (harvested once, on load).
+    pool: Vec<Handle<Mesh>>,
+    /// The currently-spawned instance entity for `pool[i]`, or `None` if unloaded.
+    slots: Vec<Option<Entity>>,
+    /// Toggled from the egui panel; off tears everything down.
+    enabled: bool,
+    /// Set once `pool` has been filled from the loaded glTF.
+    harvested: bool,
+    /// Set after the first enabled frame spawned the full set ("load all").
+    primed: bool,
+}
+
+/// Spawn one churn instance of `mesh` at a random position with a random color.
+fn spawn_stress_instance(commands: &mut Commands, mesh: &Handle<Mesh>) -> Entity {
+    let pos = Vec3::new(
+        rand::random_range(-6.0f32..6.0),
+        rand::random_range(0.0f32..5.0),
+        rand::random_range(-6.0f32..6.0),
+    );
+    let material = SunrayMaterial {
+        base_color: [
+            rand::random_range(0.1f32..1.0),
+            rand::random_range(0.1f32..1.0),
+            rand::random_range(0.1f32..1.0),
+            1.0,
+        ],
+        roughness: 0.5,
+        ..Default::default()
+    };
+    commands
+        .spawn((
+            Transform::from_translation(pos),
+            SunrayMeshInstance { mesh: mesh.clone() },
+            material,
+        ))
+        .id()
+}
+
+/// Drive the stress harness: harvest the glTF's meshes once loaded, then (when
+/// enabled) load all on the first frame and randomly load/unload a slice of them
+/// every frame after.
+fn stress_system(
+    mut commands: Commands,
+    mut stress: ResMut<StressTest>,
+    gltfs: Res<Assets<Gltf>>,
+    gltf_meshes: Res<Assets<GltfMesh>>,
+) {
+    // 1. Harvest the glb's meshes once its asset (and mesh subassets) have loaded.
+    if !stress.harvested {
+        let Some(gltf) = gltfs.get(&stress.gltf) else {
+            return;
+        };
+        for mesh_handle in &gltf.meshes {
+            if let Some(gm) = gltf_meshes.get(mesh_handle) {
+                for prim in &gm.primitives {
+                    stress.pool.push(prim.mesh.clone());
+                }
+            }
+        }
+        stress.slots = vec![None; stress.pool.len()];
+        stress.harvested = true;
+        log::info!("stress: harvested {} meshes from {STRESS_GLB} (CPU-side)", stress.pool.len());
+        return;
+    }
+
+    let n = stress.pool.len();
+
+    // 2. Disabled: tear everything down (frees every stressed BLAS) and idle.
+    if !stress.enabled {
+        if stress.primed {
+            for slot in &mut stress.slots {
+                if let Some(e) = slot.take() {
+                    commands.entity(e).despawn();
+                }
+            }
+            stress.primed = false;
+        }
+        return;
+    }
+    if n == 0 {
+        return;
+    }
+
+    // 3. First enabled frame: load ALL assets (spawn every mesh as an instance).
+    if !stress.primed {
+        for i in 0..n {
+            stress.slots[i] = Some(spawn_stress_instance(&mut commands, &stress.pool[i]));
+        }
+        stress.primed = true;
+        log::info!("stress: primed — spawned all {n} instances");
+        return;
+    }
+
+    // 4. Every frame after: randomly toggle ~a quarter of the slots — spawn the
+    //    unloaded, despawn the loaded — so BLASes churn and the TLAS rebuilds.
+    let churn = ((n as f32 * 0.25).ceil() as usize).max(1);
+    for _ in 0..churn {
+        let i = rand::random_range(0..n);
+        if let Some(e) = stress.slots[i].take() {
+            commands.entity(e).despawn();
+        } else {
+            stress.slots[i] = Some(spawn_stress_instance(&mut commands, &stress.pool[i]));
+        }
+    }
 }
 
 fn scan_glb_library() -> Vec<String> {
@@ -136,11 +258,22 @@ fn main() {
             ..Default::default()
         })
         .add_systems(Startup, setup)
-        .add_systems(Update, (fly_cam, ui_system))
+        .add_systems(Update, (fly_cam, ui_system, stress_system))
         .run();
 }
 
-fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, asset_server: Res<AssetServer>) {
+    // Import the stress-test glb through Bevy's asset pipeline (loads on the CPU);
+    // `stress_system` harvests its meshes once ready. Off until toggled in egui.
+    commands.insert_resource(StressTest {
+        gltf: asset_server.load(STRESS_GLB),
+        pool: Vec::new(),
+        slots: Vec::new(),
+        enabled: false,
+        harvested: false,
+        primed: false,
+    });
+
     // The camera is an ordinary ECS entity: a Transform + SunrayCamera marker.
     commands.spawn((
         Transform::from_xyz(0.0, 2.0, 10.0),
@@ -240,6 +373,7 @@ fn ui_system(
     mut scene: ResMut<SunrayScene>,
     asset_server: Res<AssetServer>,
     mut commands: Commands,
+    mut stress: ResMut<StressTest>,
     gltf_roots: Query<(Has<SunrayGltfSpawned>, Has<SunrayGltfFailed>), With<SunrayGltfScene>>,
 ) {
     egui::Window::new("sunray + bevy").show(egui_ctx.ctx(), |ui| {
@@ -296,6 +430,17 @@ fn ui_system(
                     manager.bevy_loaded.insert(file.clone(), root);
                 }
             });
+        }
+
+        ui.separator();
+        ui.heading("BLAS/TLAS stress test");
+        ui.label(format!("imports {STRESS_GLB}, churns its meshes as runtime BLASes"));
+        if stress.harvested {
+            let loaded = stress.slots.iter().filter(|s| s.is_some()).count();
+            ui.checkbox(&mut stress.enabled, "Churn: random load/unload every frame");
+            ui.label(format!("{loaded}/{} meshes instanced", stress.pool.len()));
+        } else {
+            ui.label(format!("loading {STRESS_GLB}…"));
         }
 
         ui.separator();

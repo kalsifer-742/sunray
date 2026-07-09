@@ -23,7 +23,7 @@ pub use scene::*;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{collections::HashMap, rc::Rc, sync::Arc};
-
+use std::path::Path;
 use crate::render_graph::graph::{ExportedTemporalResource, RenderGraph};
 use crate::render_graph::pass_builder::{
     ComputeRenderPassBuilder, ComputeShaders, PassCommonDataBuilder, RayTracingShaders, RaytracingRenderPassBuilder, ShaderSource,
@@ -70,19 +70,38 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //TODO deferred deallocation for buffers and acceleration structures
 //TODO validate max_frame_in_flight against the swapchain
 
-/// Per-output-image data. The render graph now owns the intermediate G-buffer /
-/// RT-output images as internal (transient) resources, so the only image that
-/// still lives here is the post-process result, which the external blit copies
-/// to the caller's target. `blit_cmd_buf` holds the pre-recorded blit.
-struct ImageDependentData {
-    pub blit_cmd_buf: vulkan_abstraction::CmdBuffer,
-    postprocess_result_image: Arc<vulkan_abstraction::Image>,
+/// Where [`Renderer::render`] sends the finished (post-processed) frame. The
+/// graph itself does the blit into `image` (see [`RenderGraph::run_present`]);
+/// the variant only decides the target's final layout and who signals present.
+pub enum FrameOutput<'a> {
+    /// Swapchain image, renderer finishes it: blit → `PRESENT_SRC`, signal
+    /// `present_sem` (waited by `queue_present`). Waits `acquire_sem`.
+    Present {
+        image: &'a vulkan_abstraction::Image,
+        acquire_sem: vk::Semaphore,
+        present_sem: vk::Semaphore,
+    },
+    /// Swapchain image, an overlay finishes it: blit, leave `GENERAL`. The
+    /// caller's overlay pass (e.g. egui) draws on top, transitions to
+    /// `PRESENT_SRC` and signals present itself. Waits `acquire_sem`.
+    PresentOverlay {
+        image: &'a vulkan_abstraction::Image,
+        acquire_sem: vk::Semaphore,
+    },
+    /// Host-visible offscreen image (readback): blit, leave `GENERAL`, no present.
+    Offscreen { image: &'a vulkan_abstraction::Image },
 }
 
 pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::SurfaceKHR>;
 
 pub struct Renderer<K: Hash + Eq + Copy + 'static = ResourceKey> {
-    image_dependant_data: HashMap<vk::Image, ImageDependentData>,
+    /// The one intermediate image the renderer still owns: the post-process
+    /// output. The graph writes it (imported), then blits it into the frame's
+    /// output target. A single backing suffices — the graph serializes frame N's
+    /// body after N-1 (`graph_timeline >= N-1`), so it's never written while a
+    /// prior frame's blit still reads it.
+    /// ponytail: single backing, per-in-flight-slot only if real overlap lands.
+    postprocess_result_image: Arc<vulkan_abstraction::Image>,
 
     resource_manager: vulkan_abstraction::ResourceManager<K>,
 
@@ -268,7 +287,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         let postprocess_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/postprocess.spirv"));
         let temporal_accumulation_spirv = include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/temporal_accumulation.spirv"));
 
-        let image_dependant_data = HashMap::new();
+        let postprocess_result_image = Self::create_postprocess_result_image(&core, image_extent)?;
 
         // The cross-frame ping-pong resources (accumulation / denoise images,
         // ReSTIR reservoir buffers) are now temporal resources owned by the
@@ -381,7 +400,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         };
 
         let mut renderer = Self {
-            image_dependant_data,
+            postprocess_result_image,
 
             swapchain_data,
             next_group: 0,
@@ -432,14 +451,62 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // GENERAL so the first compute pass that touches them is valid.
         renderer.init_temporal_images_to_general()?;
 
-        // The pre-recorded blit into each swapchain image must exist before the
-        // first `render_to_swapchain` call.
-        if let Some(sc) = &renderer.swapchain_data {
-            let images = sc.swapchain.images().to_vec();
-            renderer.build_image_dependent_data(&images)?;
+        Ok(renderer)
+    }
+
+    /// The renderer-owned post-process result image (graph writes it, then blits
+    /// it into the frame's output target). `R8G8B8A8_UNORM` storage image, sized to
+    /// the render extent — recreated on resize.
+    fn create_postprocess_result_image(
+        core: &Rc<vulkan_abstraction::Core>,
+        extent: vk::Extent3D,
+    ) -> SrResult<Arc<vulkan_abstraction::Image>> {
+        let image = vulkan_abstraction::Image::new(
+            Rc::clone(core),
+            extent,
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageTiling::OPTIMAL,
+            gpu_allocator::MemoryLocation::GpuOnly,
+            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC,
+            "sunray (internal, pre-blit) postprocess result image",
+        )?;
+
+        // The graph's postprocess pass writes it through a storage descriptor
+        // (GENERAL), but it's an *imported* resource so the graph's own
+        // created-resource init transition doesn't cover it: discard-init to GENERAL.
+        {
+            let device = core.device().inner();
+            let mut setup = vulkan_abstraction::CmdBuffer::new(Rc::clone(core))?;
+            unsafe {
+                let begin = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                device.begin_command_buffer(setup.inner(), &begin)?;
+                let barrier = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::NONE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_access_mask(vk::AccessFlags2::empty())
+                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image.inner())
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                let dep = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
+                device.cmd_pipeline_barrier2(setup.inner(), &dep);
+                device.end_command_buffer(setup.inner())?;
+                let fence = setup.fence_mut().submit()?;
+                core.graphics_queue().submit_async(setup.inner(), &[], &[], &[], fence)?;
+                setup.fence_mut().wait()?;
+            }
         }
 
-        Ok(renderer)
+        Ok(Arc::new(image))
     }
 
     /// Descriptor for a temporal ping-pong image (accumulation / denoise). The
@@ -579,8 +646,8 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         }
     }
 
-    //TODO this needs to be changes to a subscription based approach where all the necessary methods to recreate the necessary image dependant data are rebuilt
     pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
+        //TODO currently it is doing a wait idle for simplicity but the tools for deferred deallocation are there
         self.resize_internal_images(image_extent)?;
         self.resize_swapchain(image_extent)?;
 
@@ -600,10 +667,12 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // this, a resize that arrives while the previous frame's fence hasn't signaled
         // tears down images/descriptor-heap slots the GPU is still reading.
         unsafe { self.core.device().inner().device_wait_idle() }?;
-        self.clear_image_dependent_data();
 
         let num_pixels = (new_extent.width * new_extent.height) as usize;
         self.image_extent = new_extent;
+
+        // Recreate the post-process result image at the new size (the GPU is idle).
+        self.postprocess_result_image = Self::create_postprocess_result_image(&self.core, new_extent)?;
 
         // Recreate the temporal resources at the new dimensions. The graph owns
         // their backing memory, so (the GPU is idle from the wait above) drop the
@@ -640,7 +709,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
     /// Rebuild the internal swapchain (and everything tied to its images) when
     /// the surface extent changed. No-op without a surface.
-    fn resize_swapchain(&mut self, window_extent: (u32, u32)) -> SrResult<()> {
+    fn resize_swapchain(&mut self, window_extent: (u32, u32)) -> SrResult<()> { //TODO this can be reworked after the swapchain changes
         let Some(sc) = self.swapchain_data.as_mut() else {
             return Ok(());
         };
@@ -661,122 +730,17 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             SwapchainData::build_per_image_objects(&self.core, &sc.swapchain)?;
         sc.present_barrier_cmd_bufs = present_barrier_cmd_bufs;
         sc.ready_to_present_sems = ready_to_present_sems;
-        let images = sc.swapchain.images().to_vec();
-
-        // The blit command buffers (and their fences, which the in-flight slots
-        // hold) reference the old images.
-        self.clear_image_dependent_data();
-        self.build_image_dependent_data(&images)?;
-
-        Ok(())
-    }
-
-    pub fn clear_image_dependent_data(&mut self) {
-        // No fence bookkeeping needed: the in-flight slots hold frame-timeline
-        // *values*, which stay valid forever (unlike the destroyed blit fences
-        // this used to have to null out).
-        self.image_dependant_data.clear();
-    }
-
-    pub fn build_image_dependent_data(&mut self, images: &[vk::Image]) -> SrResult<()> {
-        for post_blit_image in images {
-            // The post-process result is the only intermediate image the renderer
-            // still owns. It must persist (the pre-recorded blit captures its
-            // handle) and it's consumed by the external blit, which runs outside
-            // the render graph. Every other intermediate (RT raw color, depth,
-            // normal, diffuse, motion vectors, denoise ping-pong) is now a
-            // graph-internal (transient) resource.
-            let postprocess_result_image = Arc::new(vulkan_abstraction::Image::new(
-                Rc::clone(&self.core),
-                self.image_extent,
-                vk::Format::R8G8B8A8_UNORM,
-                vk::ImageTiling::OPTIMAL,
-                gpu_allocator::MemoryLocation::GpuOnly,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC,
-                "sunray (internal, pre-blit) postprocess result image",
-            )?);
-
-            // Discard-init the post-process image to GENERAL. The graph's
-            // postprocess pass writes it through a storage descriptor (GENERAL),
-            // but it's an *imported* resource, so the graph's own
-            // created-resource init transition doesn't cover it.
-            {
-                let device = self.core.device().inner();
-                let mut setup_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
-                unsafe {
-                    let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-                    device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
-                    let barrier = vk::ImageMemoryBarrier2::default()
-                        .src_stage_mask(vk::PipelineStageFlags2::NONE)
-                        .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                        .src_access_mask(vk::AccessFlags2::empty())
-                        .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::GENERAL)
-                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .image(postprocess_result_image.inner())
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        });
-                    let dep_info = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
-                    device.cmd_pipeline_barrier2(setup_cmd_buf.inner(), &dep_info);
-                    device.end_command_buffer(setup_cmd_buf.inner())?;
-                    let fence = setup_cmd_buf.fence_mut().submit()?;
-                    self.core
-                        .graphics_queue()
-                        .submit_async(setup_cmd_buf.inner(), &[], &[], &[], fence)?;
-                    setup_cmd_buf.fence_mut().wait()?;
-                }
-            }
-
-            let blit_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
-
-            //record blit
-            {
-                let cmd_buf_begin_info =
-                    vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE);
-                unsafe {
-                    self.core
-                        .device()
-                        .inner()
-                        .begin_command_buffer(blit_cmd_buf.inner(), &cmd_buf_begin_info)
-                }?;
-
-                Self::cmd_blit_image(
-                    &self.core,
-                    blit_cmd_buf.inner(),
-                    postprocess_result_image.inner(),
-                    postprocess_result_image.extent(),
-                    *post_blit_image,
-                    postprocess_result_image.image_subresource_range(),
-                )?;
-
-                unsafe { self.core.device().inner().end_command_buffer(blit_cmd_buf.inner()) }?;
-            }
-
-            self.image_dependant_data.insert(
-                *post_blit_image,
-                ImageDependentData {
-                    blit_cmd_buf,
-                    postprocess_result_image,
-                },
-            );
-        }
 
         Ok(())
     }
 
     /// Load a glTF file's default scene. See [`Self::load_scene`] for the
     /// return contract.
-    pub fn load_gltf(&mut self, path: &str) -> SrResult<(u64, Vec<(K, Vec<vk::TransformMatrixKHR>)>)>
+    pub fn load_gltf(&mut self, path: impl AsRef<Path>,) -> SrResult<(u64, Vec<(K, Vec<vk::TransformMatrixKHR>)>)>
     where
         K: From<ResourceKey>,
     {
+       
         let gltf = vulkan_abstraction::gltf::Gltf::new(Rc::clone(&self.core), path)?;
         let (default_scene, scene_data) = gltf.create_default_scene()?;
         self.load_scene(&default_scene, scene_data)
@@ -829,12 +793,6 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         let mut grouped: Vec<(K, Vec<vk::TransformMatrixKHR>)> = blas_keys.iter().map(|&k| (k, Vec::new())).collect();
         for (blas_index, transform) in instances {
             grouped[blas_index].1.push(transform);
-        }
-
-        self.clear_image_dependent_data();
-        if let Some(sc) = &self.swapchain_data {
-            let images = sc.swapchain.images().to_vec();
-            self.build_image_dependent_data(&images)?;
         }
 
         Ok((group, grouped))
@@ -974,23 +932,19 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
     /// keys come from scene loading). The user may also pass a Semaphore which the user should signal when the image is
     /// ready to be written to (for example after being acquired from a swapchain).
     ///
-    /// Returns the frame's **absolute frame number**: the frame timeline
-    /// semaphore is signaled with it when the frame's GPU work (including the
-    /// final blit) completes, so "wait for this render to end" is
-    /// `wait_frame(value)` — there is no per-frame fence to track.
-    /// `present`, when `Some`, routes the final blit through the render graph's
-    /// `run_present`: the graph command buffer itself blits the post-process
-    /// result into the borrowed swapchain image and transitions it to
-    /// `PRESENT_SRC`, signaling the given binary semaphore for `queue_present`.
-    /// When `None` (offscreen / warm-up), the graph runs plain and the external
-    /// `blit_cmd_buf` copies the result into `dst_image` as before.
+    /// Returns the frame's **absolute frame number**: the graph timeline is
+    /// signaled with it when the frame's GPU work (including the in-graph blit)
+    /// completes, so "wait for this render to end" is `wait_frame(value)` — there
+    /// is no per-frame fence to track.
+    ///
+    /// The graph itself blits the post-process result into `output`'s image (see
+    /// [`RenderGraph::run_present`]); [`FrameOutput`] decides the target's final
+    /// layout (`PRESENT_SRC` vs `GENERAL`) and who signals present.
     pub fn render(
         &mut self,
-        dst_image: vk::Image,
-        wait_sem: vk::Semaphore,
         camera: &Camera,
         instances: &[(K, Vec<vk::TransformMatrixKHR>)],
-        present: Option<(&vulkan_abstraction::Image, vk::Semaphore)>,
+        output: FrameOutput<'_>,
     ) -> SrResult<u64> {
         // ── Start of frame: scheduled callbacks + deferred deallocation of the
         // per-frame resources of frames the timeline reported complete.
@@ -1119,25 +1073,11 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             emissive_indirection_slot: emissive_indirection_buffer.raw().storage_slot(),
         };
 
-        if !self.image_dependant_data.contains_key(&dst_image) {
-            self.build_image_dependent_data(&[dst_image])?;
-        }
-
         // The graph's slot (command buffer + transient pool) was already gated for
         // reuse by `wait_for_slot_reuse` at the top of the frame, and nothing has
         // been submitted since, so `build_unified_graph` can safely re-record it.
         let result_extent = self.image_extent;
-        let postprocess_out = {
-            let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
-            // Only the offscreen path reuses `blit_cmd_buf` (waiting its fence so the
-            // graph doesn't overwrite the result image while the last blit still
-            // reads it). On the present path the blit lives inside the graph
-            // submission, ordered by `graph_timeline`, so there is no external fence.
-            if present.is_none() {
-                idd.blit_cmd_buf.fence_mut().wait()?;
-            }
-            Arc::clone(&idd.postprocess_result_image)
-        };
+        let postprocess_out = Arc::clone(&self.postprocess_result_image);
 
         // Build + compile the unified render graph: RT (RIS + final), temporal
         // accumulation, the 8 a-trous denoise passes, and postprocess. Every pass
@@ -1167,46 +1107,44 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             .map(|_| vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR)
             .collect::<Vec<_>>();
 
-        match present {
-            // === Present path: the blit + PRESENT_SRC transition live *inside* the
-            // graph submission (`run_present`), so there is no separate blit submit.
-            // Waits: the acquired swapchain image (+ any async transfers). Signals
-            // (on top of the graph timeline `= N` that `run_present` adds): the
-            // binary present semaphore `queue_present` waits on. `graph_timeline = N`
-            // is now the single "frame N complete" signal (blit is in-submit).
-            Some((swapchain_image, present_sem)) => {
-                let mut extra_waits: Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> = Vec::new();
-                if wait_sem != vk::Semaphore::null() {
-                    extra_waits.push((wait_sem, 0, vk::PipelineStageFlags2::TRANSFER));
-                }
-                for (sem, stage) in wait_semaphores.iter().zip(wait_stages.iter()) {
-                    extra_waits.push((*sem, 0, vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64)));
-                }
+        // The graph's command buffer blits the post-process result into the output
+        // image and transitions it to the layout `dst_final` (in-submit). Async
+        // transfer producers (currently none) become extra waits on the submit;
+        // `graph_timeline = N` is the single "frame N complete" signal.
+        let transfer_waits = || -> Vec<(vk::Semaphore, u64, vk::PipelineStageFlags2)> {
+            wait_semaphores
+                .iter()
+                .zip(wait_stages.iter())
+                .map(|(sem, stage)| (*sem, 0, vk::PipelineStageFlags2::from_raw(stage.as_raw() as u64)))
+                .collect()
+        };
+        match output {
+            // Renderer finishes the present: blit → PRESENT_SRC, signal `present_sem`.
+            FrameOutput::Present {
+                image,
+                acquire_sem,
+                present_sem,
+            } => {
+                let mut extra_waits = transfer_waits();
+                extra_waits.push((acquire_sem, 0, vk::PipelineStageFlags2::TRANSFER));
                 let extra_signals = [(present_sem, 0, vk::PipelineStageFlags2::ALL_COMMANDS)];
                 self.render_graph
-                    .run_present(&source_h, swapchain_image, &extra_waits, &extra_signals)?;
+                    .run_present(&source_h, image, vk_sync::AccessType::Present, &extra_waits, &extra_signals)?;
             }
-            // === Offscreen path: run the graph plain (signals `graph_timeline = N`
-            // at graph-body completion), then blit the result into the caller's
-            // target with the external `blit_cmd_buf`. The blit waits
-            // `graph_timeline >= N` (GPU hand-off) and signals only its own fence —
-            // the offscreen readback (`render_to_host_memory`) waits that fence for
-            // the final image, and warm-up frames only need body completion (which
-            // `graph_timeline = N` already reports).
-            None => {
-                self.render_graph.run(&wait_semaphores, &wait_stages)?;
-
-                let blit_waits = [(
-                    self.render_graph.graph_timeline_inner(),
-                    frame_value,
-                    vk::PipelineStageFlags2::TRANSFER,
-                )];
-                let idd = self.image_dependant_data.get_mut(&dst_image).unwrap();
-                let blit_fence = idd.blit_cmd_buf.fence_mut().submit()?;
-                let blit_cmd = idd.blit_cmd_buf.inner();
-                self.core
-                    .graphics_queue()
-                    .submit_async_timelines(blit_cmd, &blit_waits, &[], blit_fence)?;
+            // Overlay finishes the present: blit, leave GENERAL. The caller's overlay
+            // pass (waiting `graph_timeline >= N`) transitions to PRESENT_SRC and
+            // signals present itself.
+            FrameOutput::PresentOverlay { image, acquire_sem } => {
+                let mut extra_waits = transfer_waits();
+                extra_waits.push((acquire_sem, 0, vk::PipelineStageFlags2::TRANSFER));
+                self.render_graph
+                    .run_present(&source_h, image, vk_sync::AccessType::General, &extra_waits, &[])?;
+            }
+            // Offscreen readback: blit, leave GENERAL, no present. `graph_timeline = N`
+            // (single submit) now means body+blit done, so `wait_frame` covers it.
+            FrameOutput::Offscreen { image } => {
+                self.render_graph
+                    .run_present(&source_h, image, vk_sync::AccessType::General, &transfer_waits(), &[])?;
             }
         }
 
@@ -1299,7 +1237,7 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // slot MAX_FRAMES_IN_FLIGHT frames ago before reusing its semaphore.
         self.render_graph.wait_graph_timeline(img_rendered_frame)?;
 
-        let frame = {
+        let mut frame = {
             let sc = self.swapchain_data.as_ref().unwrap();
             let (image_index, suboptimal) = unsafe {
                 sc.swapchain
@@ -1316,22 +1254,14 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
                 extent: sc.swapchain.extent(),
                 image_index,
                 ready_to_present_sem: sc.ready_to_present_sems[image_index].inner(),
+                render_done_sem: vk::Semaphore::null(),
+                render_done_value: 0,
             }
         };
 
-        // TODO overlays (egui/imgui) go here, as a graph pass drawing onto the
-        // swapchain image *before* the PRESENT_SRC transition inside `run_present`.
-        // The old `finalize` hook transitioned + signaled itself, which no longer
-        // fits now that the graph owns the present tail — reworked when overlays land.
-        if finalize.is_some() {
-            return Err(SrError::new_custom(
-                "render_to_swapchain_with: `finalize` overlay hook is not yet supported with graph-owned present".to_string(),
-            ));
-        }
-
         // Wrap the acquired swapchain image as a borrowed, non-owning `Image` so the
-        // graph's `run_present` can blit into it and transition it to PRESENT_SRC —
-        // the swapchain is known to the graph *only* here, at run.
+        // graph's `run_present` can blit into it — the swapchain is known to the
+        // graph *only* here, at run.
         let swapchain_image = vulkan_abstraction::Image::from_swapchain_image(
             Rc::clone(&self.core),
             frame.image,
@@ -1343,17 +1273,35 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             self.swapchain_data.as_ref().unwrap().swapchain.format(),
         );
 
-        let rendered_frame = self.render(
-            frame.image,
-            img_acquired_sem,
-            camera,
-            instances,
-            Some((&swapchain_image, frame.ready_to_present_sem)),
-        )?;
+        // With an overlay (`finalize`), the graph blits then leaves the image in
+        // GENERAL; the overlay draws on top and finishes the present. Without one,
+        // the graph transitions straight to PRESENT_SRC and signals the present sem.
+        let output = if finalize.is_some() {
+            FrameOutput::PresentOverlay {
+                image: &swapchain_image,
+                acquire_sem: img_acquired_sem,
+            }
+        } else {
+            FrameOutput::Present {
+                image: &swapchain_image,
+                acquire_sem: img_acquired_sem,
+                present_sem: frame.ready_to_present_sem,
+            }
+        };
+        let rendered_frame = self.render(camera, instances, output)?;
         self.swapchain_data.as_mut().unwrap().img_rendered_frames[frame_index] = rendered_frame;
 
-        // Present, waiting on the present semaphore `run_present` signaled after the
-        // PRESENT_SRC transition.
+        // Overlay pass (egui): draws onto the GENERAL image, transitions it to
+        // PRESENT_SRC and signals the present sem itself, after waiting the graph
+        // timeline (its input is the just-blitted image). See `SwapchainFrame`.
+        if let Some(finalize) = finalize {
+            frame.render_done_sem = self.render_graph.graph_timeline_inner();
+            frame.render_done_value = rendered_frame;
+            finalize(&frame)?;
+        }
+
+        // Present, waiting on the present semaphore signaled by `run_present` (direct)
+        // or the overlay pass.
         let sc = self.swapchain_data.as_ref().unwrap();
         let swapchains = [sc.swapchain.inner()];
         let image_indices = [frame.image_index as u32];
@@ -1961,120 +1909,14 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
         // and the first ReSTIR audition is just one RIS candidate per pixel.
         const WARMUP_FRAMES: u32 = 16;
         for _ in 0..WARMUP_FRAMES {
-            let frame = self.render(dst_image.inner(), vk::Semaphore::null(), camera, instances, None)?;
+            // Offscreen: the graph blits into `dst_image` (leaving it GENERAL) as
+            // part of the frame submission, so `wait_frame` (graph timeline = N) now
+            // covers the blit too — no separate fence.
+            let frame = self.render(camera, instances, FrameOutput::Offscreen { image: &dst_image })?;
             self.wait_frame(frame)?;
         }
 
-        // `wait_frame` waits the graph timeline (graph-body completion). The final
-        // read needs the *blit* into `dst_image` to have finished too, so wait its
-        // fence before mapping.
-        if let Some(idd) = self.image_dependant_data.get_mut(&dst_image.inner()) {
-            idd.blit_cmd_buf.fence_mut().wait()?;
-        }
-
         dst_image.get_raw_image_data_with_no_padding()
-    }
-
-    //TODO this needs to be reworked for a better integration with the graph or kept as default last pass
-    // This needs to be converted into a generic blit pass that can be added to the graph as a special pass on the graphics queue? Need to inform.
-    // There needs to exists than a method for presentation blitting which does the underlying blitting
-    fn cmd_blit_image(
-        core: &vulkan_abstraction::Core,
-        cmd_buf: vk::CommandBuffer,
-        src_image: vk::Image,
-        extent: vk::Extent3D,
-        dst_image: vk::Image,
-        image_subresource_range: &vk::ImageSubresourceRange,
-    ) -> SrResult<()> {
-        let device = core.device().inner();
-
-        let image_subresource_layer = vk::ImageSubresourceLayers::default()
-            .aspect_mask(image_subresource_range.aspect_mask)
-            .base_array_layer(image_subresource_range.base_array_layer)
-            .layer_count(image_subresource_range.layer_count)
-            .mip_level(image_subresource_range.base_mip_level);
-        let zero_offset = vk::Offset3D { x: 0, y: 0, z: 0 };
-        let src_whole_image_offset = vk::Offset3D::default()
-            .x(extent.width as i32)
-            .y(extent.height as i32)
-            .z(extent.depth as i32);
-        let dst_whole_image_offset = vk::Offset3D::default()
-            .x(extent.width as i32)
-            .y(extent.height as i32)
-            .z(extent.depth as i32);
-        let src_offsets = [zero_offset, src_whole_image_offset];
-        let dst_offsets = [zero_offset, dst_whole_image_offset];
-        let image_blit = vk::ImageBlit::default()
-            .src_subresource(image_subresource_layer)
-            .src_offsets(src_offsets)
-            .dst_subresource(image_subresource_layer)
-            .dst_offsets(dst_offsets);
-
-        unsafe {
-            //transition src_image from general to transfer source layout
-            vulkan_abstraction::cmd_image_memory_barrier(
-                core,
-                cmd_buf,
-                src_image,
-                vk::PipelineStageFlags2::COMPUTE_SHADER,
-                vk::PipelineStageFlags2::TRANSFER,
-                vk::AccessFlags2::SHADER_WRITE,
-                vk::AccessFlags2::TRANSFER_READ,
-                vk::ImageLayout::GENERAL,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            );
-
-            //transition dst_image to transfer destination layout
-            vulkan_abstraction::cmd_image_memory_barrier(
-                core,
-                cmd_buf,
-                dst_image,
-                vk::PipelineStageFlags2::NONE,
-                vk::PipelineStageFlags2::TRANSFER,
-                vk::AccessFlags2::empty(),
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            );
-
-            device.cmd_blit_image(
-                cmd_buf,
-                src_image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                dst_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[image_blit],
-                vk::Filter::NEAREST,
-            );
-
-            //transition dst_image to general layout which is required for mapping the image
-            vulkan_abstraction::cmd_image_memory_barrier(
-                core,
-                cmd_buf,
-                dst_image,
-                vk::PipelineStageFlags2::TRANSFER,
-                vk::PipelineStageFlags2::ALL_GRAPHICS, // the image should already be transitioned when the user makes use of it
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::AccessFlags2::MEMORY_READ,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::GENERAL,
-            );
-
-            //transition back src_image to general layout
-            vulkan_abstraction::cmd_image_memory_barrier(
-                core,
-                cmd_buf,
-                src_image,
-                vk::PipelineStageFlags2::TRANSFER,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::AccessFlags2::TRANSFER_READ,
-                vk::AccessFlags2::empty(),
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                vk::ImageLayout::GENERAL,
-            );
-        }
-
-        Ok(())
     }
 
     pub fn core(&self) -> &Rc<vulkan_abstraction::Core> {

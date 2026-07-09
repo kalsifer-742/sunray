@@ -311,15 +311,22 @@ pub(crate) struct SwapchainData {
 }
 
 /// Everything an external present-finalize pass (e.g. an egui overlay) needs
-/// about the swapchain image of the current frame. The pass must leave the
-/// image in `PRESENT_SRC_KHR` and signal `ready_to_present_sem`; the renderer
-/// presents right after.
+/// about the swapchain image of the current frame. The renderer's graph has
+/// already blitted the frame into `image` and left it in `GENERAL`; the pass must
+/// wait `render_done_sem >= render_done_value` (that blit's completion), draw on
+/// top, leave the image in `PRESENT_SRC_KHR` and signal `ready_to_present_sem`.
+/// The renderer presents right after.
+#[derive(Clone, Copy)]
 pub struct SwapchainFrame {
     pub image: vk::Image,
     pub image_view: vk::ImageView,
     pub extent: vk::Extent2D,
     pub image_index: usize,
     pub ready_to_present_sem: vk::Semaphore,
+    /// Graph timeline semaphore + value the frame's in-graph blit signals; an
+    /// overlay pass must wait on it before reading/drawing `image`.
+    pub render_done_sem: vk::Semaphore,
+    pub render_done_value: u64,
 }
 
 impl SwapchainData {

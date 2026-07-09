@@ -23,6 +23,8 @@ impl Default for SunrayCamera {
     }
 }
 
+
+
 /// Resolve a `Transform` + [`SunrayCamera`] into eye/target/fov, ready to store
 /// in the (Send) extracted-camera resource.
 pub(crate) fn eye_target_fov(transform: &Transform, cam: &SunrayCamera) -> ([f32; 3], [f32; 3], f32) {

@@ -331,6 +331,8 @@ fn render_frame_impl(
                 frame.image_index,
                 extracted,
                 frame.ready_to_present_sem,
+                frame.render_done_sem,
+                frame.render_done_value,
             )
         };
         renderer.render_to_swapchain_with(&cam, frame_instances, Some(&mut finalize))?;

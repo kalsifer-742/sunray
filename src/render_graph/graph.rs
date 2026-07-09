@@ -1269,23 +1269,25 @@ impl RenderGraph {
         self.submit_current(&extra_waits, &[])
     }
 
-    /// Presentation variant of [`Self::run`]: append the swapchain blit tail to
-    /// this frame's (still-open) command buffer, then end + submit it. Records, in
-    /// order:
+    /// Blit-to-output variant of [`Self::run`]: append the blit tail to this
+    /// frame's (still-open) command buffer, then end + submit it. Records, in order:
     ///   1. a barrier taking `source` from its graph end-access → TRANSFER_SRC and
-    ///      the acquired `swapchain_image` from UNDEFINED → TRANSFER_DST,
-    ///   2. `vkCmdBlitImage` source → swapchain (scales, nearest),
-    ///   3. a barrier taking the swapchain image TRANSFER_DST → PRESENT_SRC.
+    ///      the output `dst_image` from UNDEFINED → TRANSFER_DST,
+    ///   2. `vkCmdBlitImage` source → dst (scales, nearest),
+    ///   3. a barrier taking the dst image TRANSFER_DST → `dst_final`
+    ///      (`Present` for a directly-presented swapchain image, `General` for an
+    ///      offscreen readback target or a swapchain image an overlay finishes),
+    ///      and `source` TRANSFER_SRC → back to its graph end-access.
     ///
-    /// The swapchain never enters the graph as a resource — it is known only here,
-    /// at run, as a borrowed non-owning [`Image`] wrapper over the acquired image
-    /// (see [`Image::from_swapchain_image`]). `extra_signals` carries the binary
-    /// present semaphore the caller's `queue_present` waits on, plus whatever
-    /// frame-completion timeline the caller tracks.
+    /// The output image never enters the graph as a resource — it is known only
+    /// here, at run, as a borrowed non-owning [`Image`] (e.g. a swapchain image via
+    /// [`Image::from_swapchain_image`]). `extra_signals` carries the binary present
+    /// semaphore the caller's `queue_present` waits on (present path), if any.
     pub fn run_present(
         &mut self,
         source: &Handle<Image>,
-        swapchain_image: &Image,
+        dst_image: &Image,
+        dst_final: vk_sync::AccessType,
         extra_waits: &[(vk::Semaphore, u64, vk::PipelineStageFlags2)],
         extra_signals: &[(vk::Semaphore, u64, vk::PipelineStageFlags2)],
     ) -> SrResult<()> {
@@ -1300,8 +1302,8 @@ impl RenderGraph {
         let src_img = self.transient_resources[slot].image(source)?;
         let src_vk = src_img.inner();
         let src_fmt = src_img.format();
-        let dst_vk = swapchain_image.inner();
-        let dst_fmt = swapchain_image.format();
+        let dst_vk = dst_image.inner();
+        let dst_fmt = dst_image.format();
 
         let full_range = |fmt: vk::Format| vk::ImageSubresourceRange {
             aspect_mask: crate::render_graph::transient_resources::aspect_for(fmt),
@@ -1341,18 +1343,19 @@ impl RenderGraph {
         vk_sync::cmd::pipeline_barrier(&device, raw_cb, None, &[], &pre);
 
         // 2. the blit itself.
-        Self::record_present_blit(&self.core, raw_cb, src_img, swapchain_image);
+        Self::record_present_blit(&self.core, raw_cb, src_img, dst_image);
 
-        // 3a. swapchain TRANSFER_DST → PRESENT_SRC, and
+        // 3a. dst TRANSFER_DST → `dst_final` (PRESENT_SRC or GENERAL), and
         // 3b. source TRANSFER_SRC → back to its graph end-access (GENERAL storage).
         // The source is an *imported* storage image reused every frame; its heap
         // descriptor was written for GENERAL, so it must be handed back in GENERAL
         // or next frame's postprocess access hits a layout mismatch
         // (VUID-vkCmdDraw-None-09600). `src_prev` still holds `[src_end]`.
+        let dst_final_arr = [dst_final];
         let post = [
             vk_sync::ImageBarrier {
                 previous_accesses: &[vk_sync::AccessType::TransferWrite],
-                next_accesses: &[vk_sync::AccessType::Present],
+                next_accesses: &dst_final_arr,
                 previous_layout: vk_sync::ImageLayout::Optimal,
                 next_layout: vk_sync::ImageLayout::Optimal,
                 discard_contents: false,
