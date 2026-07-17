@@ -62,9 +62,16 @@ impl Default for App {
             frames_since_check: 0,
 
             // Start looking down the -Z axis slightly above the floor
-            camera_pos: na::Point3::new(0.0, 2.0, 10.0),
+            /*
+            camera_pos: na::Point3::new(0.0, 2.0, -10.0),
             camera_yaw: -std::f32::consts::FRAC_PI_2,
             camera_pitch: 0.0,
+             */
+
+            camera_pos: na::Point3::new(19.181, 1.454, 5.124),
+            camera_yaw: 9.5530,
+            camera_pitch: -0.0500,
+
             keys_down: HashSet::new(),
             mouse_captured: false,
             last_frame_time: None,
@@ -94,7 +101,10 @@ impl App {
 
         // The scene's instance list belongs to the caller: keep it here and
         // pass it to `render_to_swapchain` every frame.
-        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/Room.glb")?;
+
+        //thesis/MirrorVGbuffer.glb
+
+        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/heavy_models/subway.glb")?;
         self.scene_instances = scene_instances;
         log::info!("Loaded {} unique BLASes from scene", self.scene_instances.len());
 
@@ -114,6 +124,30 @@ impl App {
             .unwrap()
             .as_millis() as f32
             / 1000.0
+    }
+
+    /// Print the current camera pose (bound to `P`). Yaw/pitch are the source of
+    /// truth for orientation — `target` is derived from them in `draw` — so the
+    /// snippet reproduces a viewpoint exactly when pasted over the corresponding
+    /// fields in `App::new`.
+    fn log_camera(&self) {
+        let p = self.camera_pos;
+        log::info!(
+            "[camera] pos=({:.3}, {:.3}, {:.3}) yaw={:.4} pitch={:.4}\n\
+             camera_pos: na::Point3::new({:.3}, {:.3}, {:.3}),\n\
+             camera_yaw: {:.4},\n\
+             camera_pitch: {:.4},",
+            p.x,
+            p.y,
+            p.z,
+            self.camera_yaw,
+            self.camera_pitch,
+            p.x,
+            p.y,
+            p.z,
+            self.camera_yaw,
+            self.camera_pitch,
+        );
     }
 
     fn draw(&mut self) -> sunray::error::SrResult<()> {
@@ -268,6 +302,11 @@ impl App {
                                 if let Some(window) = &self.window {
                                     let _ = window.set_cursor_grab(CursorGrabMode::None);
                                     window.set_cursor_visible(true);
+                                }
+                            } else if keycode == KeyCode::KeyP {
+                                // `repeat` guard: winit re-sends Pressed while the key is held.
+                                if !event.repeat {
+                                    self.log_camera();
                                 }
                             } else {
                                 self.keys_down.insert(keycode);

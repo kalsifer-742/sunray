@@ -27,7 +27,7 @@ struct TemporalPC {
 [vk::push_constant]
 ConstantBuffer<TemporalPC> pc;
 
-static const float ACCUMULATION_FACTOR = 0.14;
+static const float ACCUMULATION_FACTOR = 0.10;
 
 // Shared tile for the 3x3 neighborhood clamp. 256 threads cooperatively load 324
 // texels (~1.27/thread), matching the GLSL version.

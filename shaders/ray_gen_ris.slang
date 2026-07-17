@@ -10,6 +10,17 @@ import rt_utils;
 
 [shader("raygeneration")]
 void ray_gen_ris() {
+    // ── Ablation toggles (compile-time; flip and rebuild) ───────────────────
+    // These only *build* the reservoirs — ray_gen_final decides whether to read
+    // them, so keep them in sync with ENABLE_RESTIR_DI / ENABLE_RESTIR_GI there:
+    //   disabling a stage here while the final pass still reads its reservoir
+    //   leaves that reservoir empty and the light it carried goes black.
+    // Turn them off *together* with the matching final-pass toggle to skip the
+    // build cost entirely. Phase 1 (G-buffer + mirror/glass follow) always runs:
+    // the denoiser and the spatial-reuse depth/normal tests read it regardless.
+    static const bool ENABLE_RIS = true;       // Phase 2: DI candidate audition + temporal reuse
+    static const bool ENABLE_RESTIR_GI = true; // Phase 3: GI initial sample + temporal reuse
+
     RaytracingAccelerationStructure tlas = tlas_from_address(pc.tlas);
     // Read matrices via the BDA pointer (see `RaytracingPC.matrices` comment).
     // The CPU side (`set_matrices` in resource_manager.rs) transposes each
@@ -89,6 +100,8 @@ void ray_gen_ris() {
         float2 trans_ior = unpack_half_2x16(prd.transmission_ior_packed);
         float transmission = trans_ior.x;
 
+        transmission = 0.0; metallic = 0.0; // Toggle virtual G-buffer
+
         V_view = -rayDir;
         virtual_distance += prd.dist;
 
@@ -112,7 +125,14 @@ void ray_gen_ris() {
                 rayDir = refracted;
             }
             rayOrigin = hitPos + rayDir * 0.001;
-        } else if (metallic > 0.9 && roughness < 0.1) {
+        } else if (metallic > 0.9 && roughness < 0.2) {
+            // Follow the specular reflection of glossy-to-mirror metals into the
+            // virtual G-buffer so this pixel's reservoir belongs to the *reflected*
+            // surface. Threshold matches the final pass, which treats roughness
+            // <= 0.2 as specular (BRDF bounce) rather than diffuse (ReSTIR). If a
+            // metal's reflection is not followed here, its reservoir stays empty
+            // (no diffuse lobe -> no GI, roughness <= 0.2 -> no DI) and the final
+            // pass gathers zero light at the reflected hit, rendering it black.
             rayOrigin = hitPos + hit_normal * 0.001;
             rayDir = reflect(rayDir, hit_normal);
         } else {
@@ -186,7 +206,7 @@ void ray_gen_ris() {
     emissive_indirection.GetDimensions(num_lights, _stride);
     const int RIS_CANDIDATES = 16;
 
-    if (num_lights > 0 && roughness > 0.2) {
+    if (ENABLE_RIS && num_lights > 0 && roughness > 0.2) {
         for (int i = 0; i < RIS_CANDIDATES; i++) {
             uint cand_idx = min(uint(rnd(rng) * num_lights), num_lights - 1);
             EmissiveIndirectionEntry entry = emissive_indirection[cand_idx];
@@ -317,7 +337,7 @@ void ray_gen_ris() {
     float3 gi_dir = get_random_bounce(hit_normal, rnd(rng), rnd(rng));
     float gi_NdotL = max(dot(hit_normal, gi_dir), 0.0);
 
-    if (gi_NdotL > 0.0) {
+    if (ENABLE_RESTIR_GI && gi_NdotL > 0.0) {
         float3 gi_origin = hitPos + hit_normal * 0.001;
         RayDesc ray;
         ray.Origin = gi_origin;
@@ -395,7 +415,7 @@ void ray_gen_ris() {
         current_gi_r.sample_radiance      = sample_radiance;
     }
 
-    if (pc.frame_count > 0 && prev_valid) {
+    if (ENABLE_RESTIR_GI && pc.frame_count > 0 && prev_valid) {
         float2 prev_pixel_f_gi = prev_uv * float2(launch_size);
         float2 gi_jitter = float2(rnd(rng), rnd(rng)) - 0.5;
         int2 prev_coord_gi = int2(prev_pixel_f_gi + gi_jitter);

@@ -36,7 +36,22 @@ void ray_gen_final() {
 
     Rng rng = init_rng(launch_id, pc.frame_count, launch_size);
 
+    // ── Ablation toggles (compile-time; flip and rebuild) ───────────────────
+    // Each stage falls back to its brute-force equivalent rather than to
+    // nothing, so a disabled stage still renders the same image — just slower
+    // and noisier. That makes them usable as references for each other.
+    //   ENABLE_RESTIR_DI = false -> direct light falls back to plain NEE.
+    //   ENABLE_RESTIR_GI = false -> indirect falls back to the random walk.
+    // Both false + SAMPLES high = brute-force path-traced reference image.
+    // Turning these off leaves the reservoirs unread, so also disable the
+    // matching stages in ray_gen_ris.slang to skip building them.
+    static const bool ENABLE_RESTIR_DI = true;
+    static const bool ENABLE_RESTIR_GI = true;
+
     float3 total_radiance = float3(0.0);
+    // Paths per pixel per frame. 1 = real-time; raise for a reference image
+    // (cost is linear). Above 1, each sample jitters inside the pixel for AA
+    // and offsets its first-bounce blue noise, so samples stay decorrelated.
     const int SAMPLES = 1;
     const int BOUNCES = 10;
     const int SHADOW_BOUNCES = BOUNCES / 2;
@@ -55,7 +70,11 @@ void ray_gen_final() {
     RayPayload prd = (RayPayload)0;
 
     for (int sample_i = 0; sample_i < SAMPLES; sample_i++) {
-        float2 pixel_center = float2(launch_id) + float2(0.5);
+        // At SAMPLES == 1 stay exactly on the pixel centre: the ReSTIR
+        // reservoirs and G-buffer are built for the unjittered ray in
+        // ray_gen_ris, so jittering here would misalign them.
+        float2 jitter = (SAMPLES > 1) ? (float2(rnd(rng), rnd(rng)) - 0.5) : float2(0.0);
+        float2 pixel_center = float2(launch_id) + float2(0.5) + jitter;
         float2 inUV = pixel_center / float2(launch_size);
         float2 d = inUV * 2.0 - 1.0;
 
@@ -132,10 +151,15 @@ void ray_gen_final() {
                 continue;
             }
 
-            if (num_lights > 0 && bounce < SHADOW_BOUNCES) {
-                if (!restir_evaluated && roughness > 0.2) {
-                    restir_evaluated = true;
+            if (num_lights > 0 && bounce < SHADOW_BOUNCES && roughness > 0.2) {
+                // The first rough hit owns the ReSTIR gathers; every later rough
+                // bounce uses NEE. Direct and indirect are chosen independently
+                // below so either stage can be switched to its brute-force
+                // fallback on its own.
+                bool first_rough = !restir_evaluated;
+                restir_evaluated = true;
 
+                if (first_rough && ENABLE_RESTIR_DI) {
                     uint pi_center = get_pixel_index(pixel_coord, launch_size);
                     Reservoir center_r = reservoir_cur[pi_center];
                     Reservoir spatial_r;
@@ -216,6 +240,59 @@ void ray_gen_final() {
                         }
                     }
 
+                } else {
+                    // Standard NEE. Covers subsequent rough bounces, and the
+                    // first rough hit when ReSTIR DI is disabled.
+                    uint light_idx = min(uint(rnd(rng) * num_lights), num_lights - 1);
+                    EmissiveIndirectionEntry entry = emissive_indirection[light_idx];
+                    EmissiveTriangle light = emissive_triangles[entry.blas_tri_index];
+                    EntityTransform xform = entity_transforms[entry.entity_id];
+
+                    float3 wv0 = transform_point(xform, light.v0.xyz);
+                    float3 wv1 = transform_point(xform, light.v1.xyz);
+                    float3 wv2 = transform_point(xform, light.v2.xyz);
+
+                    float3 edge1 = wv1 - wv0;
+                    float3 edge2 = wv2 - wv0;
+                    float light_area = 0.5 * length(cross(edge1, edge2));
+
+                    float r1_nee = rnd(rng);
+                    float r2_nee = rnd(rng);
+                    float sqr1 = sqrt(r1_nee);
+                    float u = 1.0 - sqr1;
+                    float v = r2_nee * sqr1;
+                    float w = 1.0 - u - v;
+
+                    float3 light_pos    = wv0 * u + wv1 * v + wv2 * w;
+                    float3 light_normal = normalize(cross(wv1 - wv0, wv2 - wv0));
+
+                    float3 shadow_ray_dir = light_pos - hitPos;
+                    float light_dist = length(shadow_ray_dir);
+                    shadow_ray_dir /= light_dist;
+
+                    float cos_theta_light = max(dot(light_normal, -shadow_ray_dir), 0.0);
+                    float cos_theta_surface = max(dot(hit_normal, shadow_ray_dir), 0.0);
+
+                    if (cos_theta_light > 0.0 && cos_theta_surface > 0.0) {
+                        uint shadow_ray_flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+                        prd.dist = 1.0;
+                        RayDesc sray;
+                        sray.Origin = hitPos;
+                        sray.TMin = 0.001;
+                        sray.Direction = shadow_ray_dir;
+                        sray.TMax = light_dist - 0.001;
+                        TraceRay(tlas, shadow_ray_flags, 0xFFu, 0, 0, 0, sray, prd);
+
+                        if (prd.dist < 0.0) {
+                            float solid_angle_pdf = (light_dist * light_dist) / max(cos_theta_light * light_area * float(num_lights), 1e-4);
+                            float3 nee_contrib = (light.emission.rgb * hit_albedo * throughput * cos_theta_surface) / (solid_angle_pdf * 3.14159);
+                            radiance += min(nee_contrib, float3(5.0));
+                        }
+                        prev_did_nee = true;
+                    }
+                }
+
+                if (first_rough && ENABLE_RESTIR_GI) {
                     // ReSTIR GI spatial reuse.
                     uint pi_gi_center = get_pixel_index(pixel_coord, launch_size);
                     ReservoirGI combined = reservoir_gi_cur[pi_gi_center];
@@ -307,55 +384,6 @@ void ray_gen_final() {
                         }
                     }
                     break; // GI replaces the rest of the random walk at first rough hit.
-                } else if (restir_evaluated && roughness > 0.2) {
-                    // Standard NEE on subsequent rough bounces.
-                    uint light_idx = min(uint(rnd(rng) * num_lights), num_lights - 1);
-                    EmissiveIndirectionEntry entry = emissive_indirection[light_idx];
-                    EmissiveTriangle light = emissive_triangles[entry.blas_tri_index];
-                    EntityTransform xform = entity_transforms[entry.entity_id];
-
-                    float3 wv0 = transform_point(xform, light.v0.xyz);
-                    float3 wv1 = transform_point(xform, light.v1.xyz);
-                    float3 wv2 = transform_point(xform, light.v2.xyz);
-
-                    float3 edge1 = wv1 - wv0;
-                    float3 edge2 = wv2 - wv0;
-                    float light_area = 0.5 * length(cross(edge1, edge2));
-
-                    float r1_nee = rnd(rng);
-                    float r2_nee = rnd(rng);
-                    float sqr1 = sqrt(r1_nee);
-                    float u = 1.0 - sqr1;
-                    float v = r2_nee * sqr1;
-                    float w = 1.0 - u - v;
-
-                    float3 light_pos    = wv0 * u + wv1 * v + wv2 * w;
-                    float3 light_normal = normalize(cross(wv1 - wv0, wv2 - wv0));
-
-                    float3 shadow_ray_dir = light_pos - hitPos;
-                    float light_dist = length(shadow_ray_dir);
-                    shadow_ray_dir /= light_dist;
-
-                    float cos_theta_light = max(dot(light_normal, -shadow_ray_dir), 0.0);
-                    float cos_theta_surface = max(dot(hit_normal, shadow_ray_dir), 0.0);
-
-                    if (cos_theta_light > 0.0 && cos_theta_surface > 0.0) {
-                        uint shadow_ray_flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
-                        prd.dist = 1.0;
-                        RayDesc sray;
-                        sray.Origin = hitPos;
-                        sray.TMin = 0.001;
-                        sray.Direction = shadow_ray_dir;
-                        sray.TMax = light_dist - 0.001;
-                        TraceRay(tlas, shadow_ray_flags, 0xFFu, 0, 0, 0, sray, prd);
-
-                        if (prd.dist < 0.0) {
-                            float solid_angle_pdf = (light_dist * light_dist) / max(cos_theta_light * light_area * float(num_lights), 1e-4);
-                            float3 nee_contrib = (light.emission.rgb * hit_albedo * throughput * cos_theta_surface) / (solid_angle_pdf * 3.14159);
-                            radiance += min(nee_contrib, float3(5.0));
-                        }
-                        prev_did_nee = true;
-                    }
                 }
             }
 
@@ -368,8 +396,12 @@ void ray_gen_final() {
 
             float r1, r2;
             if (bounce == 0) {
-                r1 = frac(bn_1 + float(pc.frame_count % 1024u) * 0.75487766);
-                r2 = frac(bn_2 + float(pc.frame_count % 1024u) * 0.56984029);
+                // R2-sequence rotation of the per-pixel blue noise. Stride the
+                // index by SAMPLES so every (frame, sample) pair gets its own
+                // offset; otherwise all samples in a frame share one direction.
+                float seq = float((pc.frame_count * uint(SAMPLES) + uint(sample_i)) % 1024u);
+                r1 = frac(bn_1 + seq * 0.75487766);
+                r2 = frac(bn_2 + seq * 0.56984029);
             } else {
                 r1 = rnd(rng);
                 r2 = rnd(rng);
@@ -404,8 +436,11 @@ void ray_gen_final() {
             rayOrigin = hitPos + hit_normal * 0.001;
         }
 
-        total_radiance += radiance;
-        total_radiance = min(total_radiance, 10.0);
+        // Clamp per sample, not on the running sum: clamping the accumulator
+        // would cap the *total* at 10 regardless of SAMPLES, so dividing by
+        // SAMPLES below would darken the image as SAMPLES rose. Identical to
+        // the old behaviour at SAMPLES == 1.
+        total_radiance += min(radiance, float3(10.0));
     }
 
     float3 current_frame_color = total_radiance / float(SAMPLES);

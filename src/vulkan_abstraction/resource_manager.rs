@@ -8,7 +8,21 @@ use crate::render_graph::graph::SamplerDesc;
 use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, Material};
 use crate::{error::SrResult, vulkan_abstraction};
 
-const ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
+// Arena capacities are in *slots*, not bytes. Each arena costs
+// `capacity * size_of::<T>() * (1 + MAX_FRAMES_IN_FLIGHT)` bytes (one GPU-only
+// copy plus one staging copy per frame in flight), so the two are sized
+// separately: they hold very differently-sized elements and fill at wildly
+// different rates.
+
+/// One slot per BLAS. The heaviest scene on hand (subway.glb) has 1_989 unique
+/// primitives, so this is ~30x headroom at 128 B/slot (~25 MB).
+const MESH_INFO_ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
+
+/// One slot per *emissive triangle* in the scene — this fills far faster than
+/// the mesh arena, because a single emissive mesh contributes a slot per
+/// triangle. subway.glb alone needs 222_598, which overflowed the previous
+/// shared 65_536 cap; 262_144 covers it with ~18% headroom at 64 B/slot (~50 MB).
+const EMISSIVE_TRIANGLE_ARENA_CAPACITY: vk::DeviceSize = 4096 * 64;
 
 //TODO handle growable
 
@@ -77,7 +91,7 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
         // internally calls `vkGetBufferDeviceAddress`).
         let meshes_info = vulkan_abstraction::ArenaGpuBuffer::new(
             core.clone(),
-            ARENA_CAPACITY,
+            MESH_INFO_ARENA_CAPACITY,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -86,7 +100,7 @@ impl<K: Hash + Eq + Copy + 'static> ResourceManager<K> {
 
         let blas_emissive_triangles = vulkan_abstraction::ArenaGpuBuffer::new(
             core.clone(),
-            ARENA_CAPACITY,
+            EMISSIVE_TRIANGLE_ARENA_CAPACITY,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
