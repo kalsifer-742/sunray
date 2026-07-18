@@ -40,6 +40,17 @@ pub const DENOISE_PASSES: u32 = 8;
 //TODO finello
 pub const EXPOSURE: f32 = 1.0;
 
+// Pipeline-stage toggles (compile-time). The chain is
+// RT -> [temporal accumulation] -> [denoise] -> postprocess; a disabled stage
+// is dropped from the graph and its input is forwarded to the next stage, so
+// postprocess always has something to read.
+//   ENABLE_TEMPORAL_ACCUMULATION = false -> postprocess/denoise see the raw
+//     single-frame RT output (noisy, no cross-frame blending). Pair with a high
+//     SAMPLES in ray_gen_final for a converged reference image.
+//   ENABLE_DENOISE = false -> skip the 8 a-trous passes (show pre-denoise input).
+pub const ENABLE_TEMPORAL_ACCUMULATION: bool = false;
+pub const ENABLE_DENOISE: bool = false;
+
 /// Key identifying a GPU asset (BLAS or image) inside the renderer's
 /// `ResourceManager`. `group` ties together every asset created by one
 /// `load_scene` call so a whole scene can be deallocated in bulk (see
@@ -1421,41 +1432,52 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
             extent,
         )?;
 
+        // The image postprocess ultimately tonemaps. Each enabled stage consumes
+        // it and replaces it with its own output; a disabled stage is a no-op that
+        // leaves the previous stage's handle in place.
+        let mut tonemap_input_h = raw_color_h.clone();
+
         // 2. Temporal accumulation.
-        Self::add_temporal_pass(
-            rg,
-            taa_spirv,
-            raw_color_h.clone(),
-            motion_h.clone(),
-            accum_history_h,
-            accum_target_h.clone(),
-            frame_count,
-            width,
-            height,
-        )?;
+        if ENABLE_TEMPORAL_ACCUMULATION {
+            Self::add_temporal_pass(
+                rg,
+                taa_spirv,
+                raw_color_h.clone(),
+                motion_h.clone(),
+                accum_history_h,
+                accum_target_h.clone(),
+                frame_count,
+                width,
+                height,
+            )?;
+            tonemap_input_h = accum_target_h;
+        }
 
-        // 3. Denoise (8 a-trous passes). Pass 0 reads the TAA output (accum_target).
-        Self::add_denoise_passes(
-            rg,
-            denoise_spirv,
-            accum_target_h,
-            depth_h,
-            normal_h,
-            diffuse_h,
-            denoise_a_h.clone(),
-            denoise_b_h.clone(),
-            frame_count,
-            width,
-            height,
-        )?;
+        // 3. Denoise (8 a-trous passes). Pass 0 reads whatever the previous stage
+        // produced (TAA output when enabled, else the raw RT color).
+        if ENABLE_DENOISE {
+            Self::add_denoise_passes(
+                rg,
+                denoise_spirv,
+                tonemap_input_h,
+                depth_h,
+                normal_h,
+                diffuse_h,
+                denoise_a_h.clone(),
+                denoise_b_h.clone(),
+                frame_count,
+                width,
+                height,
+            )?;
+            let final_idx = ((DENOISE_PASSES - 1) % 2) as usize;
+            tonemap_input_h = if final_idx == 0 { denoise_a_h } else { denoise_b_h };
+        }
 
-        // 4. Postprocess: read the final denoise output, tonemap into the output.
-        let final_idx = ((DENOISE_PASSES - 1) % 2) as usize;
-        let denoise_input_h = if final_idx == 0 { denoise_a_h } else { denoise_b_h };
+        // 4. Postprocess: tonemap the last stage's output into the output image.
         Self::add_postprocess_pass(
             rg,
             postprocess_spirv,
-            denoise_input_h,
+            tonemap_input_h,
             postprocess_out_h,
             width,
             height,

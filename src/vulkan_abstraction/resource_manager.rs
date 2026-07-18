@@ -14,14 +14,7 @@ use crate::{error::SrResult, vulkan_abstraction};
 // separately: they hold very differently-sized elements and fill at wildly
 // different rates.
 
-/// One slot per BLAS. The heaviest scene on hand (subway.glb) has 1_989 unique
-/// primitives, so this is ~30x headroom at 128 B/slot (~25 MB).
 const MESH_INFO_ARENA_CAPACITY: vk::DeviceSize = 4096 * 16;
-
-/// One slot per *emissive triangle* in the scene — this fills far faster than
-/// the mesh arena, because a single emissive mesh contributes a slot per
-/// triangle. subway.glb alone needs 222_598, which overflowed the previous
-/// shared 65_536 cap; 262_144 covers it with ~18% headroom at 64 B/slot (~50 MB).
 const EMISSIVE_TRIANGLE_ARENA_CAPACITY: vk::DeviceSize = 4096 * 64;
 
 //TODO handle growable

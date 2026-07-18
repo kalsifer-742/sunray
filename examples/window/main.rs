@@ -18,7 +18,7 @@ use winit::{
     event_loop::{self, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle},
-    window::{CursorGrabMode, Window},
+    window::{CursorGrabMode, Fullscreen, Window},
 };
 
 mod utils;
@@ -104,7 +104,7 @@ impl App {
 
         //thesis/MirrorVGbuffer.glb
 
-        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/heavy_models/subway.glb")?;
+        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/heavy_models/bistro.glb")?;
         self.scene_instances = scene_instances;
         log::info!("Loaded {} unique BLASes from scene", self.scene_instances.len());
 
@@ -360,7 +360,12 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        let window = event_loop.create_window(Window::default_attributes()).unwrap();
+        // Borderless on the current monitor: unlike exclusive fullscreen it needs
+        // no video-mode enumeration, and `Escape` (which releases the mouse) stays
+        // usable without a mode switch.
+        let window = event_loop
+            .create_window(Window::default_attributes())
+            .unwrap();
         let window_size = window.inner_size().into();
         self.window = Some(window);
 
