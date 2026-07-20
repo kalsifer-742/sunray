@@ -37,6 +37,12 @@ pub struct BLAS {
     #[allow(unused)]
     index_buffer: vulkan_abstraction::IndexBuffer,
 
+    /// Whether the geometry is flagged `VK_GEOMETRY_OPAQUE_BIT_KHR`. False only
+    /// for alpha-cutout (glTF MASK) geometry, which must invoke the any-hit
+    /// shader; opaque geometry stays on the traversal fast path. Retained so
+    /// `rebuild` reproduces the same flag.
+    opaque: bool,
+
     state: BlasState,
 }
 
@@ -44,10 +50,14 @@ impl BLAS {
     /// the vertex_buffer is assumed to have a vec3 position attribute as its first (not necessarily the only) attribute in memory.
     /// Emissive triangles are no longer tracked here — the `ResourceManager` owns
     /// the per-BLAS emissive triangle slots.
+    /// `opaque` maps to `VK_GEOMETRY_OPAQUE_BIT_KHR`: pass `false` only for
+    /// alpha-cutout (glTF MASK) meshes so the any-hit shader runs on them; `true`
+    /// for everything else keeps them on the fixed-function traversal fast path.
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         vertex_buffer: vulkan_abstraction::VertexBuffer,
         index_buffer: vulkan_abstraction::IndexBuffer,
+        opaque: bool,
         fast_build: bool,
     ) -> SrResult<Self> {
         /*
@@ -59,7 +69,7 @@ impl BLAS {
          */
 
         // specify what the BLAS's geometry (vbo, ibo) is
-        let geometry = Self::make_geometry(&vertex_buffer, &index_buffer);
+        let geometry = Self::make_geometry(&vertex_buffer, &index_buffer, opaque);
 
         // specify the range of values to read from the ibo, vbo and transform data of a geometry.
         // there must be one build_range_info for each geometry
@@ -78,6 +88,7 @@ impl BLAS {
             blas,
             vertex_buffer,
             index_buffer,
+            opaque,
             state: BlasState::Optimal,
         })
     }
@@ -86,7 +97,11 @@ impl BLAS {
         &self.state
     }
 
-    fn make_geometry<'a>(vertex_buffer: &VertexBuffer, index_buffer: &IndexBuffer) -> vk::AccelerationStructureGeometryKHR<'a> {
+    fn make_geometry<'a>(
+        vertex_buffer: &VertexBuffer,
+        index_buffer: &IndexBuffer,
+        opaque: bool,
+    ) -> vk::AccelerationStructureGeometryKHR<'a> {
         let geometry_data = vk::AccelerationStructureGeometryDataKHR {
             triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
                 .vertex_data(vk::DeviceOrHostAddressConstKHR {
@@ -102,10 +117,20 @@ impl BLAS {
         };
         // .transform_data(vk::DeviceOrHostAddressConstKHR { device_address: transform_buffer.get_device_address() })
 
+        // Opaque geometry is committed by fixed-function traversal (no any-hit).
+        // Cutout geometry drops OPAQUE so the any-hit alpha test runs, and keeps
+        // NO_DUPLICATE_ANY_HIT_INVOCATION so a given triangle is tested at most
+        // once per ray (the test is a pure function of the hit, so dedup is safe).
+        let flags = if opaque {
+            vk::GeometryFlagsKHR::OPAQUE
+        } else {
+            vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION
+        };
+
         vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
             .geometry(geometry_data)
-            .flags(vk::GeometryFlagsKHR::OPAQUE | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION) //TODO why always opaque?
+            .flags(flags)
     }
     #[allow(unused)]
     pub fn rebuild(
@@ -114,7 +139,7 @@ impl BLAS {
         index_buffer: vulkan_abstraction::IndexBuffer,
         fast_build: bool,
     ) -> SrResult<()> {
-        let geometry = Self::make_geometry(&vertex_buffer, &index_buffer);
+        let geometry = Self::make_geometry(&vertex_buffer, &index_buffer, self.opaque);
 
         let build_range_info = Self::make_build_range_info(&index_buffer);
 
@@ -145,7 +170,7 @@ impl BLAS {
             return SrResult::Err(SrError::new_custom("The structure is not updatable".to_string()));
         }
 
-        let geometry = Self::make_geometry(&vertex_buffer, &index_buffer);
+        let geometry = Self::make_geometry(&vertex_buffer, &index_buffer, self.opaque);
 
         let build_range_info = Self::make_build_range_info(&index_buffer);
 

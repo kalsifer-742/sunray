@@ -19,7 +19,7 @@ void ray_gen_ris() {
     // build cost entirely. Phase 1 (G-buffer + mirror/glass follow) always runs:
     // the denoiser and the spatial-reuse depth/normal tests read it regardless.
     static const bool ENABLE_RIS = true;       // Phase 2: DI candidate audition + temporal reuse
-    static const bool ENABLE_RESTIR_GI = true; // Phase 3: GI initial sample + temporal reuse
+    static const bool ENABLE_RESTIR_GI = false; // Phase 3: GI initial sample + temporal reuse
 
     RaytracingAccelerationStructure tlas = tlas_from_address(pc.tlas);
     // Read matrices via the BDA pointer (see `RaytracingPC.matrices` comment).
@@ -148,7 +148,17 @@ void ray_gen_ris() {
             }
 
             float2 motion_vector = prev_valid ? (inUV - prev_uv) : (inUV + float2(2.0));
-            float3 denoiser_albedo = lerp(hit_albedo, float3(1.0), metallic);
+
+            // Denoiser albedo (demodulation guide). The denoiser divides raw_color
+            // by this and multiplies it back, assuming color == albedo * light.
+            // Emission is view-independent radiance baked into raw_color, not
+            // reflected light: demodulating it by a near-black emitter albedo (e.g.
+            // Bistro's dark glass lamp shades, base color ~0.05) divides the glow
+            // out and multiplies ~0 back, leaving the lamp black with only a rim.
+            // Mark emitters with albedo 1 so demodulation is a no-op and the
+            // emission survives; their reflected term is negligible anyway.
+            bool is_emitter = max(prd.emission.r, max(prd.emission.g, prd.emission.b)) > 0.0;
+            float3 denoiser_albedo = is_emitter ? float3(1.0) : lerp(hit_albedo, float3(1.0), metallic);
 
             depth_img[pixel_coord]      = virtual_distance;
             normal_img[pixel_coord]     = float4(hit_normal, roughness);

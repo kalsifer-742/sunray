@@ -45,14 +45,14 @@ void ray_gen_final() {
     // Both false + SAMPLES high = brute-force path-traced reference image.
     // Turning these off leaves the reservoirs unread, so also disable the
     // matching stages in ray_gen_ris.slang to skip building them.
-    static const bool ENABLE_RESTIR_DI = true;
-    static const bool ENABLE_RESTIR_GI = true;
+    static const bool ENABLE_RESTIR_DI = false;
+    static const bool ENABLE_RESTIR_GI = false;
 
     float3 total_radiance = float3(0.0);
     // Paths per pixel per frame. 1 = real-time; raise for a reference image
     // (cost is linear). Above 1, each sample jitters inside the pixel for AA
     // and offsets its first-bounce blue noise, so samples stay decorrelated.
-    const int SAMPLES = 1;
+    const int SAMPLES = 192;
     const int BOUNCES = 10;
     const int SHADOW_BOUNCES = BOUNCES / 2;
 

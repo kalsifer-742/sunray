@@ -68,9 +68,23 @@ impl Default for App {
             camera_pitch: 0.0,
              */
 
+            /*
+
             camera_pos: na::Point3::new(19.181, 1.454, 5.124),
             camera_yaw: 9.5530,
             camera_pitch: -0.0500,
+
+
+
+            camera_pos: na::Point3::new(-22.867, 9.657, -5.976),
+            camera_yaw: 12.8788,
+            camera_pitch: -0.1920,
+
+             */
+
+            camera_pos: na::Point3::new(2.021, 8.609, 19.408),
+            camera_yaw: 11.0109,
+            camera_pitch: -0.1140,
 
             keys_down: HashSet::new(),
             mouse_captured: false,
@@ -104,7 +118,7 @@ impl App {
 
         //thesis/MirrorVGbuffer.glb
 
-        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/heavy_models/bistro.glb")?;
+        let (_scene_group, scene_instances) = renderer.load_gltf("examples/assets/heavy_models/statue.glb")?;
         self.scene_instances = scene_instances;
         log::info!("Loaded {} unique BLASes from scene", self.scene_instances.len());
 

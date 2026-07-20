@@ -39,17 +39,8 @@ use vk_sync_fork as vk_sync;
 pub const DENOISE_PASSES: u32 = 8;
 //TODO finello
 pub const EXPOSURE: f32 = 1.0;
-
-// Pipeline-stage toggles (compile-time). The chain is
-// RT -> [temporal accumulation] -> [denoise] -> postprocess; a disabled stage
-// is dropped from the graph and its input is forwarded to the next stage, so
-// postprocess always has something to read.
-//   ENABLE_TEMPORAL_ACCUMULATION = false -> postprocess/denoise see the raw
-//     single-frame RT output (noisy, no cross-frame blending). Pair with a high
-//     SAMPLES in ray_gen_final for a converged reference image.
-//   ENABLE_DENOISE = false -> skip the 8 a-trous passes (show pre-denoise input).
-pub const ENABLE_TEMPORAL_ACCUMULATION: bool = false;
-pub const ENABLE_DENOISE: bool = false;
+pub const ENABLE_TEMPORAL_ACCUMULATION: bool = true;
+pub const ENABLE_DENOISE: bool = true;
 
 /// Key identifying a GPU asset (BLAS or image) inside the renderer's
 /// `ResourceManager`. `group` ties together every asset created by one
@@ -901,7 +892,13 @@ impl<K: Hash + Eq + Copy + 'static> Renderer<K> {
 
         let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(Rc::clone(&self.core), vertices)?;
         let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data(Rc::clone(&self.core), indices)?;
-        let blas = vulkan_abstraction::BLAS::new(Rc::clone(&self.core), vertex_buffer, index_buffer, false)?;
+        let blas = vulkan_abstraction::BLAS::new(
+            Rc::clone(&self.core),
+            vertex_buffer,
+            index_buffer,
+            !material.is_alpha_cutout(),
+            false,
+        )?;
 
         // No image set accompanies a runtime mesh: every texture reference
         // resolves to "absent" (NULL slots ignored by the shader).
