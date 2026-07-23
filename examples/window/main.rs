@@ -12,6 +12,7 @@ use sunray::{
     error::{ErrorSource, SrResult},
     utils::na_mat4_to_vk_transform,
 };
+use winit::dpi::LogicalSize;
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, ElementState, MouseButton, WindowEvent},
@@ -20,7 +21,6 @@ use winit::{
     raw_window_handle_05::{HasRawDisplayHandle, HasRawWindowHandle},
     window::{CursorGrabMode, Window},
 };
-use winit::dpi::LogicalSize;
 
 mod utils;
 
@@ -322,7 +322,9 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
-        let window = event_loop.create_window(Window::default_attributes().with_inner_size(LogicalSize::new(2650, 1440))).unwrap();
+        let window = event_loop
+            .create_window(Window::default_attributes().with_inner_size(LogicalSize::new(2650, 1440)))
+            .unwrap();
         let window_size = window.inner_size().into();
         self.window = Some(window);
 

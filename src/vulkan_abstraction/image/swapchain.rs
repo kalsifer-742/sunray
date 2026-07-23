@@ -72,7 +72,8 @@ impl Swapchain {
         }
     }
 
-    fn build_swapchain( //TODO format and present mod to be asked from outside
+    fn build_swapchain(
+        //TODO format and present mod to be asked from outside
         core: &Rc<vulkan_abstraction::Core>,
         surface: vk::SurfaceKHR,
         window_extent: (u32, u32),
@@ -110,9 +111,8 @@ impl Swapchain {
                 vk::PresentModeKHR::IMMEDIATE //TODO Frames in flight + 1
             } else if present_modes.contains(&vk::PresentModeKHR::FIFO_RELAXED) {
                 vk::PresentModeKHR::FIFO_RELAXED //TODO Frames in flight + 1
-            }
-            else {
-                vk::PresentModeKHR::FIFO  //TODO Frames in flight + 1
+            } else {
+                vk::PresentModeKHR::FIFO //TODO Frames in flight + 1
             };
 
             let surface_capabilities = &device.surface_support_details().surface_capabilities;
@@ -295,7 +295,8 @@ impl SwapchainData {
     /// Per-swapchain-image objects: the pre-recorded GENERAL -> PRESENT_SRC
     /// barrier command buffers and the present-wait semaphores. Rebuilt
     /// whenever the swapchain (and so its image list) is rebuilt.
-    pub(crate) fn build_per_image_objects( //TODO this is the rg job
+    pub(crate) fn build_per_image_objects(
+        //TODO this is the rg job
         core: &Rc<vulkan_abstraction::Core>,
         swapchain: &Swapchain,
     ) -> SrResult<(Vec<vulkan_abstraction::CmdBuffer>, Vec<vulkan_abstraction::Semaphore>)> {
